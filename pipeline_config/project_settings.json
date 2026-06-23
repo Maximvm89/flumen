@@ -1,0 +1,46 @@
+{
+  "_comment": "Legami project settings — the single source of truth applied to every Blender scene by the legami_pipeline addon. Edit this file, upload to /shared/Legami/02_pipeline/project_settings.json, and everyone gets the change on next 'Apply Project Settings'. Color names (display_device / view_transform / look) MUST match the displays & views in the active OCIO config; the addon warns instead of crashing if a name is missing.",
+  "schema_version": 1,
+  "project": {
+    "name": "Legami",
+    "code": "LEGAMI"
+  },
+  "color_management": {
+    "ocio_config_rel": "02_pipeline/ocio/config.ocio",
+    "working_space": "ACEScg",
+    "display_device": "sRGB - Display",
+    "view_transform": "ACES 1.0 - SDR Video",
+    "look": "None",
+    "exposure": 0.0,
+    "gamma": 1.0
+  },
+  "render": {
+    "engine": "CYCLES",
+    "film_transparent": true,
+    "resolution_x": 1920,
+    "resolution_y": 1080,
+    "resolution_percentage": 100,
+    "fps": 24,
+    "fps_base": 1.0,
+    "cycles": {
+      "device": "GPU",
+      "samples": 256,
+      "use_denoising": true
+    }
+  },
+  "frame_range": {
+    "start": 1,
+    "end": 250
+  },
+  "units": {
+    "system": "METRIC",
+    "scale_length": 1.0,
+    "length_unit": "METERS"
+  },
+  "output": {
+    "base_path_rel": "06_renders",
+    "file_format": "OPEN_EXR_MULTILAYER",
+    "color_depth": "16",
+    "exr_codec": "ZIP"
+  }
+}

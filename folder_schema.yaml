@@ -1,0 +1,85 @@
+# =============================================================================
+# Folder schema for a feature-animation project.
+#
+# This file is the SINGLE SOURCE OF TRUTH for the folder structure. Edit it
+# freely — no code changes are needed. Rules:
+#   * Every key is a folder. Nested keys are subfolders.
+#   * A folder with no children is written as an empty mapping ({}) or null.
+#   * `root`           -> created once by `init-project`
+#   * `asset_template` -> created under each asset by `add-asset`
+#   * `shot_template`  -> created under each shot by `add-shot`
+#
+# Asset path : 03_assets/<type>/<asset_name>/<asset_template...>
+# Shot path  : 04_sequences/<seq>/<shot>/<shot_template...>
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Static top-level structure (created once).
+# ---------------------------------------------------------------------------
+root:
+  00_management:
+    schedules: {}
+    budget: {}
+    references: {}
+    scripts: {}            # screenplay / storyboard scripts
+  01_editorial:
+    storyboard: {}
+    animatic: {}
+    edit: {}
+    conform: {}
+  02_pipeline:
+    config: {}
+    tools: {}
+    templates: {}
+    ocio: {}               # color management (OCIO config)
+  03_assets:               # individual assets are added under these types
+    characters: {}
+    props: {}
+    environments: {}
+    vehicles: {}
+    fx: {}
+  04_sequences: {}         # sequences/shots are added here
+  05_library:              # shared / global resources
+    materials: {}
+    hdri: {}
+    textures: {}
+    rigs_base: {}
+  06_renders: {}
+  07_dailies: {}
+  08_delivery:
+    versions: {}
+    final: {}
+
+# ---------------------------------------------------------------------------
+# Per-asset department template.
+# Created at: 03_assets/<type>/<asset_name>/
+# ---------------------------------------------------------------------------
+asset_template:
+  model:                   # geometry
+    work: {}
+    publish: {}
+  surface:                 # texturing / look-dev / shading
+    work: {}
+    publish: {}
+  rig:                     # skeleton / controls
+    work: {}
+    publish: {}
+
+# ---------------------------------------------------------------------------
+# Per-shot department template.
+# Created at: 04_sequences/<seq>/<shot>/
+# ---------------------------------------------------------------------------
+shot_template:
+  layout:                  # camera / blocking
+    work: {}
+    publish: {}
+  animation:               # character animation
+    work: {}
+    publish: {}
+  lighting:                # lighting / render setup
+    work: {}
+    publish: {}
+  comp:                    # compositing
+    work: {}
+    publish: {}
+  _cache: {}               # shared alembic / USD caches between depts

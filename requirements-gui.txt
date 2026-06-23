@@ -1,0 +1,4 @@
+# GUI app dependencies (in addition to requirements.txt).
+# Installed separately because PySide6 is large (~150MB) and only artists who
+# run the desktop Workspace app need it.
+PySide6>=6.6

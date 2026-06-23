@@ -1,0 +1,46 @@
+# =============================================================================
+# Project configuration.
+# Copy to `config.yaml` and edit. Credentials do NOT live here — they come
+# from environment variables / .env (see .env.example).
+# =============================================================================
+
+project:
+  name: "My Animated Feature"
+  code: "MAF"                    # short project code, used in paths
+  # Base directory on the SFTP server where this project lives.
+  # init-project creates the schema under here.
+  remote_root: "/projects/MAF"
+  # Where the project is synced on THIS machine (used by `sync` / `launch`).
+  # Optional — defaults to ~/Legami/<CODE> if omitted.
+  # local_root: "~/Legami/MAF"
+
+# Path to the folder schema (relative to this config file, or absolute).
+schema: "folder_schema.yaml"
+
+# Optional tool paths used by `launch`.
+tools:
+  # Explicit Blender executable. Optional — the launcher auto-detects standard
+  # install locations on Windows/macOS/Linux, or honors the LEGAMI_BLENDER env var.
+  # blender_path: "/Applications/Blender.app/Contents/MacOS/Blender"
+  blender_path: null
+
+# Optional: assets to create in bulk during `init-project`.
+# Keys must match a folder name under root.03_assets in the schema.
+assets:
+  characters:
+    - hero
+    - sidekick
+  props:
+    - sword
+  environments:
+    - village
+
+# Optional: shots to create in bulk during `init-project`.
+# Key = sequence code, value = list of shot codes.
+shots:
+  SEQ010:
+    - SH0010
+    - SH0020
+    - SH0030
+  SEQ020:
+    - SH0010

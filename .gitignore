@@ -1,0 +1,26 @@
+# --- secrets & machine-local config (NEVER commit) ---
+.env
+config.yaml
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- generated / downloaded artifacts (rebuildable) ---
+*.ocio
+color_pipeline/config.ocio
+legami_pipeline.zip
+
+# --- locally synced project copies (data, not code) ---
+/LEGAMI/
+/Legami/
