@@ -751,23 +751,64 @@ class MainWindow(QMainWindow):
         if not t:
             return
         menu = QMenu(self)
-        act_open = menu.addAction("Open in Blender")
+        pubs = tasksmod.published_files(t)
+        act_open = menu.addAction("Open in Blender (latest)")
+        ver_menu = menu.addMenu("Open version")
+        ver_actions = {}
+        if pubs:
+            for p in pubs:
+                desc = (p.get("description") or "").splitlines()[0][:40]
+                a = ver_menu.addAction(f"{p['name']}   ·   {p.get('by','?')}"
+                                       + (f"   ·   {desc}" if desc else ""))
+                ver_actions[a] = p["rel"]
+        else:
+            ver_menu.setEnabled(False)
+        act_hist = menu.addAction("Publish history…")
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         chosen = menu.exec(self.tasks_table.viewport().mapToGlobal(pos))
         if chosen == act_open:
             self._open_task_in_blender(t)
+        elif chosen in ver_actions:
+            self._open_task_in_blender(t, ver_actions[chosen])
+        elif chosen == act_hist:
+            self._show_history(t)
         elif chosen == act_delete:
             self._delete_task(t)
 
-    def _open_task_in_blender(self, task: dict):
+    def _show_history(self, task: dict):
+        import datetime as _dt
+        pubs = task.get("publishes") or []
+        if not pubs:
+            QMessageBox.information(self, "Publish history",
+                                   f"No publishes yet for {task.get('entity')} — "
+                                   f"{task.get('step')}.")
+            return
+        lines = []
+        for p in reversed(pubs):  # newest first
+            when = _dt.datetime.fromtimestamp(p.get("time", 0)).strftime("%Y-%m-%d %H:%M")
+            files = ", ".join(os.path.basename(f) for f in (p.get("files") or []))
+            desc = p.get("description") or "(no description)"
+            lines.append(f"{when}  ·  {p.get('by','?')}\n  {desc}\n  files: {files}")
+        QMessageBox.information(
+            self, f"Publish history — {task.get('entity')} / {task.get('step')}",
+            "\n\n".join(lines))
+
+    def _open_task_in_blender(self, task: dict, blend_rel: str | None = None):
         if not self.cfg:
             return
         from animpipe.launcher import launch
         local_root = self.ed_local.text().strip() or self.cfg.resolved_local_root()
-        # Make the launcher sync + save into the same folder the GUI uses.
-        self.cfg.local_root = local_root
+        self.cfg.local_root = local_root  # launcher syncs into the GUI's folder
+        remote_root = self.cfg.remote_root
         work_abs = os.path.join(local_root, *tasksmod.task_work_rel(task).split("/"))
+
+        # Default to the latest published .blend; else the chosen version; else empty.
+        if blend_rel is None:
+            pubs = tasksmod.published_files(task)
+            blend_rel = pubs[0]["rel"] if pubs else None
+        open_file = core.local_path_for(local_root, blend_rel) if blend_rel else None
+
         extra_env = {
             "LEGAMI_TASK_ID": task.get("id", ""),
             "LEGAMI_TASK_TYPE": task.get("type", ""),
@@ -780,13 +821,18 @@ class MainWindow(QMainWindow):
         creds = self._creds()
 
         def work():
-            return launch(cfg, creds, extra_env=extra_env)
+            # Pull the chosen published file down so Blender opens the real version.
+            if blend_rel:
+                self._conn_do(lambda c: c.download(
+                    core.remote_path_for(remote_root, blend_rel), open_file))
+            return launch(cfg, creds, extra_env=extra_env, open_file=open_file)
 
         def done(rc):
             self._busy_buttons(False)
             if rc == 0:
+                what = os.path.basename(open_file) if open_file else "new scene"
                 self.status.showMessage(
-                    f"Opening Blender for {task.get('entity')} — {task.get('step')}")
+                    f"Opening Blender ({what}) — {task.get('entity')} · {task.get('step')}")
             else:
                 QMessageBox.warning(
                     self, "Could not launch Blender",
@@ -794,7 +840,7 @@ class MainWindow(QMainWindow):
                     "or the LEGAMI_BLENDER environment variable.")
 
         self._busy_buttons(True)
-        self._spawn(work, done, busy_msg="Syncing config + launching Blender…")
+        self._spawn(work, done, busy_msg="Fetching version + launching Blender…")
 
     def _new_task(self):
         if not self.cfg:

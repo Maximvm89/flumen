@@ -154,22 +154,26 @@ def cmd_launch(args) -> int:
 
 def cmd_publish(args) -> int:
     cfg = ProjectConfig.load(args.config)
-    if not os.path.isfile(args.local):
-        print(f"error: local file not found: {args.local}", file=sys.stderr)
+    missing = [f for f in args.local if not os.path.isfile(f)]
+    if missing:
+        print(f"error: local file(s) not found: {', '.join(missing)}", file=sys.stderr)
         return 1
     if args.dry_run:
-        print(f"(dry-run) would publish {args.local} for task {args.task} "
-              f"and set status '{args.status}'")
+        print(f"(dry-run) would publish {len(args.local)} file(s) for task "
+              f"{args.task} and set status '{args.status}'")
         return 0
     from . import tasks as T
     creds = SFTPCredentials.from_env(args.env)
     with SFTPClient(creds) as client:
-        rel = T.publish_task(client, cfg.remote_root, creds.user,
-                             args.local, args.task, args.status)
-    if not rel:
+        rels = T.publish_task(client, cfg.remote_root, creds.user,
+                              args.local, args.task, args.status,
+                              description=args.description)
+    if not rels:
         print(f"error: task not found: {args.task}", file=sys.stderr)
         return 1
-    print(f"published -> {cfg.remote_root}/{rel}\ntask {args.task} -> {args.status}")
+    for rel in rels:
+        print(f"published -> {cfg.remote_root}/{rel}")
+    print(f"task {args.task} -> {args.status}")
     return 0
 
 
@@ -237,10 +241,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     pb = sub.add_parser("publish", parents=[common],
                         help="publish a file into a task's publish/ folder")
-    pb.add_argument("--local", required=True, help="local file to publish")
+    pb.add_argument("--local", required=True, nargs="+",
+                    help="local file(s) to publish")
     pb.add_argument("--task", required=True, help="task id")
     pb.add_argument("--status", default="review",
                     help="task status to set after publish (default: review)")
+    pb.add_argument("--description", default="",
+                    help="publish notes recorded in the task history")
     pb.set_defaults(func=cmd_publish)
 
     return p

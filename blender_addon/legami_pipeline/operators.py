@@ -6,6 +6,7 @@ import subprocess
 import bpy
 
 from . import settings_io
+from . import checks
 
 
 def _prefs():
@@ -293,20 +294,98 @@ def _next_version(folder: str, base: str) -> int:
     return len(existing) + 1
 
 
+def _export_fbx(filepath: str) -> bool:
+    """Export a Maya-friendly FBX (Y-up, baked transforms, meters)."""
+    try:
+        bpy.ops.export_scene.fbx(
+            filepath=filepath, use_selection=False,
+            object_types={"MESH", "EMPTY", "ARMATURE"},
+            apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL",
+            bake_space_transform=True, axis_forward="-Z", axis_up="Y",
+            mesh_smooth_type="FACE", path_mode="AUTO")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print("[Legami] FBX export failed:", exc)
+        return False
+
+
+def _draw_checks(layout, issues):
+    box = layout.box()
+    box.label(text="Sanity checks:")
+    if not issues:
+        box.label(text="All checks passed.", icon="CHECKMARK")
+        return
+    for level, msg in issues:
+        box.label(text=msg, icon="ERROR" if level == checks.ERROR else "INFO")
+
+
+class LEGAMI_OT_check(bpy.types.Operator):
+    bl_idname = "legami.run_checks"
+    bl_label = "Run Sanity Checks"
+    bl_description = "Run the pre-publish sanity checks for this task and show issues"
+
+    _issues: list = []
+
+    def invoke(self, context, event):
+        task = active_task()
+        step = task["step"] if task else ""
+        self._issues = checks.run_checks(step, context.scene,
+                                         list(context.scene.objects))
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        _draw_checks(self.layout, self._issues)
+        if checks.has_errors(self._issues):
+            self.layout.label(text="Errors would block a publish.", icon="CANCEL")
+
+    def execute(self, context):
+        return {"FINISHED"}  # informational only
+
+
 class LEGAMI_OT_publish(bpy.types.Operator):
     bl_idname = "legami.publish"
     bl_label = "Publish"
-    bl_description = ("Write a versioned .blend into this task's publish/ folder, "
-                      "upload it, and set the task to Review")
+    bl_description = ("Run sanity checks, then write a versioned .blend + FBX into "
+                      "this task's publish/ folder, upload, and set status to Review")
 
-    def execute(self, context):
+    _issues: list = []
+
+    def invoke(self, context, event):
         task = active_task()
         if not task or not task["work_dir"]:
             self.report({"ERROR"}, "No active task. Open this scene from the "
                                    "Workspace app's 'Open in Blender'.")
             return {"CANCELLED"}
+        self._issues = checks.run_checks(task["step"], context.scene,
+                                         list(context.scene.objects))
+        return context.window_manager.invoke_props_dialog(
+            self, width=480, title="Publish", confirm_text="Publish")
 
-        # publish/ is a sibling of the task's work/ folder
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(context.window_manager, "legami_publish_desc", text="Description")
+        col.separator()
+        _draw_checks(col, self._issues)
+        col.separator()
+        if checks.has_errors(self._issues):
+            col.label(text="Errors must be fixed — publish is blocked.", icon="CANCEL")
+        else:
+            col.label(text="Ready to publish.", icon="CHECKMARK")
+
+    def execute(self, context):
+        task = active_task()
+        if not task or not task["work_dir"]:
+            self.report({"ERROR"}, "No active task.")
+            return {"CANCELLED"}
+
+        issues = checks.run_checks(task["step"], context.scene,
+                                   list(context.scene.objects))
+        if checks.has_errors(issues):
+            errs = [m for lvl, m in issues if lvl == checks.ERROR]
+            self.report({"ERROR"}, "Publish blocked: " + errs[0])
+            print("[Legami] publish blocked:\n  " + "\n  ".join(errs))
+            return {"CANCELLED"}
+
         publish_dir = os.path.join(os.path.dirname(task["work_dir"]), "publish")
         os.makedirs(publish_dir, exist_ok=True)
         name = task["entity"].split("/")[-1]
@@ -314,27 +393,35 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         version = _next_version(publish_dir, base)
         pub_path = os.path.join(publish_dir, f"{base}_v{version:03d}.blend")
 
-        # Write a copy to publish/ without changing the working file.
         bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
+        files = [pub_path]
+        fbx_path = pub_path[:-6] + ".fbx"   # .blend -> .fbx
+        if _export_fbx(fbx_path):
+            files.append(fbx_path)
 
         py = os.environ.get("LEGAMI_TOOLKIT_PY")
         td = os.environ.get("LEGAMI_TOOLKIT_DIR")
         if not py or not td:
             self.report({"WARNING"},
-                        f"Saved {os.path.basename(pub_path)} to publish/, but the "
-                        f"toolkit wasn't found to upload — push it via the Workspace app.")
+                        f"Saved {len(files)} file(s) to publish/, but the toolkit "
+                        f"wasn't found to upload — push via the Workspace app.")
             return {"FINISHED"}
 
+        desc = context.window_manager.legami_publish_desc
         try:
             subprocess.check_call(
-                [py, "-m", "animpipe", "publish", "--local", pub_path,
-                 "--task", task["id"], "--status", "review"], cwd=td)
+                [py, "-m", "animpipe", "publish", "--local", *files,
+                 "--task", task["id"], "--status", "review",
+                 "--description", desc], cwd=td)
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, f"Saved locally but upload failed: {exc}")
             return {"CANCELLED"}
 
-        self.report({"INFO"},
-                    f"Published {os.path.basename(pub_path)}; task set to Review.")
+        context.window_manager.legami_publish_desc = ""  # reset for next publish
+        warns = sum(1 for lvl, _ in issues if lvl == checks.WARNING)
+        suffix = f" ({warns} warning(s))" if warns else ""
+        self.report({"INFO"}, f"Published {base}_v{version:03d} (.blend + FBX); "
+                              f"task → Review.{suffix}")
         return {"FINISHED"}
 
 
@@ -343,5 +430,6 @@ CLASSES = (
     LEGAMI_OT_verify_ocio,
     LEGAMI_OT_pull_settings,
     LEGAMI_OT_save_to_task,
+    LEGAMI_OT_check,
     LEGAMI_OT_publish,
 )

@@ -60,24 +60,51 @@ def get_task(sftp, remote_root: str, task_id: str) -> dict | None:
     return _load_one(sftp, remote_root, task_id)
 
 
-def publish_task(sftp, remote_root: str, username: str, local_file: str,
-                 task_id: str, status: str = "review") -> str | None:
-    """Publish a file for a task: upload it into the task's publish/ folder,
-    record attribution, and advance the task status. Returns the published rel
-    path, or None if the task doesn't exist."""
+def published_files(task: dict, ext: str = ".blend") -> list[dict]:
+    """Published files of a given type from the task's history, newest first.
+    Each entry: {rel, name, time, by, description}."""
+    import os as _os
+    out = []
+    for rec in task.get("publishes") or []:
+        for rel in rec.get("files") or []:
+            if rel.endswith(ext):
+                out.append({"rel": rel, "name": _os.path.basename(rel),
+                            "time": rec.get("time"), "by": rec.get("by"),
+                            "description": rec.get("description", "")})
+    out.sort(key=lambda r: r["name"], reverse=True)  # _v003 before _v002
+    return out
+
+
+def publish_task(sftp, remote_root: str, username: str, local_files,
+                 task_id: str, status: str = "review",
+                 description: str = "") -> list[str] | None:
+    """Publish one or more files for a task: upload each into the task's publish/
+    folder, record attribution, append a publish-history entry (with the artist's
+    description), and advance the task status. Returns the published rel paths,
+    or None if the task doesn't exist."""
     import os as _os
     from . import ledger
 
+    if isinstance(local_files, str):
+        local_files = [local_files]
     task = get_task(sftp, remote_root, task_id)
     if not task:
         return None
-    rel = task_dir_rel(task) + "/publish/" + _os.path.basename(local_file)
-    remote_abs = remote_root.rstrip("/") + "/" + rel
-    sftp.upload(local_file, remote_abs)
-    ledger.record_uploads(sftp, remote_root, username, [rel])
+    rels = []
+    for f in local_files:
+        rel = task_dir_rel(task) + "/publish/" + _os.path.basename(f)
+        sftp.upload(f, remote_root.rstrip("/") + "/" + rel)
+        rels.append(rel)
+    ledger.record_uploads(sftp, remote_root, username, rels)
+
+    # Append to the task's publish history and advance status in one save.
+    record = {"time": time.time(), "by": username,
+              "description": description, "files": rels, "status": status}
+    task["publishes"] = (task.get("publishes") or []) + [record]
     if status:
-        set_status(sftp, remote_root, task_id, status, actor=username)
-    return rel
+        task["status"] = status
+    save_task(sftp, remote_root, task, actor=username)
+    return rels
 
 STATUSES = ["todo", "in_progress", "review", "done"]
 STATUS_LABELS = {
@@ -118,6 +145,7 @@ def new_task(ttype: str, entity: str, step: str, title: str | None = None,
         "title": title or f"{entity} — {step}",
         "assignees": assignees or [],
         "status": status if status in STATUSES else "todo",
+        "publishes": [],          # history: {time, by, description, files, status}
         "updated": time.time(),
         "updated_by": "",
     }

@@ -32,12 +32,17 @@ _ALL_CLASSES = (_prefs.LegamiPipelinePrefs, *_ops.CLASSES, *_ui.CLASSES)
 def register():
     for cls in _ALL_CLASSES:
         bpy.utils.register_class(cls)
+    # Description typed in the publish dialog (persists across re-opens).
+    bpy.types.WindowManager.legami_publish_desc = bpy.props.StringProperty(
+        name="Description", default="",
+        description="What changed in this publish (recorded in the task history)")
     # Add a "Legami" menu to the top menu bar (next to Help).
     bpy.types.TOPBAR_MT_editor_menus.append(_ui.draw_menu)
 
 
 def unregister():
     bpy.types.TOPBAR_MT_editor_menus.remove(_ui.draw_menu)
+    del bpy.types.WindowManager.legami_publish_desc
     for cls in reversed(_ALL_CLASSES):
         bpy.utils.unregister_class(cls)
 

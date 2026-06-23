@@ -94,16 +94,45 @@ def test_delete_task():
 def test_publish_task():
     s = FakeSrv()
     t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/panda", "model"))
-    rel = tasks.publish_task(s, "/r", "marco",
-                             "/tmp/panda_model_v001.blend", t["id"])
-    assert rel == "03_assets/characters/panda/model/publish/panda_model_v001.blend"
-    # file landed at the right remote path
-    assert "/r/" + rel in s.files
+    rels = tasks.publish_task(s, "/r", "marco",
+                              ["/tmp/panda_model_v001.blend",
+                               "/tmp/panda_model_v001.fbx"], t["id"],
+                              description="first blocking pass")
+    base = "03_assets/characters/panda/model/publish/"
+    assert rels == [base + "panda_model_v001.blend", base + "panda_model_v001.fbx"]
+    # both files landed at the right remote paths
+    assert "/r/" + rels[0] in s.files and "/r/" + rels[1] in s.files
+    reloaded = tasks.load_tasks(s, "/r")[0]
     # status advanced to review
-    assert tasks.load_tasks(s, "/r")[0]["status"] == "review"
-    # attribution recorded
+    assert reloaded["status"] == "review"
+    # publish history recorded with description + files
+    assert len(reloaded["publishes"]) == 1
+    h = reloaded["publishes"][0]
+    assert h["description"] == "first blocking pass"
+    assert h["by"] == "marco"
+    assert h["files"] == rels
+    # attribution recorded for both
     from animpipe import ledger
-    assert ledger.load_ledgers(s, "/r")[rel][0] == "marco"
+    led = ledger.load_ledgers(s, "/r")
+    assert led[rels[0]][0] == "marco" and led[rels[1]][0] == "marco"
+
+
+def test_published_files_versions():
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/panda", "model"))
+    tasks.publish_task(s, "/r", "marco",
+                       ["/tmp/panda_model_v001.blend", "/tmp/panda_model_v001.fbx"],
+                       t["id"], description="first")
+    tasks.publish_task(s, "/r", "anna",
+                       ["/tmp/panda_model_v002.blend", "/tmp/panda_model_v002.fbx"],
+                       t["id"], description="fixes")
+    reloaded = tasks.get_task(s, "/r", t["id"])
+    blends = tasks.published_files(reloaded, ".blend")
+    assert [b["name"] for b in blends] == ["panda_model_v002.blend",
+                                           "panda_model_v001.blend"]  # newest first
+    assert blends[0]["by"] == "anna" and blends[0]["description"] == "fixes"
+    # only .blend, no fbx
+    assert all(b["name"].endswith(".blend") for b in blends)
 
 
 def test_publish_task_missing():

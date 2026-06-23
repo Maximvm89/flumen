@@ -18,7 +18,8 @@ class LEGAMI_MT_menu(bpy.types.Menu):
             layout.label(text=f"Task: {task['entity']}  ·  {task['step']}",
                          icon="OUTLINER_OB_ARMATURE")
             layout.operator("legami.save_to_task", icon="FILE_TICK")
-            layout.operator("legami.publish", text="Publish", icon="EXPORT")
+            layout.operator("legami.run_checks", icon="CHECKMARK")
+            layout.operator("legami.publish", text="Publish…", icon="EXPORT")
             layout.separator()
         else:
             layout.label(text="No active task (open from Workspace app)",

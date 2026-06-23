@@ -85,7 +85,7 @@ def sync_pipeline_config(cfg: ProjectConfig, creds: SFTPCredentials,
 
 def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | None = None,
            dry_run: bool = False, no_sync: bool = False,
-           extra_env: dict | None = None) -> int:
+           extra_env: dict | None = None, open_file: str | None = None) -> int:
     local_root = cfg.resolved_local_root()
     if not no_sync:
         local_root = sync_pipeline_config(cfg, creds, dry_run=dry_run)
@@ -127,6 +127,12 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
         return 0
 
     cmd = [blender]
+    # Open a specific .blend (e.g. the latest published version) if given.
+    if open_file and os.path.isfile(open_file):
+        cmd.append(open_file)
+        print(f"Opening: {open_file}")
+    elif open_file:
+        print(f"warning: file to open not found: {open_file}", file=sys.stderr)
     # Auto-load the add-on for this session (no manual install needed).
     bootstrap = os.path.join(os.path.dirname(__file__), "blender_bootstrap.py")
     if "LEGAMI_ADDON_DIR" in env and os.path.isfile(bootstrap):
