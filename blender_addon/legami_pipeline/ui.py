@@ -26,6 +26,9 @@ class LEGAMI_MT_menu(bpy.types.Menu):
                          icon="INFO")
             layout.separator()
 
+        layout.operator("legami.add_publish_locator", icon="EMPTY_AXIS")
+        layout.separator()
+
         layout.operator("legami.apply_project_settings", icon="CHECKMARK")
         layout.operator("legami.verify_ocio", icon="COLOR")
         layout.separator()

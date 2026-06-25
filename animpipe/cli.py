@@ -152,6 +152,20 @@ def cmd_launch(args) -> int:
                   dry_run=args.dry_run, no_sync=args.no_sync)
 
 
+def cmd_new_task(args) -> int:
+    cfg = ProjectConfig.load(args.config)
+    from . import tasks as T
+    if args.dry_run:
+        print(f"(dry-run) would create task {T.make_id(args.type, args.entity, args.step)}")
+        return 0
+    creds = SFTPCredentials.from_env(args.env)
+    task = T.new_task(args.type, args.entity, args.step, title=args.title or None)
+    with SFTPClient(creds) as client:
+        T.save_task(client, cfg.remote_root, task, actor=creds.user)
+    print(f"created task: {task['id']}")
+    return 0
+
+
 def cmd_publish(args) -> int:
     cfg = ProjectConfig.load(args.config)
     missing = [f for f in args.local if not os.path.isfile(f)]
@@ -175,6 +189,18 @@ def cmd_publish(args) -> int:
         print(f"published -> {cfg.remote_root}/{rel}")
     print(f"task {args.task} -> {args.status}")
     return 0
+
+
+def cmd_turntable(args) -> int:
+    cfg = ProjectConfig.load(args.config)
+    if not args.dry_run and not os.path.isfile(args.model):
+        print(f"error: model file not found: {args.model}", file=sys.stderr)
+        return 1
+    from . import turntable
+    creds = (SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
+             if args.dry_run else SFTPCredentials.from_env(args.env))
+    return turntable.run_turntable(cfg, creds, args.model, args.task,
+                                   dry_run=args.dry_run)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -239,6 +265,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="extra args passed through to Blender")
     lc.set_defaults(func=cmd_launch)
 
+    nt = sub.add_parser("new-task", parents=[common], help="create a task")
+    nt.add_argument("--type", required=True, choices=["shot", "asset"])
+    nt.add_argument("--entity", required=True,
+                    help="e.g. characters/frankenstein or SEQ010/SH0010")
+    nt.add_argument("--step", required=True, help="e.g. model, animation")
+    nt.add_argument("--title", default="", help="optional display title")
+    nt.set_defaults(func=cmd_new_task)
+
     pb = sub.add_parser("publish", parents=[common],
                         help="publish a file into a task's publish/ folder")
     pb.add_argument("--local", required=True, nargs="+",
@@ -249,6 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--description", default="",
                     help="publish notes recorded in the task history")
     pb.set_defaults(func=cmd_publish)
+
+    tt = sub.add_parser("turntable", parents=[common],
+                        help="render a model turntable and publish it to 07_dailies")
+    tt.add_argument("--model", required=True, help="published model .blend to render")
+    tt.add_argument("--task", required=True, help="task id")
+    tt.set_defaults(func=cmd_turntable)
 
     return p
 

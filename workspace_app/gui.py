@@ -803,11 +803,19 @@ class MainWindow(QMainWindow):
         remote_root = self.cfg.remote_root
         work_abs = os.path.join(local_root, *tasksmod.task_work_rel(task).split("/"))
 
-        # Default to the latest published .blend; else the chosen version; else empty.
+        # Open priority: chosen version > latest published > latest local work file.
         if blend_rel is None:
             pubs = tasksmod.published_files(task)
             blend_rel = pubs[0]["rel"] if pubs else None
-        open_file = core.local_path_for(local_root, blend_rel) if blend_rel else None
+        open_file = None
+        if blend_rel:
+            open_file = core.local_path_for(local_root, blend_rel)
+        else:
+            import glob
+            work_dir = os.path.join(local_root, *tasksmod.task_work_rel(task).split("/"))
+            cands = (sorted(glob.glob(os.path.join(work_dir, "*.blend")), reverse=True)
+                     if os.path.isdir(work_dir) else [])
+            open_file = cands[0] if cands else None  # newest work file, opened locally
 
         extra_env = {
             "LEGAMI_TASK_ID": task.get("id", ""),

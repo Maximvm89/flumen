@@ -40,11 +40,51 @@ def check_model(scene, objects):
     return issues
 
 
-def run_checks(step, scene, objects):
-    """Dispatch by task step. Unknown steps still get the unit check."""
+def _descendants(objects, root):
+    """All descendants of root among `objects` (pure; uses .parent references)."""
+    children = {}
+    for o in objects:
+        p = getattr(o, "parent", None)
+        if p is not None:
+            children.setdefault(id(p), []).append(o)
+    out, stack = [], [root]
+    while stack:
+        cur = stack.pop()
+        for c in children.get(id(cur), []):
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def check_publish_locator(objects, locator_name):
+    """The publish locator must exist and contain geometry — this is what tells
+    the pipeline exactly what to export/render."""
+    loc = None
+    for o in objects:
+        name = getattr(o, "name", "")
+        if name == locator_name or name.split(".")[0] == locator_name:
+            loc = o
+            break
+    if loc is None:
+        return [(ERROR, f"No '{locator_name}' locator found. Add one "
+                        f"(Legami menu ▸ Add Publish Locator) and parent your "
+                        f"asset geometry under it.")]
+    meshes = [o for o in _descendants(objects, loc)
+              if getattr(o, "type", "") == "MESH"]
+    if not meshes:
+        return [(ERROR, f"'{locator_name}' locator is empty — parent your asset "
+                        f"geometry under it before publishing.")]
+    return []
+
+
+def run_checks(step, scene, objects, locator="PUBLISH"):
+    """Dispatch by task step. Every publish must have a populated publish locator."""
     if step == "model":
-        return check_model(scene, objects)
-    return check_units(scene)
+        issues = check_model(scene, objects)
+    else:
+        issues = check_units(scene)
+    issues += check_publish_locator(objects, locator)
+    return issues
 
 
 def has_errors(issues):

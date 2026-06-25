@@ -286,6 +286,44 @@ class LEGAMI_OT_save_to_task(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def publish_locator_name():
+    """Name of the locator that marks what to publish (from project settings,
+    default 'PUBLISH')."""
+    try:
+        root = settings_io.find_project_root(_pref_local_root())
+        data = settings_io.load_settings(root)
+        return (data.get("publish") or {}).get("locator") or "PUBLISH"
+    except Exception:  # noqa: BLE001
+        return "PUBLISH"
+
+
+def _descendants(obj):
+    out = []
+    for child in obj.children:
+        out.append(child)
+        out.extend(_descendants(child))
+    return out
+
+
+class LEGAMI_OT_add_locator(bpy.types.Operator):
+    bl_idname = "legami.add_publish_locator"
+    bl_label = "Add Publish Locator"
+    bl_description = ("Create the locator empty that marks what gets published — "
+                      "parent your asset geometry under it")
+
+    def execute(self, context):
+        name = publish_locator_name()
+        if bpy.data.objects.get(name):
+            self.report({"INFO"}, f"'{name}' already exists.")
+            return {"FINISHED"}
+        empty = bpy.data.objects.new(name, None)
+        empty.empty_display_type = "PLAIN_AXES"
+        empty.empty_display_size = 0.5
+        context.scene.collection.objects.link(empty)
+        self.report({"INFO"}, f"Created '{name}'. Parent your asset geometry under it.")
+        return {"FINISHED"}
+
+
 def _next_version(folder: str, base: str) -> int:
     if not os.path.isdir(folder):
         return 1
@@ -294,11 +332,11 @@ def _next_version(folder: str, base: str) -> int:
     return len(existing) + 1
 
 
-def _export_fbx(filepath: str) -> bool:
+def _export_fbx(filepath: str, use_selection: bool = False) -> bool:
     """Export a Maya-friendly FBX (Y-up, baked transforms, meters)."""
     try:
         bpy.ops.export_scene.fbx(
-            filepath=filepath, use_selection=False,
+            filepath=filepath, use_selection=use_selection,
             object_types={"MESH", "EMPTY", "ARMATURE"},
             apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL",
             bake_space_transform=True, axis_forward="-Z", axis_up="Y",
@@ -330,7 +368,8 @@ class LEGAMI_OT_check(bpy.types.Operator):
         task = active_task()
         step = task["step"] if task else ""
         self._issues = checks.run_checks(step, context.scene,
-                                         list(context.scene.objects))
+                                         list(context.scene.objects),
+                                         publish_locator_name())
         return context.window_manager.invoke_props_dialog(self, width=460)
 
     def draw(self, context):
@@ -357,13 +396,17 @@ class LEGAMI_OT_publish(bpy.types.Operator):
                                    "Workspace app's 'Open in Blender'.")
             return {"CANCELLED"}
         self._issues = checks.run_checks(task["step"], context.scene,
-                                         list(context.scene.objects))
+                                         list(context.scene.objects),
+                                         publish_locator_name())
         return context.window_manager.invoke_props_dialog(
             self, width=480, title="Publish", confirm_text="Publish")
 
     def draw(self, context):
         col = self.layout.column()
         col.prop(context.window_manager, "legami_publish_desc", text="Description")
+        task = active_task()
+        if task and task.get("step") == "model":
+            col.prop(context.window_manager, "legami_render_turntable")
         col.separator()
         _draw_checks(col, self._issues)
         col.separator()
@@ -379,7 +422,8 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             return {"CANCELLED"}
 
         issues = checks.run_checks(task["step"], context.scene,
-                                   list(context.scene.objects))
+                                   list(context.scene.objects),
+                                   publish_locator_name())
         if checks.has_errors(issues):
             errs = [m for lvl, m in issues if lvl == checks.ERROR]
             self.report({"ERROR"}, "Publish blocked: " + errs[0])
@@ -396,7 +440,20 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
         files = [pub_path]
         fbx_path = pub_path[:-6] + ".fbx"   # .blend -> .fbx
-        if _export_fbx(fbx_path):
+        # Export only the geometry under the publish locator, if present.
+        loc = bpy.data.objects.get(publish_locator_name())
+        use_sel = False
+        if loc:
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:  # noqa: BLE001
+                pass
+            bpy.ops.object.select_all(action="DESELECT")
+            loc.select_set(True)
+            for d in _descendants(loc):
+                d.select_set(True)
+            use_sel = True
+        if _export_fbx(fbx_path, use_selection=use_sel):
             files.append(fbx_path)
 
         py = os.environ.get("LEGAMI_TOOLKIT_PY")
@@ -418,10 +475,23 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             return {"CANCELLED"}
 
         context.window_manager.legami_publish_desc = ""  # reset for next publish
+
+        # Optionally kick off a turntable render in the BACKGROUND (non-blocking).
+        tt_msg = ""
+        if (task.get("step") == "model"
+                and context.window_manager.legami_render_turntable):
+            try:
+                subprocess.Popen(
+                    [py, "-m", "animpipe", "turntable", "--model", pub_path,
+                     "--task", task["id"]], cwd=td)
+                tt_msg = " Turntable rendering in background → dailies."
+            except Exception as exc:  # noqa: BLE001
+                print("[Legami] could not start turntable:", exc)
+
         warns = sum(1 for lvl, _ in issues if lvl == checks.WARNING)
         suffix = f" ({warns} warning(s))" if warns else ""
         self.report({"INFO"}, f"Published {base}_v{version:03d} (.blend + FBX); "
-                              f"task → Review.{suffix}")
+                              f"task → Review.{suffix}{tt_msg}")
         return {"FINISHED"}
 
 
@@ -429,6 +499,7 @@ CLASSES = (
     LEGAMI_OT_apply_project_settings,
     LEGAMI_OT_verify_ocio,
     LEGAMI_OT_pull_settings,
+    LEGAMI_OT_add_locator,
     LEGAMI_OT_save_to_task,
     LEGAMI_OT_check,
     LEGAMI_OT_publish,

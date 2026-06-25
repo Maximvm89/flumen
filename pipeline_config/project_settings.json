@@ -42,5 +42,20 @@
     "file_format": "OPEN_EXR_MULTILAYER",
     "color_depth": "16",
     "exr_codec": "ZIP"
+  },
+  "turntable": {
+    "engine": "EEVEE",
+    "resolution_x": 1280,
+    "resolution_y": 720,
+    "frames": 120,
+    "fps": 24,
+    "view_transform": "ACES 1.0 - SDR Video",
+    "template": "dev/TurnTableTemplate.blend",
+    "template_control": "ASSET_SOCKET",
+    "template_remove": ["Showcase Asset"],
+    "template_ground": "Pedestal"
+  },
+  "publish": {
+    "locator": "PUBLISH"
   }
 }
