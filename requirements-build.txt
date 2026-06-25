@@ -1,0 +1,4 @@
+# Build-time dependencies for producing the standalone bundle (build.py).
+# Needs the runtime + GUI deps installed too:
+#   pip install -r requirements.txt -r requirements-gui.txt -r requirements-build.txt
+pyinstaller>=6.6

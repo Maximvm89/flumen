@@ -107,16 +107,20 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
     # From source we invoke `python -m animpipe …`; once frozen there is no
     # interpreter, so point at the sibling animpipe executable and call it
     # directly (the addon drops the `-m animpipe` prefix when MODULE is empty).
+    # Base the toolkit + addon lookup on the app folder when frozen (cwd is
+    # unreliable for a double-clicked app); on the working dir from source.
     if getattr(sys, "frozen", False):
+        app_dir = os.path.dirname(sys.executable)
         exe_name = "animpipe.exe" if os.name == "nt" else "animpipe"
-        env["LEGAMI_TOOLKIT_PY"] = os.path.join(os.path.dirname(sys.executable), exe_name)
+        env["LEGAMI_TOOLKIT_PY"] = os.path.join(app_dir, exe_name)
         env["LEGAMI_TOOLKIT_MODULE"] = ""
     else:
+        app_dir = os.getcwd()
         env["LEGAMI_TOOLKIT_PY"] = sys.executable
         env["LEGAMI_TOOLKIT_MODULE"] = "animpipe"
-    env["LEGAMI_TOOLKIT_DIR"] = os.getcwd()
+    env["LEGAMI_TOOLKIT_DIR"] = app_dir
     # Folder containing the legami_pipeline package, for auto-load on launch.
-    addon_dir = os.path.join(os.getcwd(), "blender_addon")
+    addon_dir = os.path.join(app_dir, "blender_addon")
     if os.path.isdir(addon_dir):
         env["LEGAMI_ADDON_DIR"] = addon_dir
 
