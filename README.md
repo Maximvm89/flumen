@@ -81,11 +81,39 @@ settings-application logic (against a stubbed Blender), and the workspace
 diff/mirror logic (against a fake SFTP). They need neither a live server nor
 Blender installed.
 
+## Packaging & distribution
+
+Artists can run a standalone bundle with **no Python install**. One PyInstaller
+spec produces both executables (`animpipe` + `Legami-Workspace`) into a single
+`dist/Legami/` folder. PyInstaller can't cross-compile, so build **on the target
+OS** (Mac build for Mac, Windows build for Windows).
+
+```bash
+pip install -r requirements.txt -r requirements-gui.txt -r requirements-build.txt
+python build.py --zip          # -> dist/Legami/ (+ dist/Legami-<os>.zip)
+```
+
+Dev-on-Mac / test-on-Windows loop, transported over the existing SFTP server
+(`scripts/dist_sync.py` — paramiko-only, no toolkit import, so it can seed a
+bare build box):
+
+```bash
+# Mac (dev): publish the latest source
+python scripts/dist_sync.py push
+# Windows build box: pull source, build, publish the artist bundle
+python scripts/dist_sync.py pull
+python build.py --zip
+python scripts/dist_sync.py publish-bundle
+```
+
+Seed a fresh build box once with `scripts/dist_sync.py` + `.env` + `config.yaml`;
+`pull` brings down everything else (and overwrites itself — self-updating).
+
 ## Roadmap
 
-- Publish tool (Blender → versioned `publish/` with the per-user login)
 - Maya port of the project-init add-on
-- Packaged standalone launcher/app (PyInstaller) so artists need no Python setup
+- Review/dailies loop in the workspace app (view turntables, approve/reject)
+- Shot/animation playblasts (extend the turntable pipeline beyond models)
 
 ## License
 
