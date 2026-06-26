@@ -427,7 +427,11 @@ def cmd_build_review(args) -> int:
         ledger.record_uploads(client, cfg.remote_root, creds.user, uploaded_rels)
 
     print(f"\nReview built -> {cfg.remote_root}/{review_rel}\n"
+          f"  local: {review_local}\n"
           f"  {manifest['count']} clip(s); open index.html to scrub the batch.")
+    if getattr(args, "open", False):
+        from . import clipboard
+        clipboard.reveal(review_local)
     return 0
 
 
@@ -471,6 +475,73 @@ def cmd_reset_review(args) -> int:
     print(f"Reset review {date_str}: un-stamped {cleared} record(s), cleared "
           f"{removed} file(s). Run 'build-review' to rebuild.")
     return 0
+
+
+def _review_local_dir(cfg, date_str: str) -> str:
+    from . import review as R
+    return os.path.join(cfg.resolved_local_root(),
+                        *R.review_dir_rel(date_str).split("/"))
+
+
+def cmd_review_copy(args) -> int:
+    """Copy a review video onto the clipboard (the file itself, like Finder ⌘C) so
+    SyncSketch's MEDIA ▸ Upload from ▸ Clipboard grabs it. Local-only, no server."""
+    import glob
+
+    from . import review as R
+    from . import clipboard
+
+    cfg = ProjectConfig.load(args.config)
+    date_str = args.date or R.today_str()
+    review_local = _review_local_dir(cfg, date_str)
+    if not os.path.isdir(review_local):
+        print(f"No local review folder for {date_str}:\n  {review_local}\n"
+              f"Run 'animpipe build-review' (or sync it down) first.")
+        return 1
+    clips = sorted(glob.glob(os.path.join(review_local, "*.mp4")))
+    if not clips:
+        print(f"No videos in {review_local}.")
+        return 1
+    names = [os.path.basename(c) for c in clips]
+
+    if args.open:
+        clipboard.reveal(review_local)
+    if args.list:
+        for i, n in enumerate(names, 1):
+            print(f"  {i}. {n}")
+        return 0
+
+    chosen = None
+    if args.clip:
+        matches = [c for c, n in zip(clips, names) if args.clip in n]
+        if not matches:
+            print(f"No clip matching '{args.clip}'. Use --list to see options.")
+            return 1
+        chosen = matches[0]
+    elif args.index:
+        if not 1 <= args.index <= len(clips):
+            print(f"Index out of range (1..{len(clips)}).")
+            return 1
+        chosen = clips[args.index - 1]
+    elif len(clips) == 1:
+        chosen = clips[0]
+    else:
+        for i, n in enumerate(names, 1):
+            print(f"  {i}. {n}")
+        try:
+            sel = input(f"Copy which clip? [1-{len(clips)}]: ").strip()
+            chosen = clips[int(sel) - 1]
+        except (ValueError, IndexError, EOFError):
+            print("Nothing copied.")
+            return 1
+
+    if clipboard.copy_file(chosen):
+        print(f"Copied to clipboard: {os.path.basename(chosen)}\n"
+              f"In SyncSketch: MEDIA ▸ Upload from ▸ Clipboard, then paste.")
+        return 0
+    print("Could not copy the file to the clipboard on this platform.\n"
+          f"Open the folder and ⌘C the file yourself:\n  {review_local}")
+    return 1
 
 
 def _load_project_settings_for(cfg) -> dict:
@@ -602,6 +673,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="review session date (default: today, YYYY-MM-DD)")
     br.add_argument("--status", default="review",
                     help="task status to collect (default: review)")
+    br.add_argument("--open", action="store_true",
+                    help="reveal the review folder when done")
     br.set_defaults(func=cmd_build_review)
 
     rr = sub.add_parser("reset-review", parents=[common],
@@ -609,6 +682,16 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--date", default="",
                     help="review session date to reset (default: today)")
     rr.set_defaults(func=cmd_reset_review)
+
+    rc = sub.add_parser("review-copy", parents=[common],
+                        help="copy a review video to the clipboard for SyncSketch")
+    rc.add_argument("--date", default="", help="review date (default: today)")
+    rc.add_argument("--index", type=int, default=0, help="clip number (see --list)")
+    rc.add_argument("--clip", default="", help="match clip by filename substring")
+    rc.add_argument("--list", action="store_true", help="just list the clips")
+    rc.add_argument("--open", action="store_true",
+                    help="also reveal the folder in Finder/Explorer")
+    rc.set_defaults(func=cmd_review_copy)
 
     return p
 
