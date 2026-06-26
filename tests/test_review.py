@@ -25,13 +25,15 @@ def test_version_and_clip_name():
     assert R.clip_name({"turntable": rel}) == "frankenstein_model_v003_turntable.mp4"
 
 
-def test_collectable_status_and_not_reviewed():
+def test_collectable_latest_per_task_only():
+    # Newest turntable per task, even with older + non-turntable publishes mixed in.
     t_review = tasks.new_task("asset", "characters/frankenstein", "model")
     t_review["status"] = "review"
     t_review["publishes"] = [
-        {"turntable": _tt("characters/frankenstein", "v1")},                 # collect
-        {"turntable": _tt("characters/frankenstein", "v2"), "reviewed": "x"},  # done
-        {"files": ["a.blend"]},                                              # no tt
+        {"turntable": _tt("characters/frankenstein", "v1")},   # superseded
+        {"turntable": _tt("characters/frankenstein", "v2")},   # superseded
+        {"turntable": _tt("characters/frankenstein", "v3")},   # newest -> collect
+        {"files": ["a.blend"]},                                # no turntable
     ]
     t_todo = tasks.new_task("asset", "props/axe", "model")
     t_todo["status"] = "todo"
@@ -39,7 +41,17 @@ def test_collectable_status_and_not_reviewed():
 
     picked = R.collectable([t_review, t_todo])
     assert len(picked) == 1
-    assert picked[0][1]["turntable"] == _tt("characters/frankenstein", "v1")
+    assert picked[0][1]["turntable"] == _tt("characters/frankenstein", "v3")
+
+
+def test_collectable_skips_when_newest_already_reviewed():
+    t = tasks.new_task("asset", "characters/frankenstein", "model")
+    t["status"] = "review"
+    t["publishes"] = [
+        {"turntable": _tt("characters/frankenstein", "v1")},
+        {"turntable": _tt("characters/frankenstein", "v2"), "reviewed": "2026-06-01"},
+    ]
+    assert R.collectable([t]) == []  # newest is collected; nothing new
 
 
 def test_collectable_status_override():
@@ -59,6 +71,18 @@ def test_mark_reviewed_targets_matching_record():
     assert task["publishes"][0].get("reviewed") is None
     assert task["publishes"][1]["reviewed"] == "2026-06-26"
     assert R.mark_reviewed(task, "nope.mp4", "2026-06-26") is False
+
+
+def test_mark_reviewed_stamps_all_duplicate_records():
+    # Same turntable recorded on two publishes (the dup case): both get stamped so
+    # the newest (which collectable picks) doesn't re-collect forever.
+    rel = _tt("characters/panda", "v9")
+    task = tasks.new_task("asset", "characters/panda", "model")
+    task["status"] = "review"
+    task["publishes"] = [{"turntable": rel}, {"turntable": rel}]
+    assert R.mark_reviewed(task, rel, "2026-06-26") is True
+    assert all(r["reviewed"] == "2026-06-26" for r in task["publishes"])
+    assert R.collectable([task]) == []  # nothing left after stamping
 
 
 def test_build_manifest_sorted_and_counted():

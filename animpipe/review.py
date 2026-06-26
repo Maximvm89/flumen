@@ -38,15 +38,21 @@ def clip_name(rec: dict) -> str:
 
 
 def collectable(task_list: list[dict], status: str = "review") -> list[tuple[dict, dict]]:
-    """(task, publish_record) pairs waiting for review: the task is in `status`,
-    the record has a turntable, and it hasn't been collected yet."""
+    """(task, publish_record) pairs waiting for review — one per task: the NEWEST
+    publish that carries a turntable, included only if it hasn't been collected yet.
+
+    Reviewing the latest version is the point; older/superseded turntables (and a
+    turntable re-recorded on more than one publish) are intentionally skipped."""
     out: list[tuple[dict, dict]] = []
     for task in task_list or []:
         if status and task.get("status") != status:
             continue
+        latest = None  # publishes are append-ordered, so the last match is newest
         for rec in task.get("publishes") or []:
-            if rec.get("turntable") and not rec.get("reviewed"):
-                out.append((task, rec))
+            if rec.get("turntable"):
+                latest = rec
+        if latest is not None and not latest.get("reviewed"):
+            out.append((task, latest))
     return out
 
 
@@ -104,13 +110,18 @@ def render_index_html(manifest: dict) -> str:
 
 
 def mark_reviewed(task: dict, turntable_rel: str, date_str: str) -> bool:
-    """Stamp the publish record carrying `turntable_rel` as collected. Returns True
-    if a record matched. Mutates `task` in place."""
+    """Stamp EVERY publish record carrying `turntable_rel` as collected. Returns
+    True if any matched. Mutates `task` in place.
+
+    All matching records are stamped (not just the first) because the same
+    turntable can be recorded on more than one publish; otherwise the record that
+    `collectable` selects (the newest) could stay unstamped and re-collect forever."""
+    hit = False
     for rec in task.get("publishes") or []:
         if rec.get("turntable") == turntable_rel:
             rec["reviewed"] = date_str
-            return True
-    return False
+            hit = True
+    return hit
 
 
 def record_collected(sftp, remote_root: str, task_id: str, turntable_rel: str,
