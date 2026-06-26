@@ -319,6 +319,67 @@ def _descendants(obj):
     return out
 
 
+def active_publish_locator():
+    """The PUBLISH locator object in this file, or None."""
+    return bpy.data.objects.get(publish_locator_name())
+
+
+class LEGAMI_OT_turntable_framing(bpy.types.Operator):
+    bl_idname = "legami.turntable_framing"
+    bl_label = "Turntable Framing"
+    bl_description = ("Set this asset's turntable scale/fit. Stored on the PUBLISH "
+                      "locator, so it travels with the publish — per character, not global")
+
+    override: bpy.props.BoolProperty(
+        name="Override project default", default=False,
+        description="Use this asset's own framing instead of the project setting")
+    fit_mode: bpy.props.EnumProperty(
+        name="Fit", default="box",
+        items=[("box", "Box — fit whole bounding box", "Scale the whole bbox to fit"),
+               ("height", "Height — fill vertically", "Fill the frame top-to-bottom"),
+               ("width", "Width — fit widest horizontal", "Fit the widest horizontal extent")])
+    fit_scale: bpy.props.FloatProperty(
+        name="Zoom", default=1.0, min=0.05, max=5.0, soft_min=0.2, soft_max=2.0,
+        description="<1 = smaller / more margin, >1 = bigger")
+
+    def invoke(self, context, event):
+        loc = active_publish_locator()
+        if not loc:
+            self.report({"ERROR"}, "Add a Publish Locator first (Legami ▸ Add Publish Locator).")
+            return {"CANCELLED"}
+        self.override = bool(loc.get("legami_tt_override", 0))
+        m = loc.get("legami_tt_fit_mode")
+        if m in ("box", "height", "width"):
+            self.fit_mode = m
+        sc = loc.get("legami_tt_fit_scale")
+        if sc is not None:
+            self.fit_scale = float(sc)
+        return context.window_manager.invoke_props_dialog(self, width=340)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "override")
+        sub = col.column()
+        sub.enabled = self.override
+        sub.prop(self, "fit_mode")
+        sub.prop(self, "fit_scale", slider=True)
+        col.separator()
+        col.label(text="Saved on the PUBLISH locator — per character.", icon="INFO")
+
+    def execute(self, context):
+        loc = active_publish_locator()
+        if not loc:
+            self.report({"ERROR"}, "No Publish Locator.")
+            return {"CANCELLED"}
+        loc["legami_tt_override"] = 1 if self.override else 0
+        loc["legami_tt_fit_mode"] = self.fit_mode
+        loc["legami_tt_fit_scale"] = float(self.fit_scale)
+        state = (f"{self.fit_mode} @ {self.fit_scale:.2f}x" if self.override
+                 else "project default")
+        self.report({"INFO"}, f"Turntable framing → {state} (on {loc.name}).")
+        return {"FINISHED"}
+
+
 class LEGAMI_OT_add_locator(bpy.types.Operator):
     bl_idname = "legami.add_publish_locator"
     bl_label = "Add Publish Locator"
@@ -543,5 +604,6 @@ CLASSES = (
     LEGAMI_OT_save_to_task,
     LEGAMI_OT_check,
     LEGAMI_OT_publish,
+    LEGAMI_OT_turntable_framing,
     LEGAMI_OT_preview_turntable,
 )

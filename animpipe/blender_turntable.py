@@ -227,6 +227,21 @@ def run_template_mode():
         if locator_name:
             print(f"[Legami] locator '{locator_name}' not found; using all geometry")
 
+    # Per-asset override (custom props on the PUBLISH locator, set in Blender via
+    # Legami ▸ Turntable). Takes precedence over the project_settings defaults.
+    if chosen is not None and chosen.get("legami_tt_override"):
+        m = chosen.get("legami_tt_fit_mode")
+        if m in ("box", "height", "width"):
+            fit_mode = m
+        sc = chosen.get("legami_tt_fit_scale")
+        if sc is not None:
+            try:
+                fit_scale = float(sc)
+            except (TypeError, ValueError):
+                pass
+        print(f"[Legami] per-asset turntable override: "
+              f"fit_mode={fit_mode} fit_scale={fit_scale}")
+
     roots = []
     linked = []
     for obj in candidates:
