@@ -579,8 +579,11 @@ class LEGAMI_OT_preview_turntable(bpy.types.Operator):
         if not path:
             self.report({"ERROR"}, "Save the file first, then preview.")
             return {"CANCELLED"}
-        if bpy.data.is_dirty:
-            bpy.ops.wm.save_mainfile()
+        # Always save: custom-property writes (the framing override lives on the
+        # PUBLISH locator as raw ID props) do NOT flag bpy.data.is_dirty, so a
+        # conditional save would silently skip them and the preview would read a
+        # stale file — showing the old scale no matter what you change.
+        bpy.ops.wm.save_mainfile()
         task = active_task()
         tid = task["id"] if task else "preview"
         cmd, td = _toolkit_cmd(["turntable", "--preview", "--model", path, "--task", tid])

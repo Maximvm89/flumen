@@ -244,17 +244,31 @@ def run_template_mode():
 
     roots = []
     linked = []
+    hidden_n = 0
     for obj in candidates:
         if obj is None or obj.type in _SKIP_TYPES:
             continue
         scene.collection.objects.link(obj)
-        obj.hide_render = False
-        obj.hide_viewport = False
+        # Carry over the artist's visibility. An object disabled in renders
+        # (camera icon = hide_render) OR disabled in viewports (monitor icon =
+        # hide_viewport) in the source file stays hidden in the turntable; both
+        # flags survive the append and both keep an object out of the render.
+        # NOTE: the outliner *eye* (H / hide_set) is a per-view-layer toggle that
+        # does NOT survive appending into the turntable scene — it cannot be
+        # honored, so use the camera/monitor icon to hide from the turntable.
+        hidden = bool(obj.hide_render or obj.hide_viewport)
+        obj.hide_render = hidden
+        obj.hide_viewport = hidden
+        if hidden:
+            hidden_n += 1
         linked.append(obj)
         if obj.parent is None or obj.parent not in candidates:
             roots.append(obj)
     print(f"[Legami] linked {len(linked)} object(s): "
           f"{[(o.name, o.type) for o in linked]}")
+    if hidden_n:
+        print(f"[Legami] kept {hidden_n} object(s) hidden per artist visibility "
+              f"(camera/monitor icon)")
 
     def _world_bbox(objs):
         mn = [1e18, 1e18, 1e18]
@@ -278,7 +292,7 @@ def run_template_mode():
         bpy.context.view_layer.update()
         # Scale the asset to fit the reference volume (tightest axis fits inside),
         # then apply the zoom knob. Seating below re-measures and re-centers.
-        mesh_now = [o for o in linked if o.type == "MESH"]
+        mesh_now = [o for o in linked if o.type == "MESH" and not o.hide_render]
         if fit_size and mesh_now:
             mn, mx = _world_bbox(mesh_now)
             msize = [mx[i] - mn[i] for i in range(3)]
@@ -319,7 +333,7 @@ def run_template_mode():
         dest = mathutils.Vector((target.x, target.y, rest_z))
         # 2) Measure the model's ACTUAL world bbox, then translate it so its
         #    bottom-center lands on the socket x,y at the rest height. No assumptions.
-        mesh_objs = [o for o in linked if o.type == "MESH"]
+        mesh_objs = [o for o in linked if o.type == "MESH" and not o.hide_render]
         if mesh_objs:
             mn, mx = _world_bbox(mesh_objs)
             anchor = mathutils.Vector(((mn[0] + mx[0]) / 2.0,
