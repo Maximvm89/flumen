@@ -345,6 +345,7 @@ def cmd_build_review(args) -> int:
     """Collect the turntables waiting for review into a dated folder on the server,
     write a clickable review sheet, and flag each as collected."""
     import json
+    import shutil
 
     from . import tasks as T
     from . import review as R
@@ -366,6 +367,8 @@ def cmd_build_review(args) -> int:
             print(f"Nothing waiting for review (status '{args.status}').")
             return 0
         print(f"{len(waiting)} clip(s) for review {date_str}:")
+        if not args.dry_run:
+            os.makedirs(review_local, exist_ok=True)
 
         entries = []
         uploaded_rels = []
@@ -376,7 +379,8 @@ def cmd_build_review(args) -> int:
             if args.dry_run:
                 entries.append(R.manifest_entry(task, rec))
                 continue
-            # Make sure the mp4 is on this machine, then copy it into the folder.
+            # Make sure the mp4 is on this machine, then place a copy IN the review
+            # folder (next to index.html) so the local folder plays on its own.
             src_local = os.path.join(local_root, *src_rel.split("/"))
             if not os.path.isfile(src_local):
                 try:
@@ -384,8 +388,11 @@ def cmd_build_review(args) -> int:
                 except Exception as exc:  # noqa: BLE001
                     print(f"    warning: could not fetch {src_rel} ({exc}); skipping.")
                     continue
+            dest_local = os.path.join(review_local, clip)
+            if os.path.abspath(dest_local) != os.path.abspath(src_local):
+                shutil.copy2(src_local, dest_local)
             dest_rel = review_rel + "/" + clip
-            client.upload(src_local, cfg.remote_root.rstrip("/") + "/" + dest_rel)
+            client.upload(dest_local, cfg.remote_root.rstrip("/") + "/" + dest_rel)
             uploaded_rels.append(dest_rel)
             entries.append(R.manifest_entry(task, rec))
             R.record_collected(client, cfg.remote_root, task["id"], src_rel,
@@ -397,7 +404,6 @@ def cmd_build_review(args) -> int:
                   f"clip(s) + index.html")
             return 0
 
-        os.makedirs(review_local, exist_ok=True)
         man_local = os.path.join(review_local, "_review.json")
         idx_local = os.path.join(review_local, "index.html")
         with open(man_local, "w", encoding="utf-8") as fh:
