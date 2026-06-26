@@ -341,6 +341,80 @@ def cmd_syncsketch_sync(args) -> int:
     return 0
 
 
+def cmd_build_review(args) -> int:
+    """Collect the turntables waiting for review into a dated folder on the server,
+    write a clickable review sheet, and flag each as collected."""
+    import json
+
+    from . import tasks as T
+    from . import review as R
+    from . import ledger
+
+    cfg = ProjectConfig.load(args.config)
+    date_str = args.date or R.today_str()
+    local_root = cfg.resolved_local_root()
+    review_rel = R.review_dir_rel(date_str)
+    review_local = os.path.join(local_root, *review_rel.split("/"))
+
+    creds = SFTPCredentials.from_env(args.env)
+    # Read-only client even on --dry-run: we must read tasks to report what would
+    # collect. Writes (download/upload/record) are guarded by args.dry_run below.
+    with SFTPClient(creds) as client:
+        task_list = T.load_tasks(client, cfg.remote_root)
+        waiting = R.collectable(task_list, status=args.status)
+        if not waiting:
+            print(f"Nothing waiting for review (status '{args.status}').")
+            return 0
+        print(f"{len(waiting)} clip(s) for review {date_str}:")
+
+        entries = []
+        uploaded_rels = []
+        for task, rec in waiting:
+            src_rel = rec["turntable"]
+            clip = R.clip_name(rec)
+            print(f"  {task.get('id')}  ->  {clip}")
+            if args.dry_run:
+                entries.append(R.manifest_entry(task, rec))
+                continue
+            # Make sure the mp4 is on this machine, then copy it into the folder.
+            src_local = os.path.join(local_root, *src_rel.split("/"))
+            if not os.path.isfile(src_local):
+                try:
+                    client.download(cfg.remote_root.rstrip("/") + "/" + src_rel, src_local)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"    warning: could not fetch {src_rel} ({exc}); skipping.")
+                    continue
+            dest_rel = review_rel + "/" + clip
+            client.upload(src_local, cfg.remote_root.rstrip("/") + "/" + dest_rel)
+            uploaded_rels.append(dest_rel)
+            entries.append(R.manifest_entry(task, rec))
+            R.record_collected(client, cfg.remote_root, task["id"], src_rel,
+                               date_str, creds.user)
+
+        manifest = R.build_manifest(entries, date_str)
+        if args.dry_run:
+            print(f"(dry-run) would write {review_rel}/ with {manifest['count']} "
+                  f"clip(s) + index.html")
+            return 0
+
+        os.makedirs(review_local, exist_ok=True)
+        man_local = os.path.join(review_local, "_review.json")
+        idx_local = os.path.join(review_local, "index.html")
+        with open(man_local, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2)
+        with open(idx_local, "w", encoding="utf-8") as fh:
+            fh.write(R.render_index_html(manifest))
+        for local, name in ((man_local, "_review.json"), (idx_local, "index.html")):
+            dest_rel = review_rel + "/" + name
+            client.upload(local, cfg.remote_root.rstrip("/") + "/" + dest_rel)
+            uploaded_rels.append(dest_rel)
+        ledger.record_uploads(client, cfg.remote_root, creds.user, uploaded_rels)
+
+    print(f"\nReview built -> {cfg.remote_root}/{review_rel}\n"
+          f"  {manifest['count']} clip(s); open index.html to scrub the batch.")
+    return 0
+
+
 def _load_project_settings_for(cfg) -> dict:
     """project_settings.json for the show, from the local cache/synced copy."""
     import json
@@ -463,6 +537,14 @@ def build_parser() -> argparse.ArgumentParser:
     sss.add_argument("--login", required=True, help="SyncSketch service-account email")
     sss.add_argument("--api-key", required=True, help="SyncSketch API key")
     sss.set_defaults(func=cmd_syncsketch_setup)
+
+    br = sub.add_parser("build-review", parents=[common],
+                        help="collect dailies waiting for review into a dated folder")
+    br.add_argument("--date", default="",
+                    help="review session date (default: today, YYYY-MM-DD)")
+    br.add_argument("--status", default="review",
+                    help="task status to collect (default: review)")
+    br.set_defaults(func=cmd_build_review)
 
     return p
 
