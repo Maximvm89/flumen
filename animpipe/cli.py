@@ -398,11 +398,21 @@ def cmd_build_review(args) -> int:
             R.record_collected(client, cfg.remote_root, task["id"], src_rel,
                                date_str, creds.user)
 
-        manifest = R.build_manifest(entries, date_str)
         if args.dry_run:
-            print(f"(dry-run) would write {review_rel}/ with {manifest['count']} "
-                  f"clip(s) + index.html")
+            print(f"(dry-run) would add {len(entries)} clip(s) to {review_rel}/")
             return 0
+
+        # Cumulative: merge into any manifest already in this date's folder so the
+        # review accumulates across runs instead of being overwritten.
+        existing_clips = []
+        prev = client.read_text(
+            cfg.remote_root.rstrip("/") + "/" + review_rel + "/_review.json")
+        if prev:
+            try:
+                existing_clips = json.loads(prev).get("clips", [])
+            except ValueError:
+                pass
+        manifest = R.build_manifest(R.merge_clips(existing_clips, entries), date_str)
 
         man_local = os.path.join(review_local, "_review.json")
         idx_local = os.path.join(review_local, "index.html")
@@ -418,6 +428,48 @@ def cmd_build_review(args) -> int:
 
     print(f"\nReview built -> {cfg.remote_root}/{review_rel}\n"
           f"  {manifest['count']} clip(s); open index.html to scrub the batch.")
+    return 0
+
+
+def cmd_reset_review(args) -> int:
+    """Undo a review session: un-stamp the tasks collected that day and clear the
+    review folder, so 'build-review' can rebuild it from scratch."""
+    import shutil
+
+    from . import tasks as T
+    from . import review as R
+
+    cfg = ProjectConfig.load(args.config)
+    date_str = args.date or R.today_str()
+    review_rel = R.review_dir_rel(date_str)
+    base = cfg.remote_root.rstrip("/") + "/" + review_rel
+
+    creds = SFTPCredentials.from_env(args.env)
+    with SFTPClient(creds) as client:
+        cleared = 0
+        for task in T.load_tasks(client, cfg.remote_root):
+            n = R.clear_reviewed(task, date_str)
+            if n:
+                cleared += n
+                print(f"  un-stamp {task.get('id')} ({n})")
+                if not args.dry_run:
+                    T.save_task(client, cfg.remote_root, task, actor=creds.user)
+        removed = 0
+        if client.exists(base):
+            for e in client.listdir(base):
+                if not e["is_dir"]:
+                    removed += 1
+                    if not args.dry_run:
+                        client.remove(base + "/" + e["name"])
+        if args.dry_run:
+            print(f"(dry-run) would un-stamp {cleared} record(s) and remove "
+                  f"{removed} file(s) from {review_rel}/")
+            return 0
+        shutil.rmtree(os.path.join(cfg.resolved_local_root(), *review_rel.split("/")),
+                      ignore_errors=True)
+
+    print(f"Reset review {date_str}: un-stamped {cleared} record(s), cleared "
+          f"{removed} file(s). Run 'build-review' to rebuild.")
     return 0
 
 
@@ -551,6 +603,12 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--status", default="review",
                     help="task status to collect (default: review)")
     br.set_defaults(func=cmd_build_review)
+
+    rr = sub.add_parser("reset-review", parents=[common],
+                        help="undo a review session so build-review can redo it")
+    rr.add_argument("--date", default="",
+                    help="review session date to reset (default: today)")
+    rr.set_defaults(func=cmd_reset_review)
 
     return p
 

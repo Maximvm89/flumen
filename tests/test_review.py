@@ -85,6 +85,28 @@ def test_mark_reviewed_stamps_all_duplicate_records():
     assert R.collectable([task]) == []  # nothing left after stamping
 
 
+def test_merge_clips_dedupes_and_accumulates():
+    existing = [{"clip": "a.mp4", "entity": "x"}]
+    new = [{"clip": "a.mp4", "entity": "x"},   # dup -> dropped
+           {"clip": "b.mp4", "entity": "y"}]   # new -> kept
+    merged = R.merge_clips(existing, new)
+    assert [c["clip"] for c in merged] == ["a.mp4", "b.mp4"]
+
+
+def test_clear_reviewed_by_date_and_all():
+    task = tasks.new_task("asset", "characters/frankenstein", "model")
+    task["publishes"] = [
+        {"turntable": "a.mp4", "reviewed": "2026-06-26"},
+        {"turntable": "b.mp4", "reviewed": "2026-06-25"},
+        {"turntable": "c.mp4"},
+    ]
+    assert R.clear_reviewed(task, "2026-06-26") == 1
+    assert "reviewed" not in task["publishes"][0]
+    assert task["publishes"][1]["reviewed"] == "2026-06-25"  # other date untouched
+    assert R.clear_reviewed(task) == 1  # None -> clears the remaining stamp
+    assert all("reviewed" not in r for r in task["publishes"])
+
+
 def test_build_manifest_sorted_and_counted():
     e1 = {"entity": "props/axe", "step": "model"}
     e2 = {"entity": "characters/frankenstein", "step": "model"}

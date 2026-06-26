@@ -70,6 +70,19 @@ def manifest_entry(task: dict, rec: dict) -> dict:
     }
 
 
+def merge_clips(existing: list[dict], new: list[dict]) -> list[dict]:
+    """Union of clip entries, de-duplicated by clip filename (existing kept first).
+    Lets a day's review accumulate across multiple build-review runs instead of
+    each run overwriting the manifest with only its own batch."""
+    out = list(existing or [])
+    seen = {c.get("clip") for c in out}
+    for c in new or []:
+        if c.get("clip") not in seen:
+            out.append(c)
+            seen.add(c.get("clip"))
+    return out
+
+
 def build_manifest(entries: list[dict], date_str: str) -> dict:
     ordered = sorted(entries, key=lambda e: (e.get("entity", ""), e.get("step", "")))
     return {"date": date_str, "count": len(ordered), "clips": ordered}
@@ -122,6 +135,18 @@ def mark_reviewed(task: dict, turntable_rel: str, date_str: str) -> bool:
             rec["reviewed"] = date_str
             hit = True
     return hit
+
+
+def clear_reviewed(task: dict, date_str: str | None = None) -> int:
+    """Remove the `reviewed` stamp from publish records (all, or only those
+    collected on `date_str`). Returns how many were cleared. Mutates in place.
+    Used by reset-review to let a day's batch be rebuilt from scratch."""
+    n = 0
+    for rec in task.get("publishes") or []:
+        if "reviewed" in rec and (date_str is None or rec.get("reviewed") == date_str):
+            del rec["reviewed"]
+            n += 1
+    return n
 
 
 def record_collected(sftp, remote_root: str, task_id: str, turntable_rel: str,
