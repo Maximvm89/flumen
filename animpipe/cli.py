@@ -344,94 +344,42 @@ def cmd_syncsketch_sync(args) -> int:
 def cmd_build_review(args) -> int:
     """Collect the turntables waiting for review into a dated folder on the server,
     write a clickable review sheet, and flag each as collected."""
-    import json
-    import shutil
-
     from . import tasks as T
     from . import review as R
-    from . import ledger
 
     cfg = ProjectConfig.load(args.config)
     date_str = args.date or R.today_str()
-    local_root = cfg.resolved_local_root()
-    review_rel = R.review_dir_rel(date_str)
-    review_local = os.path.join(local_root, *review_rel.split("/"))
-
     creds = SFTPCredentials.from_env(args.env)
-    # Read-only client even on --dry-run: we must read tasks to report what would
-    # collect. Writes (download/upload/record) are guarded by args.dry_run below.
-    with SFTPClient(creds) as client:
-        task_list = T.load_tasks(client, cfg.remote_root)
-        waiting = R.collectable(task_list, status=args.status)
+
+    if args.dry_run:
+        # Read-only: just report what would collect.
+        with SFTPClient(creds) as client:
+            waiting = R.collectable(T.load_tasks(client, cfg.remote_root),
+                                    status=args.status)
         if not waiting:
             print(f"Nothing waiting for review (status '{args.status}').")
             return 0
         print(f"{len(waiting)} clip(s) for review {date_str}:")
-        if not args.dry_run:
-            os.makedirs(review_local, exist_ok=True)
-
-        entries = []
-        uploaded_rels = []
         for task, rec in waiting:
-            src_rel = rec["turntable"]
-            clip = R.clip_name(rec)
-            print(f"  {task.get('id')}  ->  {clip}")
-            if args.dry_run:
-                entries.append(R.manifest_entry(task, rec))
-                continue
-            # Make sure the mp4 is on this machine, then place a copy IN the review
-            # folder (next to index.html) so the local folder plays on its own.
-            src_local = os.path.join(local_root, *src_rel.split("/"))
-            if not os.path.isfile(src_local):
-                try:
-                    client.download(cfg.remote_root.rstrip("/") + "/" + src_rel, src_local)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"    warning: could not fetch {src_rel} ({exc}); skipping.")
-                    continue
-            dest_local = os.path.join(review_local, clip)
-            if os.path.abspath(dest_local) != os.path.abspath(src_local):
-                shutil.copy2(src_local, dest_local)
-            dest_rel = review_rel + "/" + clip
-            client.upload(dest_local, cfg.remote_root.rstrip("/") + "/" + dest_rel)
-            uploaded_rels.append(dest_rel)
-            entries.append(R.manifest_entry(task, rec))
-            R.record_collected(client, cfg.remote_root, task["id"], src_rel,
-                               date_str, creds.user)
+            print(f"  {task.get('id')}  ->  {R.clip_name(rec)}")
+        print(f"(dry-run) would add {len(waiting)} clip(s) to "
+              f"{R.review_dir_rel(date_str)}/")
+        return 0
 
-        if args.dry_run:
-            print(f"(dry-run) would add {len(entries)} clip(s) to {review_rel}/")
-            return 0
-
-        # Cumulative: merge into any manifest already in this date's folder so the
-        # review accumulates across runs instead of being overwritten.
-        existing_clips = []
-        prev = client.read_text(
-            cfg.remote_root.rstrip("/") + "/" + review_rel + "/_review.json")
-        if prev:
-            try:
-                existing_clips = json.loads(prev).get("clips", [])
-            except ValueError:
-                pass
-        manifest = R.build_manifest(R.merge_clips(existing_clips, entries), date_str)
-
-        man_local = os.path.join(review_local, "_review.json")
-        idx_local = os.path.join(review_local, "index.html")
-        with open(man_local, "w", encoding="utf-8") as fh:
-            json.dump(manifest, fh, indent=2)
-        with open(idx_local, "w", encoding="utf-8") as fh:
-            fh.write(R.render_index_html(manifest))
-        for local, name in ((man_local, "_review.json"), (idx_local, "index.html")):
-            dest_rel = review_rel + "/" + name
-            client.upload(local, cfg.remote_root.rstrip("/") + "/" + dest_rel)
-            uploaded_rels.append(dest_rel)
-        ledger.record_uploads(client, cfg.remote_root, creds.user, uploaded_rels)
-
-    print(f"\nReview built -> {cfg.remote_root}/{review_rel}\n"
-          f"  local: {review_local}\n"
-          f"  {manifest['count']} clip(s); open index.html to scrub the batch.")
+    with SFTPClient(creds) as client:
+        res = R.build_review_session(
+            client, remote_root=cfg.remote_root, project_name=cfg.name,
+            local_root=cfg.resolved_local_root(), username=creds.user,
+            date_str=date_str, status=args.status, log=print)
+    if not res["collected"]:
+        print(f"Nothing waiting for review (status '{args.status}').")
+        return 0
+    print(f"\nReview built -> {cfg.remote_root}/{res['folder_rel']}\n"
+          f"  local: {res['folder_local']}\n"
+          f"  {res['count']} clip(s); open index.html to scrub the batch.")
     if getattr(args, "open", False):
         from . import clipboard
-        clipboard.reveal(review_local)
+        clipboard.reveal(res["folder_local"])
     return 0
 
 

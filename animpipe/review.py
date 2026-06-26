@@ -161,3 +161,81 @@ def record_collected(sftp, remote_root: str, task_id: str, turntable_rel: str,
         return False
     tasks.save_task(sftp, remote_root, task, actor=username)
     return True
+
+
+def build_review_session(sftp, *, remote_root: str, project_name: str,
+                         local_root: str, username: str, date_str: str,
+                         status: str = "review", log=None) -> dict:
+    """Collect the turntables waiting for review into the dated folder, copy them
+    in locally, upload them + a cumulative index.html/_review.json, and stamp each
+    publish reviewed=<date>. Shared by the CLI and the Workspace app so both behave
+    identically. `log` (optional callable) gets a line per collected clip.
+
+    Returns {date, count (total in the session), collected (new clip names this
+    run), folder_rel, folder_local}.
+    """
+    import glob  # noqa: F401 — kept for symmetry with callers that may glob after
+    import json
+    import shutil
+
+    from . import tasks, ledger
+
+    def _log(msg):
+        if log:
+            log(msg)
+
+    review_rel = review_dir_rel(date_str)
+    review_local = os.path.join(local_root, *review_rel.split("/"))
+    result = {"date": date_str, "count": 0, "collected": [],
+              "folder_rel": review_rel, "folder_local": review_local}
+
+    waiting = collectable(tasks.load_tasks(sftp, remote_root), status=status)
+    if not waiting:
+        return result
+
+    os.makedirs(review_local, exist_ok=True)
+    entries, uploaded = [], []
+    for task, rec in waiting:
+        src_rel = rec["turntable"]
+        clip = clip_name(rec)
+        src_local = os.path.join(local_root, *src_rel.split("/"))
+        if not os.path.isfile(src_local):
+            try:
+                sftp.download(remote_root.rstrip("/") + "/" + src_rel, src_local)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"warning: could not fetch {src_rel} ({exc}); skipping.")
+                continue
+        dest_local = os.path.join(review_local, clip)
+        if os.path.abspath(dest_local) != os.path.abspath(src_local):
+            shutil.copy2(src_local, dest_local)
+        dest_rel = review_rel + "/" + clip
+        sftp.upload(dest_local, remote_root.rstrip("/") + "/" + dest_rel)
+        uploaded.append(dest_rel)
+        entries.append(manifest_entry(task, rec))
+        record_collected(sftp, remote_root, task["id"], src_rel, date_str, username)
+        _log(f"  {task.get('id')}  ->  {clip}")
+
+    # Cumulative: merge into any manifest already in the folder.
+    existing = []
+    prev = sftp.read_text(remote_root.rstrip("/") + "/" + review_rel + "/_review.json")
+    if prev:
+        try:
+            existing = json.loads(prev).get("clips", [])
+        except ValueError:
+            pass
+    manifest = build_manifest(merge_clips(existing, entries), date_str)
+
+    man_local = os.path.join(review_local, "_review.json")
+    idx_local = os.path.join(review_local, "index.html")
+    with open(man_local, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    with open(idx_local, "w", encoding="utf-8") as fh:
+        fh.write(render_index_html(manifest))
+    for local, name in ((man_local, "_review.json"), (idx_local, "index.html")):
+        sftp.upload(local, remote_root.rstrip("/") + "/" + review_rel + "/" + name)
+        uploaded.append(review_rel + "/" + name)
+    ledger.record_uploads(sftp, remote_root, username, uploaded)
+
+    result["count"] = manifest["count"]
+    result["collected"] = [e["clip"] for e in entries]
+    return result

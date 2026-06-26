@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 from animpipe.config import ProjectConfig, SFTPCredentials, CACHED_CONFIG
 from animpipe.sftp import SFTPClient
 from animpipe import tasks as tasksmod
+from animpipe import review as reviewmod
+from animpipe import clipboard as clipboardmod
 from . import core
 
 SERVER_BG, SERVER_FG = QColor(250, 238, 218), QColor(133, 79, 11)
@@ -107,6 +109,7 @@ class MainWindow(QMainWindow):
         # Auto-load shortly after the window appears.
         QTimer.singleShot(150, self._load_tasks)
         QTimer.singleShot(200, self._load_root)
+        QTimer.singleShot(250, self._refresh_review)
 
     # ---- connection (persistent, serialized via lock) -----------------------
     def _conn_do(self, fn):
@@ -170,6 +173,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs, 1)
         self.tabs.addTab(self._build_tasks_page(), "Tasks")
+        self.tabs.addTab(self._build_dailies_page(), "Dailies")
         self.tabs.addTab(self._build_files_page(), "Files")
         self.tabs.setCurrentIndex(0)  # Tasks is the default view
 
@@ -306,6 +310,154 @@ class MainWindow(QMainWindow):
         rowops.addWidget(b_apply_status)
         tl.addLayout(rowops)
         return page
+
+    # ---- dailies / review ---------------------------------------------------
+    def _build_dailies_page(self) -> QWidget:
+        page = QWidget()
+        dl = QVBoxLayout(page)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Review date:"))
+        self.ed_review_date = QLineEdit(reviewmod.today_str())
+        self.ed_review_date.setMaximumWidth(120)
+        self.ed_review_date.editingFinished.connect(self._refresh_review)
+        top.addWidget(self.ed_review_date)
+        self.b_review_build = QPushButton("Build / Update Review")
+        self.b_review_build.setToolTip(
+            "Collect the turntables of tasks in 'review' status into this day's "
+            "folder, and flag them as collected.")
+        self.b_review_build.clicked.connect(self._build_review)
+        top.addWidget(self.b_review_build)
+        top.addStretch(1)
+        self.b_review_refresh = QPushButton("Refresh")
+        self.b_review_refresh.clicked.connect(self._refresh_review)
+        top.addWidget(self.b_review_refresh)
+        dl.addLayout(top)
+
+        self.lbl_review = QLabel("—")
+        self.lbl_review.setStyleSheet("color:#666;")
+        dl.addWidget(self.lbl_review)
+
+        self.review_list = QTableWidget(0, 1)
+        self.review_list.setHorizontalHeaderLabels(["Clip"])
+        self.review_list.horizontalHeader().setStretchLastSection(True)
+        self.review_list.verticalHeader().setVisible(False)
+        self.review_list.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.review_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.review_list.itemDoubleClicked.connect(lambda *_: self._copy_review_clip())
+        dl.addWidget(self.review_list, 1)
+
+        ops = QHBoxLayout()
+        self.b_review_open = QPushButton("Open Folder")
+        self.b_review_open.setToolTip("Open the review folder in Finder/Explorer to "
+                                      "drag clips into SyncSketch.")
+        self.b_review_open.clicked.connect(self._open_review_folder)
+        self.b_review_copy = QPushButton("Copy Clip to Clipboard")
+        self.b_review_copy.setToolTip("Copy the selected clip so SyncSketch ▸ MEDIA "
+                                      "▸ Upload from ▸ Clipboard can paste it.")
+        self.b_review_copy.clicked.connect(self._copy_review_clip)
+        ops.addWidget(self.b_review_open)
+        ops.addWidget(self.b_review_copy)
+        ops.addStretch(1)
+        dl.addLayout(ops)
+        return page
+
+    def _review_local_dir(self) -> str | None:
+        if not self.cfg:
+            return None
+        date_str = self.ed_review_date.text().strip() or reviewmod.today_str()
+        return os.path.join(self.cfg.resolved_local_root(),
+                            *reviewmod.review_dir_rel(date_str).split("/"))
+
+    def _refresh_review(self):
+        import glob
+        self.review_list.setRowCount(0)
+        folder = self._review_local_dir()
+        if not folder:
+            self.lbl_review.setText("Sign in to use dailies review.")
+            return
+        clips = sorted(glob.glob(os.path.join(folder, "*.mp4")))
+        self.review_list.setRowCount(len(clips))
+        for i, c in enumerate(clips):
+            item = QTableWidgetItem(os.path.basename(c))
+            item.setData(Qt.UserRole, c)
+            self.review_list.setItem(i, 0, item)
+        if clips:
+            self.lbl_review.setText(f"{len(clips)} clip(s) in {folder}")
+        elif os.path.isdir(folder):
+            self.lbl_review.setText(f"No clips yet in {folder}")
+        else:
+            self.lbl_review.setText("No review built for this date yet — "
+                                    "click 'Build / Update Review'.")
+
+    def _build_review(self):
+        if not self.cfg:
+            return
+        date_str = self.ed_review_date.text().strip() or reviewmod.today_str()
+        user = self._creds_user_safe()
+        remote, pname = self.cfg.remote_root, self.cfg.name
+        local_root = self.cfg.resolved_local_root()
+        self.b_review_build.setEnabled(False)
+        self.status.showMessage(f"Building review {date_str}…")
+
+        def work():
+            return self._conn_do(lambda c: reviewmod.build_review_session(
+                c, remote_root=remote, project_name=pname, local_root=local_root,
+                username=user, date_str=date_str))
+
+        def done(res):
+            self.b_review_build.setEnabled(True)
+            n_new = len(res.get("collected") or [])
+            if n_new:
+                self.status.showMessage(
+                    f"Review {date_str}: added {n_new} clip(s) "
+                    f"({res.get('count', 0)} total).")
+            else:
+                self.status.showMessage(
+                    f"Review {date_str}: nothing new waiting for review.")
+            self._refresh_review()
+
+        job = Job(work)
+        self._jobs.append(job)
+
+        def _fail(m, j=job):
+            if j in self._jobs:
+                self._jobs.remove(j)
+            self.b_review_build.setEnabled(True)
+            self._on_error(m)
+
+        job.done.connect(lambda r, j=job: (
+            self._jobs.remove(j) if j in self._jobs else None, done(r)))
+        job.failed.connect(_fail)
+        job.start()
+
+    def _open_review_folder(self):
+        folder = self._review_local_dir()
+        if folder and os.path.isdir(folder):
+            clipboardmod.reveal(folder)
+        else:
+            QMessageBox.information(self, "No folder",
+                                    "Build the review first (no local folder yet).")
+
+    def _selected_review_clip(self) -> str | None:
+        rows = self.review_list.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.review_list.item(rows[0].row(), 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _copy_review_clip(self):
+        clip = self._selected_review_clip()
+        if not clip:
+            QMessageBox.information(self, "No clip selected",
+                                    "Select a clip in the list first.")
+            return
+        if clipboardmod.copy_file(clip):
+            self.status.showMessage(
+                f"Copied {os.path.basename(clip)} — paste in SyncSketch "
+                "(MEDIA ▸ Upload from ▸ Clipboard).")
+        else:
+            self.status.showMessage("Could not copy to clipboard on this platform.")
 
     # ---- config / creds -----------------------------------------------------
     def _load_config(self):
