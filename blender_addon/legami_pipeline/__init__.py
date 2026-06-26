@@ -39,6 +39,9 @@ def register():
     bpy.types.WindowManager.legami_render_turntable = bpy.props.BoolProperty(
         name="Render turntable", default=True,
         description="After publishing a model, render a turntable video to dailies")
+    bpy.types.WindowManager.legami_upload_syncsketch = bpy.props.BoolProperty(
+        name="Upload to SyncSketch", default=True,
+        description="Also push the turntable to SyncSketch for review")
     # Add a "Legami" menu to the top menu bar (next to Help).
     bpy.types.TOPBAR_MT_editor_menus.append(_ui.draw_menu)
 
@@ -47,6 +50,7 @@ def unregister():
     bpy.types.TOPBAR_MT_editor_menus.remove(_ui.draw_menu)
     del bpy.types.WindowManager.legami_publish_desc
     del bpy.types.WindowManager.legami_render_turntable
+    del bpy.types.WindowManager.legami_upload_syncsketch
     for cls in reversed(_ALL_CLASSES):
         bpy.utils.unregister_class(cls)
 

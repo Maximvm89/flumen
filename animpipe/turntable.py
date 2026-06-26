@@ -123,7 +123,8 @@ def _load_project_settings(local_root: str) -> dict:
 
 
 def run_turntable(cfg, creds, model_path: str, task_id: str,
-                  dry_run: bool = False, preview: bool = False) -> int:
+                  dry_run: bool = False, preview: bool = False,
+                  syncsketch: bool = True) -> int:
     """Render a turntable from model_path and publish it to 07_dailies. With
     preview=True, open Blender interactively through the turntable camera (no
     render, no publish) so framing/scale can be dialed in."""
@@ -227,5 +228,16 @@ def run_turntable(cfg, creds, model_path: str, task_id: str,
     with SFTPClient(creds) as client:
         client.upload(out_local, cfg.remote_root.rstrip("/") + "/" + rel)
         record_turntable(client, cfg.remote_root, task_id, rel, creds.user)
+        # Best-effort: push the daily to SyncSketch for review. Never fails the
+        # render — a missing token/network just prints a warning.
+        if syncsketch:
+            from . import syncsketch as ss
+            settings = ss.SyncSketchSettings.from_project_settings(project_settings)
+            url = ss.try_upload_daily(
+                settings, project_name=cfg.name, video_local=out_local,
+                task=task, version_label=version_label, username=creds.user)
+            if url:
+                ss.record_review_url(client, cfg.remote_root, task_id, url, creds.user)
+                print(f"SyncSketch review -> {url}")
     print(f"published turntable -> {cfg.remote_root}/{rel}")
     return 0

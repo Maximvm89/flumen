@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from .config import CACHE_DIR, CACHED_CONFIG, SFTPCredentials
+from .config import CACHE_DIR, CACHED_CONFIG, CACHED_SYNCSKETCH, SFTPCredentials
 
 PIPELINE_SUBDIR = "02_pipeline"
 # Files that make up the project config on the server (config.yaml references the
@@ -38,4 +38,14 @@ def fetch_project_config(creds: SFTPCredentials, remote_root: str) -> str:
                 client.download(base + "/" + name, os.path.join(CACHE_DIR, name))
             except (IOError, OSError):
                 pass
+        # Optional: the shared SyncSketch service-account secret. Absent on shows
+        # that don't use SyncSketch — ignore quietly. Keep it user-only on disk.
+        try:
+            client.download(base + "/syncsketch.json", CACHED_SYNCSKETCH)
+            try:
+                os.chmod(CACHED_SYNCSKETCH, 0o600)
+            except OSError:
+                pass
+        except (IOError, OSError):
+            pass
     return CACHED_CONFIG

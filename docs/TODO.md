@@ -22,6 +22,14 @@ Running backlog of things to build/fix. Newest context at the top of each sectio
   for textures to travel with a published asset (pack-complete-on-publish, or sync
   a per-asset `textures/` area), so opening on Windows shows the real shading.
 
+## Rendering
+
+- [ ] **Turntable "shadow buffer full" error.** EEVEE runs out of shadow buffer
+  during the turntable render. Tune the turntable's shadow settings (shadow
+  pool/cube size, soft-shadow steps, or per-light shadow buffer) in
+  `animpipe/blender_turntable.py` and/or expose them in the `turntable` block of
+  `project_settings.json`, so the render doesn't overflow.
+
 ## Release / distribution
 
 - [ ] **First release tag.** Once the Windows build + sign-in flow is verified,

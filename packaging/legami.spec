@@ -17,7 +17,9 @@ ROOT = os.path.abspath(os.getcwd())
 datas = [(os.path.join(ROOT, "animpipe", "blender_turntable.py"), "animpipe")]
 datas += collect_data_files("imageio_ffmpeg")
 
-hiddenimports = ["paramiko", "yaml", "dotenv"]
+# syncsketch + requests are imported lazily (inside animpipe.syncsketch), so name
+# them explicitly to be sure the frozen bundle can push dailies to SyncSketch.
+hiddenimports = ["paramiko", "yaml", "dotenv", "syncsketch", "requests"]
 
 cli_a = Analysis(
     [os.path.join(ROOT, "packaging", "entry_animpipe.py")],
