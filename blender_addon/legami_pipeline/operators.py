@@ -728,18 +728,42 @@ class LEGAMI_OT_load_model(bpy.types.Operator):
 
     def _parent_under_locator(self, context, objs):
         name = publish_locator_name()
+        added = set(objs)
         loc = bpy.data.objects.get(name)
+        # A published model carries its OWN publish locator with the geometry
+        # already parented under it. Reuse that as the scene locator (and merge any
+        # duplicate) instead of re-rooting — never parent the locator to itself.
+        appended_locs = [o for o in objs
+                         if getattr(o, "type", "") == "EMPTY"
+                         and (o.name == name or o.name.split(".")[0] == name)]
+        if loc is None and appended_locs:
+            loc = appended_locs.pop(0)
+            try:
+                loc.name = name           # claim the canonical name
+            except Exception:  # noqa: BLE001
+                pass
         if loc is None:
             loc = bpy.data.objects.new(name, None)
             loc.empty_display_type = "PLAIN_AXES"
             loc.empty_display_size = 0.5
             context.scene.collection.objects.link(loc)
-        added = set(objs)
+        for dup in appended_locs:
+            if dup is loc:
+                continue
+            for child in list(dup.children):
+                child.parent = loc
+            bpy.data.objects.remove(dup, do_unlink=True)
+            added.discard(dup)
         for o in objs:
-            # Re-root only the model's own top-level objects, preserving its
-            # internal hierarchy.
-            if o.parent is None or o.parent not in added:
-                o.parent = loc
+            # Re-root only the model's top-level geometry, preserving its internal
+            # hierarchy; skip the locator itself and any non-geometry extras.
+            if o is loc or o not in added:
+                continue
+            if getattr(o, "type", "") not in ("MESH", "EMPTY"):
+                continue
+            if o.parent is not None and o.parent in added:
+                continue
+            o.parent = loc
 
 
 class LEGAMI_OT_preview_turntable(bpy.types.Operator):
