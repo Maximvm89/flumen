@@ -434,10 +434,28 @@ def run_template_mode():
     if _PREVIEW:
         _preview_setup(scene)
         return
+    _boost_shadows(scene)
     frames_dir = _png_output(scene)
     bpy.ops.render.render(animation=True)
     _write_meta(frames_dir, scene)
     print("[Legami] template turntable frames rendered to", frames_dir)
+
+
+def _boost_shadows(scene):
+    """EEVEE Next renders a virtual shadow‑map atlas; a busy template (several
+    lights) + a shaded asset can overflow it → 'Shadow buffer full (… / 2048)' and
+    dropped shadows. Bump the shadow pool to the largest available size."""
+    ee = getattr(scene, "eevee", None)
+    if not ee or not hasattr(ee, "shadow_pool_size"):
+        return
+    try:
+        items = [i.identifier for i in
+                 ee.bl_rna.properties["shadow_pool_size"].enum_items]
+        if items:
+            ee.shadow_pool_size = items[-1]   # largest pool
+            print(f"[Legami] shadow pool -> {items[-1]}")
+    except Exception as exc:  # noqa: BLE001
+        print("[Legami] could not raise shadow pool:", exc)
 
 
 def _set_engine(scene, want):
@@ -523,6 +541,7 @@ def build_and_render():
     if _PREVIEW:
         _preview_setup(scene)
         return
+    _boost_shadows(scene)
     frames_dir = _png_output(scene)
     bpy.ops.render.render(animation=True)
     _write_meta(frames_dir, scene)
