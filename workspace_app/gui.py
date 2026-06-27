@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import platform
 import sys
 import threading
+import webbrowser
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QBrush, QColor, QAction
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QFileDialog, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QMessageBox, QAbstractItemView, QGroupBox, QTabWidget,
     QComboBox, QTableWidget, QTableWidgetItem, QDialog, QFormLayout,
-    QDialogButtonBox, QInputDialog, QMenu,
+    QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox,
 )
 
 from animpipe.config import ProjectConfig, SFTPCredentials, CACHED_CONFIG
@@ -29,7 +31,10 @@ from animpipe.sftp import SFTPClient
 from animpipe import tasks as tasksmod
 from animpipe import review as reviewmod
 from animpipe import clipboard as clipboardmod
+from animpipe import bugreport
+from animpipe.version import get_version
 from . import core
+from . import applog
 
 SERVER_BG, SERVER_FG = QColor(250, 238, 218), QColor(133, 79, 11)
 LOCAL_BG, LOCAL_FG = QColor(230, 241, 251), QColor(12, 68, 124)
@@ -145,6 +150,11 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self._pick_config)
         m.addAction(act)
 
+        h = self.menuBar().addMenu("Help")
+        report = QAction("Report a bug…", self)
+        report.triggered.connect(self._on_report_bug)
+        h.addAction(report)
+
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -179,6 +189,11 @@ class MainWindow(QMainWindow):
 
         self.status = self.statusBar()
         self.status.showMessage("Ready.")
+        self.b_report = QPushButton("Report a bug…")
+        self.b_report.setToolTip("Open a pre-filled GitHub issue with the app log "
+                                 "and a screenshot.")
+        self.b_report.clicked.connect(self._on_report_bug)
+        self.status.addPermanentWidget(self.b_report)
 
     def _build_files_page(self) -> QWidget:
         page = QWidget()
@@ -475,6 +490,60 @@ class MainWindow(QMainWindow):
                 "(MEDIA ▸ Upload from ▸ Clipboard).")
         else:
             self.status.showMessage("Could not copy to clipboard on this platform.")
+
+    # ---- bug report ---------------------------------------------------------
+    def _env_text(self) -> str:
+        plat = f"{platform.system()} {platform.release()}"
+        project = user = remote = local = ""
+        if self.cfg:
+            project = f"{self.cfg.name} [{self.cfg.code}]"
+            try:
+                local = self.cfg.resolved_local_root()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            creds = self._creds()
+            user, remote = creds.user, creds.remote_root or ""
+        except Exception:  # noqa: BLE001
+            pass
+        return bugreport.environment_text(
+            version=get_version(), platform_str=plat, project=project,
+            user=user, remote_root=remote, local_root=local)
+
+    def _on_report_bug(self):
+        # Grab the screen BEFORE the dialog covers it (best-effort).
+        shot = None
+        try:
+            screen = QApplication.instance().primaryScreen()
+            if screen:
+                shot = screen.grabWindow(0)
+        except Exception:  # noqa: BLE001
+            shot = None
+
+        dlg = BugReportDialog(shot, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        folder = os.path.join(os.path.expanduser("~"), ".legami", "bug_reports", ts)
+        os.makedirs(folder, exist_ok=True)
+        attached = []
+        if dlg.include_screenshot and shot is not None:
+            if shot.save(os.path.join(folder, "screenshot.png"), "PNG"):
+                attached.append("screenshot.png")
+        log_tail = ""
+        if dlg.include_log:
+            if applog.copy_full(applog.LOG_PATH, os.path.join(folder, "log.txt")):
+                attached.append("log.txt")
+            log_tail = applog.read_tail(applog.LOG_PATH, 200)
+
+        url, _ = bugreport.build_issue(
+            dlg.title, dlg.description, self._env_text(), log_tail, attached)
+        webbrowser.open(url)
+        clipboardmod.reveal(folder)
+        self.status.showMessage(
+            "Opened a pre-filled GitHub issue — drag log.txt/screenshot.png from the "
+            "folder into it, then Submit.")
 
     # ---- config / creds -----------------------------------------------------
     def _load_config(self):
@@ -1254,7 +1323,68 @@ class NewTaskDialog(QDialog):
         }
 
 
+class BugReportDialog(QDialog):
+    """Collect a bug report (title + description) and choose what to attach.
+    Mirrors NewTaskDialog. The screenshot was grabbed before this opened."""
+
+    def __init__(self, screenshot, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Report a bug")
+        self._has_shot = screenshot is not None
+        self.title = ""
+        self.description = ""
+        self.include_log = True
+        self.include_screenshot = self._has_shot
+
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+        self.ed_title = QLineEdit()
+        self.ed_title.setPlaceholderText("Short summary of the problem")
+        form.addRow("Title:", self.ed_title)
+        self.ed_desc = QPlainTextEdit()
+        self.ed_desc.setPlaceholderText(
+            "What happened? What did you expect? Steps to reproduce?")
+        self.ed_desc.setMinimumHeight(140)
+        form.addRow("Description:", self.ed_desc)
+        root.addLayout(form)
+
+        self.cb_log = QCheckBox("Attach app log (workspace.log)")
+        self.cb_log.setChecked(True)
+        root.addWidget(self.cb_log)
+        self.cb_shot = QCheckBox("Attach screenshot")
+        self.cb_shot.setChecked(self._has_shot)
+        self.cb_shot.setEnabled(self._has_shot)
+        root.addWidget(self.cb_shot)
+        if self._has_shot:
+            thumb = QLabel()
+            thumb.setPixmap(screenshot.scaledToWidth(360, Qt.SmoothTransformation))
+            thumb.setStyleSheet("border:1px solid #ccc;")
+            root.addWidget(thumb)
+
+        self.lbl_err = QLabel("")
+        self.lbl_err.setStyleSheet("color:#A32D2D;")
+        root.addWidget(self.lbl_err)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Open GitHub issue")
+        bb.accepted.connect(self._on_ok)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def _on_ok(self):
+        title = self.ed_title.text().strip()
+        if not title:
+            self.lbl_err.setText("Please enter a title.")
+            return
+        self.title = title
+        self.description = self.ed_desc.toPlainText()
+        self.include_log = self.cb_log.isChecked()
+        self.include_screenshot = self.cb_shot.isChecked()
+        self.accept()
+
+
 def main():
+    applog.setup_logging()
     app = QApplication(sys.argv)
     config = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
     win = MainWindow(config)
