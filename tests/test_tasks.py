@@ -228,3 +228,26 @@ def test_next_version_uses_history_max_not_count():
         {"files": [f"x/{base}_v003.blend"]},          # duplicate v003
     ]
     assert tasks.next_version(task, base) == 4         # max(3)+1, not count+1
+
+
+def test_published_versions_and_file_version():
+    assert tasks.file_version("a/frank_model_v007.fbx") == 7
+    assert tasks.file_version("no_version.blend") is None
+    task = {"publishes": [{"files": ["x_v001.blend", "x_v001.fbx"]},
+                          {"files": ["x_v002.blend"]}]}
+    assert tasks.published_versions(task) == {1, 2}
+
+
+def test_publish_task_refuses_to_overwrite_existing_version():
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/frank", "model"))
+    tasks.publish_task(s, "/r", "marco", ["/tmp/frank_model_v001.blend"], t["id"])
+    # Re-publishing the SAME version must raise, not silently overwrite/duplicate.
+    import pytest
+    with pytest.raises(ValueError, match="already published"):
+        tasks.publish_task(s, "/r", "marco", ["/tmp/frank_model_v001.blend"], t["id"])
+    # A new version is fine.
+    rels = tasks.publish_task(s, "/r", "marco", ["/tmp/frank_model_v002.blend"], t["id"])
+    assert rels and rels[0].endswith("frank_model_v002.blend")
+    reloaded = tasks.get_task(s, "/r", t["id"])
+    assert tasks.published_versions(reloaded) == {1, 2}

@@ -60,6 +60,26 @@ def get_task(sftp, remote_root: str, task_id: str) -> dict | None:
     return _load_one(sftp, remote_root, task_id)
 
 
+_VER_RE = re.compile(r"_v(\d+)\.[^.]+$")
+
+
+def file_version(path: str) -> int | None:
+    """Version number from a published file name like '…_v003.blend' -> 3."""
+    m = _VER_RE.search(path)
+    return int(m.group(1)) if m else None
+
+
+def published_versions(task: dict) -> set[int]:
+    """All version numbers already published for a task (across every file)."""
+    out = set()
+    for rec in task.get("publishes") or []:
+        for rel in rec.get("files") or []:
+            v = file_version(rel)
+            if v is not None:
+                out.add(v)
+    return out
+
+
 def next_version(task: dict, base: str, ext: str = ".blend") -> int:
     """Next publish version for <base>_vNNN<ext>, from the task's publish history
     (the authoritative record). Highest published version + 1 — so versions stay
@@ -107,6 +127,16 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
     task = get_task(sftp, remote_root, task_id)
     if not task:
         return None
+    # Hard guarantee: never overwrite an already-published version. If a client
+    # computed a stale version, refuse here (at the server boundary) rather than
+    # silently clobbering the existing publish — the caller re-runs to version up.
+    incoming = {file_version(_os.path.basename(f)) for f in local_files} - {None}
+    clash = sorted(incoming & published_versions(task))
+    if clash:
+        raise ValueError(
+            "version(s) " + ", ".join(f"v{v:03d}" for v in clash) +
+            f" already published for task {task_id}; refusing to overwrite. "
+            "Re-run publish to get the next version.")
     rels = []
     for f in local_files:
         rel = task_dir_rel(task) + "/publish/" + _os.path.basename(f)
