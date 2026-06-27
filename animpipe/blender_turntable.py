@@ -548,8 +548,21 @@ def build_and_render():
     print("[Legami] turntable frames rendered to", frames_dir)
 
 
+def uv_only():
+    """Fast path for a sheet‑only review: just dump the UV wireframe of the open
+    model's published geometry (no render). The model is opened directly, so keep
+    only the PUBLISH locator's meshes if present."""
+    loc = bpy.data.objects.get(os.environ.get("LEGAMI_TT_LOCATOR", "PUBLISH"))
+    meshes = ([o for o in loc.children_recursive if o.type == "MESH"] if loc
+              else [o for o in bpy.context.scene.objects if o.type == "MESH"])
+    _export_uv_segments(meshes)
+    print("[Legami] UV‑only export complete")
+
+
 try:
-    if os.environ.get("LEGAMI_TT_MODEL"):
+    if os.environ.get("LEGAMI_TT_UV_ONLY"):
+        uv_only()
+    elif os.environ.get("LEGAMI_TT_MODEL"):
         run_template_mode()
     else:
         build_and_render()

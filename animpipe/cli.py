@@ -396,7 +396,7 @@ def cmd_look_review(args) -> int:
         cfg, creds, task_id=args.task, entity=entity, base=base, version=version,
         model_path=model_local, look_blend=look_blend,
         manifest_path=manifest_local, blend_rel=blend_rel, hdri=hdri,
-        dry_run=args.dry_run)
+        sheet_only=args.sheet_only, dry_run=args.dry_run)
 
 
 def cmd_next_version(args) -> int:
@@ -681,6 +681,8 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--version", type=int, help="look version (default: latest)")
     lr.add_argument("--hdri", help="HDRI name under 05_library/hdri (default: "
                                    "project default, else neutral)")
+    lr.add_argument("--sheet-only", action="store_true",
+                    help="regenerate just the texture/UV sheet (skip the turntable)")
     lr.set_defaults(func=cmd_look_review)
 
     nv = sub.add_parser("next-version", parents=[common],

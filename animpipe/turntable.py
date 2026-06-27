@@ -96,15 +96,44 @@ def record_review_media(sftp, remote_root: str, task_id: str, blend_rel: str,
     return hit
 
 
+def _export_uv_only(cfg, model_path: str, uv_out: str) -> int:
+    """Open the model headless and dump its UV wireframe (no render) — the fast path
+    for a sheet‑only review."""
+    from .launcher import find_blender, _resolve_ocio
+    blender = find_blender(cfg.blender_path)
+    if not blender:
+        print("error: Blender not found for UV export.")
+        return 1
+    local_root = cfg.resolved_local_root()
+    settings = turntable_settings(_load_project_settings(local_root))
+    env = os.environ.copy()
+    ocio = _resolve_ocio(local_root)
+    if ocio:
+        env["BLENDER_OCIO"] = ocio
+    env["LEGAMI_TT_UV_ONLY"] = "1"
+    env["LEGAMI_LR_UV_OUT"] = uv_out
+    env["LEGAMI_TT_LOCATOR"] = (_load_project_settings(local_root).get("publish")
+                                or {}).get("locator") or "PUBLISH"
+    script = _bundled_path("blender_turntable.py")
+    try:
+        subprocess.run([blender, "--background", model_path, "--python", script],
+                       env=env, check=True)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print("error: UV export failed:", exc)
+        return 1
+
+
 def run_look_review(cfg, creds, *, task_id: str, entity: str, base: str,
                     version: int, model_path: str, look_blend: str,
                     manifest_path: str, blend_rel: str, hdri: str | None = None,
-                    dry_run: bool = False) -> int:
+                    sheet_only: bool = False, dry_run: bool = False) -> int:
     """Render a shaded look turntable + texture/UV sheet and publish both into
     07_dailies, attached to the look's publish record. The turntable REUSES the
     model turntable pipeline (run_turntable) — same template, framing and lighting —
     just with the look applied to the model. The sheet is built from the published
-    tiles + the UV wireframe the render dumps."""
+    tiles + the UV wireframe the render dumps. With sheet_only=True it skips the
+    (slow) turntable and just regenerates the texture/UV sheet."""
     import tempfile
     from .sftp import SFTPClient
     from . import texsheet
@@ -118,18 +147,24 @@ def run_look_review(cfg, creds, *, task_id: str, entity: str, base: str,
     uv_json = os.path.join(tempfile.gettempdir(), f"_lr_uv_{version_label}.json")
 
     if dry_run:
-        print(f"(dry-run) would render look review of {base} v{version:03d} on the "
-              f"model turntable template\n          turntable -> {tt_rel}\n"
-              f"          sheet     -> {sheet_rel}")
+        what = "texture/UV sheet only" if sheet_only else "turntable + sheet"
+        print(f"(dry-run) would render look review ({what}) of {base} v{version:03d}\n"
+              f"          sheet -> {sheet_rel}"
+              + ("" if sheet_only else f"\n          turntable -> {tt_rel}"))
         return 0
 
-    # 1) Shaded turntable via the SAME template/rig as model turntables.
-    rc = run_turntable(cfg, creds, model_path, task_id,
-                       version_label=version_label, look_blend=look_blend,
-                       manifest_path=manifest_path, uv_out=uv_json,
-                       record_blend_rel=blend_rel)
-    if rc:
-        return rc
+    # 1) Shaded turntable via the SAME template/rig as model turntables — unless
+    # we only want the sheet, in which case do a quick UV export (no render).
+    if sheet_only:
+        if _export_uv_only(cfg, model_path, uv_json) != 0:
+            print("warning: UV export failed; sheet will have no UV panel.")
+    else:
+        rc = run_turntable(cfg, creds, model_path, task_id,
+                           version_label=version_label, look_blend=look_blend,
+                           manifest_path=manifest_path, uv_out=uv_json,
+                           record_blend_rel=blend_rel)
+        if rc:
+            return rc
 
     # 2) Texture/UV sheet from the published tiles + the UV wireframe.
     entries = []
