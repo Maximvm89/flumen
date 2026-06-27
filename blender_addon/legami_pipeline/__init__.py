@@ -41,6 +41,15 @@ def _surface_startup():
     return None   # don't repeat
 
 
+def _color_startup():
+    """One-shot: align the opened file's color management with the project OCIO."""
+    try:
+        _ops.apply_project_color()
+    except Exception as exc:  # noqa: BLE001
+        print("[Legami] color management setup skipped:", exc)
+    return None   # don't repeat
+
+
 def register():
     for cls in _ALL_CLASSES:
         bpy.utils.register_class(cls)
@@ -60,6 +69,10 @@ def register():
     # Fresh surface task: start from a clean, shading-ready scene.
     if os.environ.get("LEGAMI_NEW_SURFACE"):
         bpy.app.timers.register(_surface_startup, first_interval=0.1)
+    # Launched from the Workspace app: align color management with the project
+    # OCIO so default-config files (sRGB/AgX) stop warning. Self-heals on save.
+    if os.environ.get("LEGAMI_PROJECT_ROOT"):
+        bpy.app.timers.register(_color_startup, first_interval=0.2)
 
 
 def unregister():

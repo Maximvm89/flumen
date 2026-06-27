@@ -733,6 +733,32 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def apply_project_color():
+    """Set every scene's display device + view transform to the project's color
+    management, so files authored with Blender's default names (sRGB/AgX/Standard)
+    stop warning under the project's ACES OCIO config. Color only — leaves render,
+    units and output untouched. Run at startup when launched from the Workspace app;
+    the file's stored names self-heal on its next save."""
+    root = settings_io.find_project_root(_pref_local_root())
+    data = settings_io.load_settings(root) or {}
+    cm = data.get("color_management") or {}
+    if not cm.get("display_device") and not cm.get("view_transform"):
+        return
+    for scene in bpy.data.scenes:
+        if cm.get("display_device"):
+            try:
+                scene.display_settings.display_device = cm["display_device"]
+            except Exception:  # noqa: BLE001
+                pass
+        if cm.get("view_transform"):
+            try:
+                scene.view_settings.view_transform = cm["view_transform"]
+            except Exception:  # noqa: BLE001
+                pass
+    print("[Legami] applied project color management to",
+          len(bpy.data.scenes), "scene(s)")
+
+
 def scaffold_surface_scene():
     """Set up a fresh surface (look-dev) file: a clean scene (no default
     cube/camera/light) in the Shading workspace with material-preview viewports.
