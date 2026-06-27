@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import types
 
@@ -364,8 +365,33 @@ def _texture_check_records():
             for img in _used_texture_images()]
 
 
-def _materialize_look_textures(textures_dir):
-    """Write every used texture into textures_dir as external file(s) — UDIM tiles
+def _images_of_materials(materials):
+    """The image textures actually referenced by these materials (walks node groups).
+    Used so a look publishes ONLY its own maps — not every stray/duplicate image
+    datablock that happens to be in the work file."""
+    seen, imgs, stack = set(), [], []
+    for mat in materials:
+        if mat and getattr(mat, "use_nodes", False) and mat.node_tree:
+            stack.append(mat.node_tree)
+    visited = set()
+    while stack:
+        nt = stack.pop()
+        if id(nt) in visited:
+            continue
+        visited.add(id(nt))
+        for nd in nt.nodes:
+            img = getattr(nd, "image", None)
+            if (img is not None and img.name not in seen
+                    and getattr(img, "source", "") in ("FILE", "TILED", "SEQUENCE")):
+                seen.add(img.name)
+                imgs.append(img)
+            if getattr(nd, "type", "") == "GROUP" and getattr(nd, "node_tree", None):
+                stack.append(nd.node_tree)
+    return imgs
+
+
+def _materialize_look_textures(textures_dir, materials):
+    """Write the look's textures into textures_dir as external file(s) — UDIM tiles
     via the '<UDIM>' token, plain/packed images as single files — repointing each
     image there so a subsequent libraries.write(path_remap='RELATIVE') bakes a
     '//textures/…' path. Returns (written_paths, manifest_entries, restore), where
@@ -373,35 +399,54 @@ def _materialize_look_textures(textures_dir):
     packed) so publishing is non-destructive."""
     os.makedirs(textures_dir, exist_ok=True)
     originals = {}     # img -> (orig filepath_raw, was_packed, external target)
-    entries, written = [], []
-    for img in _used_texture_images():
+    entries, written, done = [], [], set()
+    for img in _images_of_materials(materials):
         was_packed = bool(getattr(img, "packed_file", None))
         raw = getattr(img, "filepath_raw", "") or img.filepath
         ext = (os.path.splitext(raw)[1] or os.path.splitext(img.name)[1] or ".png")
         cs = getattr(getattr(img, "colorspace_settings", None), "name", "")
-        if getattr(img, "source", "") == "TILED":
+        tiled = getattr(img, "source", "") == "TILED"
+        if tiled:
             target = os.path.join(textures_dir,
                                   f"{textures.udim_stem(img.name)}.<UDIM>{ext}")
-            img.filepath_raw = target
-            _set_image_format(img, ext)
-            img.save()
-            files = [target.replace("<UDIM>", str(t.number)) for t in img.tiles]
+            tiles = [t.number for t in img.tiles]
         else:
-            stem = os.path.splitext(os.path.basename(img.name))[0]
-            target = os.path.join(textures_dir, f"{stem}{ext}")
+            target = os.path.join(textures_dir,
+                                  f"{os.path.splitext(os.path.basename(img.name))[0]}{ext}")
+            tiles = [None]
+
+        if was_packed:
+            # Packed: pixels are in memory — write them out, then drop the pack.
             img.filepath_raw = target
             _set_image_format(img, ext)
             img.save()
-            files = [target]
-        if was_packed:
             try:
-                img.unpack(method="REMOVE")   # drop the packed copy; keep external
+                img.unpack(method="REMOVE")
             except Exception:  # noqa: BLE001
                 pass
+            files = [target.replace("<UDIM>", str(t)) if t else target for t in tiles]
+        else:
+            # External (and possibly not loaded in headless): copy the source files
+            # straight across — img.save() would fail with 'no image data'.
+            src = bpy.path.abspath(raw)
+            files = []
+            for t in tiles:
+                s = src.replace("<UDIM>", str(t)) if t else src
+                d = target.replace("<UDIM>", str(t)) if t else target
+                if os.path.isfile(s):
+                    shutil.copy2(s, d)
+                    files.append(d)
+            img.filepath_raw = target        # repoint for the look .blend remap
+            try:
+                img.reload()                 # load from the copy so img.size is real
+            except Exception:  # noqa: BLE001
+                pass
+
         originals[img] = (raw, was_packed, target)
         w, h = (list(getattr(img, "size", [0, 0])) + [0, 0])[:2]
         for f in files:
-            if os.path.isfile(f):
+            if os.path.isfile(f) and f not in done:
+                done.add(f)
                 written.append(f)
                 entries.append(textures.texture_entry(
                     f, os.path.basename(f), w, h, cs, textures.sha1_file(f)))
@@ -597,6 +642,9 @@ class LEGAMI_OT_publish(bpy.types.Operator):
                                    "Workspace app's 'Open in Blender'.")
             return {"CANCELLED"}
         self._issues = _run_task_checks(task["step"], context)
+        if task.get("step") == "surface":
+            global _EXISTING_LOOKS
+            _EXISTING_LOOKS = _fetch_existing_looks(task["id"])
         return context.window_manager.invoke_props_dialog(
             self, width=480, title="Publish", confirm_text="Publish")
 
@@ -658,7 +706,8 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             materials, amap = _collect_look(context)
             textures_dir = os.path.join(publish_dir, "textures",
                                         f"{base}_v{version:03d}")
-            written, tex_entries, restore = _materialize_look_textures(textures_dir)
+            written, tex_entries, restore = _materialize_look_textures(
+                textures_dir, materials)
             try:
                 # Write ONLY the materials; RELATIVE remap bakes '//textures/…' paths.
                 bpy.data.libraries.write(pub_path, materials,
@@ -769,6 +818,27 @@ def apply_project_color():
                 pass
     print("[Legami] applied project color management to",
           len(bpy.data.scenes), "scene(s)")
+
+
+_EXISTING_LOOKS = []   # this asset's published look names, for the publish dropdown
+
+
+def look_name_search(self, context, edit_text):
+    """Suggest already-published look names (so a re-publish reuses a variant) while
+    still letting the artist type a brand-new name."""
+    et = (edit_text or "").lower()
+    return [n for n in _EXISTING_LOOKS if et in n.lower()] or list(_EXISTING_LOOKS)
+
+
+def _fetch_existing_looks(task_id):
+    cmd, td = _toolkit_cmd(["list-looks", "--task", task_id])
+    if cmd is None:
+        return []
+    try:
+        out = subprocess.check_output(cmd, cwd=td, text=True)
+        return [l["look"] for l in json.loads(out.splitlines()[-1])]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 _HDRI_ITEMS = []   # kept referenced so Blender's EnumProperty doesn't GC the strings

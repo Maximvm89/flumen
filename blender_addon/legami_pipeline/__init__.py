@@ -62,8 +62,10 @@ def register():
         description="After publishing a model, render a turntable video to dailies")
     bpy.types.WindowManager.legami_look_name = bpy.props.StringProperty(
         name="Look", default="default",
-        description="Name of this look variant (e.g. default, damaged) — each "
-                    "name versions independently and is selectable downstream")
+        description="Name of this look variant (e.g. default, damaged) — pick an "
+                    "existing one to publish a new version, or type a new name. Each "
+                    "name versions independently and is selectable downstream",
+        search=_ops.look_name_search)
     bpy.types.WindowManager.legami_lookdev_hdri = bpy.props.EnumProperty(
         name="Review HDRI", items=_ops.lookdev_hdri_items,
         description="HDRI to light the look review turntable (from 05_library/hdri)")
