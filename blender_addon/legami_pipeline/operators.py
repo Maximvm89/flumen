@@ -360,9 +360,17 @@ def _image_missing(img):
 
 def _texture_check_records():
     """Lightweight records for checks.check_surface (plain namespaces so checks.py
-    stays bpy-free)."""
+    stays bpy-free). Only the textures the publish would actually ship are checked —
+    the materials on the meshes under the PUBLISH locator — NOT stray images left in
+    the file (e.g. the loaded model's original texture refs, which aren't synced on
+    every machine and would falsely block a publish)."""
+    loc = bpy.data.objects.get(publish_locator_name())
+    meshes = [o for o in (_descendants(loc) if loc else bpy.context.scene.objects)
+              if getattr(o, "type", "") == "MESH"]
+    materials = {s.material for o in meshes
+                 for s in (getattr(o, "material_slots", []) or []) if s.material}
     return [types.SimpleNamespace(name=img.name, is_missing=_image_missing(img))
-            for img in _used_texture_images()]
+            for img in _images_of_materials(materials)]
 
 
 def _images_of_materials(materials):
