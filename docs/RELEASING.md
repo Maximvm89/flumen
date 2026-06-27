@@ -6,7 +6,7 @@ step must run on Windows**, but tagging/publishing can be driven from anywhere.
 
 ## One-time setup on the Windows build machine
 - Python 3.11+ and the repo cloned, with a virtualenv.
-- Build deps: `pip install -r requirements.txt -r requirements-build.txt`
+- Build deps: `pip install -r requirements.txt -r requirements-gui.txt -r requirements-build.txt`
 - **Inno Setup 6** — `winget install JRSoftware.InnoSetup`
   (or download from https://jrsoftware.org/isdl.php). Adds `ISCC.exe`.
 
@@ -23,7 +23,7 @@ The version is stamped from `git describe --tags`, so **tag before building**.
 ```powershell
 git fetch --tags
 git checkout v0.1.0
-pip install -r requirements.txt -r requirements-build.txt   # if deps changed
+pip install -r requirements.txt -r requirements-gui.txt -r requirements-build.txt   # if deps changed
 python build.py --installer
 ```
 This builds the onedir bundle (`dist\Legami\`), stamps `VERSION`, then compiles
