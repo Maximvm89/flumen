@@ -50,6 +50,15 @@ def _color_startup():
     return None   # don't repeat
 
 
+def _addons_startup():
+    """One-shot: enable the project's extra add-ons (e.g. Add Camera Rigs)."""
+    try:
+        _ops.enable_project_addons()
+    except Exception as exc:  # noqa: BLE001
+        print("[Legami] add-on enable skipped:", exc)
+    return None   # don't repeat
+
+
 def register():
     for cls in _ALL_CLASSES:
         bpy.utils.register_class(cls)
@@ -78,6 +87,8 @@ def register():
     # OCIO so default-config files (sRGB/AgX) stop warning. Self-heals on save.
     if os.environ.get("LEGAMI_PROJECT_ROOT"):
         bpy.app.timers.register(_color_startup, first_interval=0.2)
+        # Enable the project's extra add-ons (Add Camera Rigs, etc.).
+        bpy.app.timers.register(_addons_startup, first_interval=0.1)
 
 
 def unregister():

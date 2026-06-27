@@ -804,6 +804,37 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def enable_project_addons():
+    """Enable extra Blender add-ons the project wants available — by default the
+    'Add Camera Rigs' add-on the layout step uses. The list is configurable via
+    project_settings 'addons' (module names). Matching is by the module's leaf name,
+    so it works whether an add-on is bundled ('add_camera_rigs') or a 4.2+ extension
+    ('bl_ext.<repo>.add_camera_rigs'). Add-ons must already be installed in Blender;
+    if one isn't, we log where to get it instead of failing."""
+    import addon_utils
+    data = settings_io.load_settings(
+        settings_io.find_project_root(_pref_local_root())) or {}
+    wanted = data.get("addons")
+    if wanted is None:
+        wanted = ["add_camera_rigs"]
+    if not wanted:
+        return
+    by_leaf = {}
+    for m in addon_utils.modules():
+        by_leaf.setdefault(m.__name__.rsplit(".", 1)[-1], m.__name__)
+    for name in wanted:
+        module = by_leaf.get(name.rsplit(".", 1)[-1])
+        if not module:
+            print(f"[Legami] add-on '{name}' isn't installed — get it from "
+                  f"Edit > Preferences > Get Extensions, then it'll auto-enable.")
+            continue
+        try:
+            addon_utils.enable(module, default_set=False)
+            print("[Legami] enabled add-on:", module)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Legami] could not enable {module}: {exc}")
+
+
 def apply_project_color():
     """Set every scene's display device + view transform to the project's color
     management, so files authored with Blender's default names (sRGB/AgX/Standard)
