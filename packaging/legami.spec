@@ -11,10 +11,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = os.path.abspath(os.getcwd())
 
-# Ship the headless Blender script as data under animpipe/ (turntable._bundled_path
-# looks for it at sys._MEIPASS/animpipe/), and the imageio-ffmpeg binary so MP4
-# encoding works on a machine with no system ffmpeg.
-datas = [(os.path.join(ROOT, "animpipe", "blender_turntable.py"), "animpipe")]
+# Ship the Blender-side scripts as data under animpipe/ (resolved at runtime via
+# sys._MEIPASS/animpipe/): the headless turntable render script AND the add-on
+# bootstrap the launcher passes to `blender --python` to auto-load the Legami menu.
+# Plus the imageio-ffmpeg binary so MP4 encoding works on a machine with no ffmpeg.
+datas = [(os.path.join(ROOT, "animpipe", "blender_turntable.py"), "animpipe"),
+         (os.path.join(ROOT, "animpipe", "blender_bootstrap.py"), "animpipe")]
 datas += collect_data_files("imageio_ffmpeg")
 
 # syncsketch + requests are imported lazily (inside animpipe.syncsketch), so name

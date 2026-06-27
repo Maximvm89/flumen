@@ -23,6 +23,16 @@ from .config import ProjectConfig, SFTPCredentials
 from .sftp import SFTPClient
 
 
+def _bootstrap_path() -> str:
+    """Path to blender_bootstrap.py (the script Blender runs to auto-load the
+    add-on). Shipped as data under animpipe/, so when frozen by PyInstaller it
+    lives at sys._MEIPASS/animpipe/; from source it's next to this module."""
+    name = "blender_bootstrap.py"
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "animpipe", name)
+    return os.path.join(os.path.dirname(__file__), name)
+
+
 def find_blender(explicit: str | None = None) -> str | None:
     """Locate the Blender executable. Priority: explicit path > LEGAMI_BLENDER
     env > OS-standard locations."""
@@ -147,9 +157,12 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
     elif open_file:
         print(f"warning: file to open not found: {open_file}", file=sys.stderr)
     # Auto-load the add-on for this session (no manual install needed).
-    bootstrap = os.path.join(os.path.dirname(__file__), "blender_bootstrap.py")
+    bootstrap = _bootstrap_path()
     if "LEGAMI_ADDON_DIR" in env and os.path.isfile(bootstrap):
         cmd += ["--python", bootstrap]
+    elif "LEGAMI_ADDON_DIR" in env:
+        print(f"warning: add-on bootstrap not found ({bootstrap}); the Legami menu "
+              f"won't auto-load.", file=sys.stderr)
     cmd += (extra_args or [])
     # Detach so closing the terminal doesn't kill Blender.
     subprocess.Popen(cmd, env=env)
