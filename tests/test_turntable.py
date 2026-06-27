@@ -52,3 +52,58 @@ def test_record_turntable_attaches_to_last_publish():
     assert reloaded["publishes"][-1]["turntable"] == rel
     from animpipe import ledger
     assert ledger.load_ledgers(s, "/r")[rel][0] == "marco"
+
+
+def test_run_look_review_dry_run(tmp_path, capsys):
+    import types
+    cfg = types.SimpleNamespace(resolved_local_root=lambda: str(tmp_path),
+                                remote_root="/r", blender_path=None)
+    rc = turntable.run_look_review(
+        cfg, creds=None, task_id="asset-characters_frank-surface",
+        entity="characters/frank", base="frank_surface_default", version=2,
+        model_path="/x/model.blend", look_blend="/x/look.blend",
+        manifest_path="/x/look.manifest.json",
+        blend_rel="03_assets/characters/frank/surface/publish/"
+                  "frank_surface_default_v002.blend",
+        hdri=None, dry_run=True)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert ("07_dailies/characters/frank/surface/"
+            "frank_surface_default_v002_turntable.mp4") in out
+    assert "frank_surface_default_v002_textures.png" in out
+    assert "neutral" in out
+
+
+def test_look_dailies_rel():
+    assert turntable.look_dailies_rel(
+        "characters/frankenstein", "frankenstein_surface_default_v001",
+        "turntable.mp4") == \
+        ("07_dailies/characters/frankenstein/surface/"
+         "frankenstein_surface_default_v001_turntable.mp4")
+    assert turntable.look_dailies_rel(
+        "characters/frankenstein", "frankenstein_surface_default_v001",
+        "textures.png").endswith("_v001_textures.png")
+
+
+def test_record_review_media_matches_the_right_look_record():
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r",
+                        tasks.new_task("asset", "characters/frank", "surface"))
+    # two looks published; review media must land on the SECOND one only
+    tasks.publish_task(s, "/r", "marco",
+                       ["/tmp/frank_surface_default_v001.blend"], t["id"])
+    rels = tasks.publish_task(s, "/r", "marco",
+                              ["/tmp/frank_surface_clean_v001.blend"], t["id"])
+    blend_rel = next(r for r in rels if r.endswith("frank_surface_clean_v001.blend"))
+    tt = "07_dailies/characters/frank/surface/frank_surface_clean_v001_turntable.mp4"
+    sheet = "07_dailies/characters/frank/surface/frank_surface_clean_v001_textures.png"
+    assert turntable.record_review_media(s, "/r", t["id"], blend_rel, "marco",
+                                         turntable=tt, sheet=sheet) is True
+    recs = tasks.get_task(s, "/r", t["id"])["publishes"]
+    clean = next(r for r in recs if any("clean" in f for f in r["files"]))
+    default = next(r for r in recs if any("default" in f for f in r["files"]))
+    assert clean.get("turntable") == tt and clean.get("sheet") == sheet
+    assert "turntable" not in default and "sheet" not in default   # untouched
+    # no matching record -> False
+    assert turntable.record_review_media(s, "/r", t["id"], "nope.blend", "marco",
+                                         turntable=tt) is False

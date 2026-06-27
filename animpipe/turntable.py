@@ -65,6 +65,134 @@ def record_turntable(sftp, remote_root: str, task_id: str, rel: str,
     return rel
 
 
+def look_dailies_rel(entity: str, version_label: str, suffix: str) -> str:
+    """Where a look-review artifact lands:
+    07_dailies/<entity>/surface/<version_label>_<suffix>."""
+    return f"07_dailies/{entity}/surface/{version_label}_{suffix}"
+
+
+def record_review_media(sftp, remote_root: str, task_id: str, blend_rel: str,
+                        username: str, *, turntable: str | None = None,
+                        sheet: str | None = None) -> bool:
+    """Attach review media (turntable mp4 and/or texture sheet) to the publish
+    record that produced `blend_rel` — matched by file, NOT 'latest', since several
+    looks may publish between renders. Returns True if a record matched."""
+    from . import tasks, ledger
+    task = tasks.get_task(sftp, remote_root, task_id)
+    if not task:
+        return False
+    hit = False
+    for rec in task.get("publishes") or []:
+        if blend_rel in (rec.get("files") or []):
+            if turntable:
+                rec["turntable"] = turntable
+            if sheet:
+                rec["sheet"] = sheet
+            hit = True
+    if hit:
+        tasks.save_task(sftp, remote_root, task, actor=username)
+        ledger.record_uploads(sftp, remote_root, username,
+                              [r for r in (turntable, sheet) if r])
+    return hit
+
+
+def run_look_review(cfg, creds, *, task_id: str, entity: str, base: str,
+                    version: int, model_path: str, look_blend: str,
+                    manifest_path: str, blend_rel: str, hdri: str | None = None,
+                    dry_run: bool = False) -> int:
+    """Render a shaded look turntable + texture/UV sheet and publish both into
+    07_dailies, attached to the look's publish record. `base` is the look base
+    (e.g. 'frankenstein_surface_default'); textures live in
+    <look publish dir>/textures/<base>_vNNN/."""
+    import tempfile
+    from .sftp import SFTPClient
+    from .launcher import find_blender, _resolve_ocio
+    from . import texsheet
+
+    local_root = cfg.resolved_local_root()
+    version_label = f"{base}_v{version:03d}"
+    tt_rel = look_dailies_rel(entity, version_label, "turntable.mp4")
+    sheet_rel = look_dailies_rel(entity, version_label, "textures.png")
+    tt_local = os.path.join(local_root, *tt_rel.split("/"))
+    sheet_local = os.path.join(local_root, *sheet_rel.split("/"))
+    tiles_dir = os.path.join(os.path.dirname(look_blend), "textures", version_label)
+
+    settings = turntable_settings(_load_project_settings(local_root))
+
+    if dry_run:
+        print(f"(dry-run) would render look review of {base} v{version:03d}\n"
+              f"          turntable -> {tt_rel}\n          sheet     -> {sheet_rel}\n"
+              f"          hdri: {os.path.basename(hdri) if hdri else '(neutral)'}")
+        return 0
+
+    blender = find_blender(cfg.blender_path)
+    if not blender:
+        print("error: Blender not found for look-review render.")
+        return 1
+
+    frames_dir = os.path.join(os.path.dirname(tt_local), f"_lr_frames_{version_label}")
+    uv_json = os.path.join(tempfile.gettempdir(), f"_lr_uv_{version_label}.json")
+    env = os.environ.copy()
+    ocio = _resolve_ocio(local_root)
+    if ocio:
+        env["BLENDER_OCIO"] = ocio
+    env.update({
+        "LEGAMI_LR_MODEL": model_path,
+        "LEGAMI_LR_LOOK": look_blend,
+        "LEGAMI_LR_MANIFEST": manifest_path,
+        "LEGAMI_LR_HDRI": hdri or "",
+        "LEGAMI_LR_LOCATOR": (_load_project_settings(local_root).get("publish") or {})
+                              .get("locator") or "PUBLISH",
+        "LEGAMI_LR_UV_OUT": uv_json,
+        "LEGAMI_TT_OUTPUT": tt_local,
+        "LEGAMI_TT_FRAMES_DIR": frames_dir,
+        "LEGAMI_TT_FRAMES": str(settings["frames"]),
+        "LEGAMI_TT_RESX": str(settings["resolution_x"]),
+        "LEGAMI_TT_RESY": str(settings["resolution_y"]),
+        "LEGAMI_TT_FPS": str(settings["fps"]),
+        "LEGAMI_TT_ENGINE": str(settings["engine"]),
+        "LEGAMI_TT_VIEW": str(settings.get("view_transform", "")),
+    })
+
+    script = _bundled_path("blender_look_review.py")
+    print(f"Rendering look-review turntable ({base} v{version:03d})…")
+    subprocess.run([blender, "--background", "--python", script], env=env, check=True)
+
+    fps = _meta_fps(frames_dir, settings["fps"])
+    os.makedirs(os.path.dirname(tt_local), exist_ok=True)
+    ok = _encode_mp4(frames_dir, tt_local, fps)
+    _cleanup_dir(frames_dir)
+    if not ok or not os.path.isfile(tt_local):
+        print("error: look-review turntable encode produced no file.")
+        return 1
+
+    # Texture/UV sheet from the published tiles + the UV wireframe.
+    entries = []
+    if os.path.isfile(manifest_path):
+        try:
+            entries = json.load(open(manifest_path)).get("textures", [])
+        except ValueError:
+            entries = []
+    try:
+        texsheet.build_sheet(tiles_dir, entries, sheet_local,
+                             uv_segments=uv_json,
+                             title=f"{entity} · {base} · v{version:03d}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: texture sheet failed ({exc}); publishing turntable only.")
+        sheet_local = None
+
+    with SFTPClient(creds) as client:
+        client.upload(tt_local, cfg.remote_root.rstrip("/") + "/" + tt_rel)
+        sheet_arg = None
+        if sheet_local and os.path.isfile(sheet_local):
+            client.upload(sheet_local, cfg.remote_root.rstrip("/") + "/" + sheet_rel)
+            sheet_arg = sheet_rel
+        record_review_media(client, cfg.remote_root, task_id, blend_rel, creds.user,
+                            turntable=tt_rel, sheet=sheet_arg)
+    print(f"published look review -> {tt_rel}" + (f" + {sheet_rel}" if sheet_arg else ""))
+    return 0
+
+
 def _ffmpeg_exe() -> str:
     """Bundled ffmpeg (via imageio-ffmpeg) if available, else system ffmpeg."""
     try:

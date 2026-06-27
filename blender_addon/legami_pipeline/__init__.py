@@ -64,6 +64,9 @@ def register():
         name="Look", default="default",
         description="Name of this look variant (e.g. default, damaged) — each "
                     "name versions independently and is selectable downstream")
+    bpy.types.WindowManager.legami_lookdev_hdri = bpy.props.EnumProperty(
+        name="Review HDRI", items=_ops.lookdev_hdri_items,
+        description="HDRI to light the look review turntable (from 05_library/hdri)")
     # Add a "Legami" menu to the top menu bar (next to Help).
     bpy.types.TOPBAR_MT_editor_menus.append(_ui.draw_menu)
     # Fresh surface task: start from a clean, shading-ready scene.
@@ -80,6 +83,7 @@ def unregister():
     del bpy.types.WindowManager.legami_publish_desc
     del bpy.types.WindowManager.legami_render_turntable
     del bpy.types.WindowManager.legami_look_name
+    del bpy.types.WindowManager.legami_lookdev_hdri
     for cls in reversed(_ALL_CLASSES):
         bpy.utils.unregister_class(cls)
 

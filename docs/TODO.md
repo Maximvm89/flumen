@@ -16,20 +16,15 @@ Running backlog of things to build/fix. Newest context at the top of each sectio
 
 ## Review
 
-- [ ] **Surface/look review step (after testing the look publish).** The look
-  review needs to be richer than the model turntable. When a surface task is
-  published as a look, generate review media that shows the *shading*, not just the
-  silhouette:
-  - a **turntable of the shaded model** — apply the published look onto the model
-    (load model → `apply_look` → render), reusing the turntable pipeline;
-  - **texture/UV-tile contact sheets** — render or lay out each UDIM tile so the
-    reviewer can confirm the maps and tiles resolve correctly (no missing/magenta
-    tiles, right colorspaces);
-  - surface it in the Dailies tab alongside the existing turntable review, with the
-    same to_review/reviewed/approved status flow.
-  Think through the exact media + layout after the look publish is tested live.
-  (touches `animpipe/turntable.py`, the look apply path, `animpipe/review.py`,
-  `workspace_app/gui.py` Dailies tab)
+- [x] **Surface/look review step.** A surface look publish now auto-generates, in
+  the background: a **shaded turntable** (model + applied look, neutral-studio or
+  HDRI lookdev + grey/chrome balls) and a **texture/UV sheet** (each UDIM tile per
+  map, labeled + a UV-wireframe panel). Both attach to the look's publish record and
+  show in the Dailies tab (with a "Texture sheet" button) under the same
+  to_review/reviewed/approved flow. HDRIs come from `05_library/hdri` (project
+  default + per-look override at publish). `animpipe look-review` regenerates.
+  Follow-ups: per-channel AOV breakdown; render under multiple HDRIs; better
+  framing of asset-vs-balls.
 
 ## Assets / textures
 

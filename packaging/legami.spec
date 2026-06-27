@@ -16,13 +16,15 @@ ROOT = os.path.abspath(os.getcwd())
 # bootstrap the launcher passes to `blender --python` to auto-load the Legami menu.
 # Plus the imageio-ffmpeg binary so MP4 encoding works on a machine with no ffmpeg.
 datas = [(os.path.join(ROOT, "animpipe", "blender_turntable.py"), "animpipe"),
+         (os.path.join(ROOT, "animpipe", "blender_look_review.py"), "animpipe"),
          (os.path.join(ROOT, "animpipe", "blender_bootstrap.py"), "animpipe"),
          (os.path.join(ROOT, "packaging", "legami.png"), ".")]  # runtime window icon
 datas += collect_data_files("imageio_ffmpeg")
 
 ICON = os.path.join(ROOT, "packaging", "legami.ico")  # embedded in the .exe files
 
-hiddenimports = ["paramiko", "yaml", "dotenv"]
+hiddenimports = ["paramiko", "yaml", "dotenv", "PIL", "PIL.Image", "PIL.ImageDraw",
+                 "PIL.ImageFont"]
 
 cli_a = Analysis(
     [os.path.join(ROOT, "packaging", "entry_animpipe.py")],

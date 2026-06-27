@@ -2,3 +2,4 @@ paramiko>=3.4
 PyYAML>=6.0
 python-dotenv>=1.0
 imageio-ffmpeg>=0.4   # bundled ffmpeg for turntable MP4 encoding
+Pillow>=10.0          # texture/UV review sheet composition

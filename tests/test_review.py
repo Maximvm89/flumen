@@ -90,6 +90,35 @@ def test_set_review_status_roundtrip_on_server():
     assert reloaded["status"] == "done"
 
 
+def test_review_items_carry_sheet_and_kind():
+    surf = tasks.new_task("asset", "characters/frankenstein", "surface")
+    surf["publishes"] = [{
+        "turntable": "07_dailies/characters/frankenstein/surface/"
+                     "frankenstein_surface_default_v001_turntable.mp4",
+        "sheet": "07_dailies/characters/frankenstein/surface/"
+                 "frankenstein_surface_default_v001_textures.png",
+        "time": 100, "by": "marco",
+        "files": ["…/frankenstein_surface_default_v001.blend"]}]
+    model = tasks.new_task("asset", "characters/frankenstein", "model")
+    model["publishes"] = [{"turntable": _tt("characters/frankenstein",
+                                            "frankenstein_model_v004"),
+                           "time": 50, "by": "marco"}]
+    items = {i["kind"]: i for i in R.review_items([surf, model])}
+    assert items["look"]["sheet"].endswith("_textures.png")
+    assert items["model"]["sheet"] == ""           # model review has no sheet
+    assert items["look"]["kind"] == "look"
+
+
+def test_index_html_shows_sheet_image():
+    manifest = R.build_manifest([
+        {"entity": "characters/frank", "step": "surface", "version": "frank_surface_default_v001",
+         "by": "marco", "status": "to_review", "clip": "x_turntable.mp4",
+         "sheet": "07_dailies/characters/frank/surface/x_textures.png",
+         "source": "x", "time": 1, "description": "look", "kind": "look"}], "2026-06-27")
+    html = R.render_index_html(manifest)
+    assert "<img" in html and "x_textures.png" in html and "<video" in html
+
+
 def test_render_index_html_lists_items_and_status():
     manifest = R.build_manifest([
         {"entity": "characters/frankenstein", "step": "model",

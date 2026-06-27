@@ -78,6 +78,8 @@ def review_items(task_list: list[dict],
                 "version": version_from_turntable(rec.get("turntable", "")),
                 "clip": clip_name(rec),
                 "source": rec.get("turntable", ""),
+                "sheet": rec.get("sheet", ""),       # texture/UV sheet (looks)
+                "kind": "look" if task.get("step") == "surface" else "model",
                 "by": rec.get("by", ""),
                 "description": rec.get("description", ""),
                 "time": rec.get("time"),
@@ -122,9 +124,12 @@ def set_review_status(sftp, remote_root: str, task_id: str, turntable_rel: str,
 # ---- export (folder + clickable index.html) --------------------------------
 
 def manifest_entry(item: dict) -> dict:
-    return {k: item.get(k) for k in
-            ("task_id", "entity", "step", "version", "clip", "source", "by",
-             "description", "time", "status")}
+    e = {k: item.get(k) for k in
+         ("task_id", "entity", "step", "version", "clip", "source", "by",
+          "description", "time", "status", "kind")}
+    if item.get("sheet"):
+        e["sheet"] = os.path.basename(item["sheet"])   # copied beside the clip
+    return e
 
 
 def build_manifest(items: list[dict], date_str: str) -> dict:
@@ -149,12 +154,15 @@ def render_index_html(manifest: dict) -> str:
         meta = f"{status}  ·  by {c.get('by','') or '—'}"
         if c.get("description"):
             meta += f" — {c['description']}"
+        sheet_html = (f'\n    <br><img src="{_esc(c["sheet"])}" width="640" '
+                      f'style="margin-top:8px;border-radius:6px">'
+                      if c.get("sheet") else "")
         rows.append(
             f'  <figure>\n'
             f'    <figcaption><b>{_esc(title)}</b><br><small>{_esc(meta)}</small>'
             f'</figcaption>\n'
             f'    <video controls preload="metadata" width="640" '
-            f'src="{_esc(c.get("clip",""))}"></video>\n'
+            f'src="{_esc(c.get("clip",""))}"></video>{sheet_html}\n'
             f'  </figure>')
     body = "\n".join(rows) or "  <p>No clips in this review.</p>"
     return (
@@ -207,6 +215,24 @@ def write_review_folder(sftp, *, remote_root: str, local_root: str,
         sftp.upload(dest_local, remote_root.rstrip("/") + "/" + review_rel + "/" + clip)
         uploaded.append(review_rel + "/" + clip)
         _log(f"  {item.get('entity')}  ->  {clip}")
+
+        # A look item also carries a texture/UV sheet — bring it along.
+        sheet_rel = item.get("sheet")
+        if sheet_rel:
+            sheet_name = os.path.basename(sheet_rel)
+            sheet_src = os.path.join(local_root, *sheet_rel.split("/"))
+            if not os.path.isfile(sheet_src):
+                try:
+                    sftp.download(remote_root.rstrip("/") + "/" + sheet_rel, sheet_src)
+                except Exception:  # noqa: BLE001
+                    sheet_src = None
+            if sheet_src and os.path.isfile(sheet_src):
+                sheet_dest = os.path.join(review_local, sheet_name)
+                if os.path.abspath(sheet_dest) != os.path.abspath(sheet_src):
+                    shutil.copy2(sheet_src, sheet_dest)
+                sftp.upload(sheet_dest,
+                            remote_root.rstrip("/") + "/" + review_rel + "/" + sheet_name)
+                uploaded.append(review_rel + "/" + sheet_name)
 
     manifest = build_manifest(items, date_str)
     man_local = os.path.join(review_local, "_review.json")

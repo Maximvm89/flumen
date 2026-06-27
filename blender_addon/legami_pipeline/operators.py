@@ -608,6 +608,7 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             col.prop(context.window_manager, "legami_render_turntable")
         if task and task.get("step") == "surface":
             col.prop(context.window_manager, "legami_look_name", text="Look name")
+            col.prop(context.window_manager, "legami_lookdev_hdri", text="Review HDRI")
         col.separator()
         _draw_checks(col, self._issues)
         col.separator()
@@ -714,7 +715,7 @@ class LEGAMI_OT_publish(bpy.types.Operator):
 
         context.window_manager.legami_publish_desc = ""  # reset for next publish
 
-        # Optionally kick off a turntable render in the BACKGROUND (non-blocking).
+        # Kick off review media in the BACKGROUND (non-blocking).
         tt_msg = ""
         if (task.get("step") == "model"
                 and context.window_manager.legami_render_turntable):
@@ -725,6 +726,17 @@ class LEGAMI_OT_publish(bpy.types.Operator):
                 tt_msg = " Turntable rendering in background → dailies."
             except Exception as exc:  # noqa: BLE001
                 print("[Legami] could not start turntable:", exc)
+        elif task.get("step") == "surface":
+            try:
+                lr_args = ["look-review", "--task", task["id"], "--look", look_name]
+                hdri = context.window_manager.legami_lookdev_hdri
+                if hdri:                       # '' = project default (no flag)
+                    lr_args += ["--hdri", hdri]
+                lr_cmd, _ = _toolkit_cmd(lr_args)
+                subprocess.Popen(lr_cmd, cwd=td)
+                tt_msg = " Look review (turntable + texture sheet) rendering → dailies."
+            except Exception as exc:  # noqa: BLE001
+                print("[Legami] could not start look review:", exc)
 
         warns = sum(1 for lvl, _ in issues if lvl == checks.WARNING)
         suffix = f" ({warns} warning(s))" if warns else ""
@@ -757,6 +769,26 @@ def apply_project_color():
                 pass
     print("[Legami] applied project color management to",
           len(bpy.data.scenes), "scene(s)")
+
+
+_HDRI_ITEMS = []   # kept referenced so Blender's EnumProperty doesn't GC the strings
+
+
+def lookdev_hdri_items(self, context):
+    """HDRIs available for a look review: the project default, an explicit neutral,
+    and each .exr/.hdr under 05_library/hdri."""
+    global _HDRI_ITEMS
+    items = [("", "Project default", "Use the project's configured HDRI"),
+             ("none", "None (neutral grey)", "No HDRI — neutral studio lighting")]
+    root = os.environ.get("LEGAMI_PROJECT_ROOT")
+    if root:
+        d = os.path.join(root, "05_library", "hdri")
+        if os.path.isdir(d):
+            for f in sorted(os.listdir(d)):
+                if os.path.splitext(f)[1].lower() in (".exr", ".hdr"):
+                    items.append((f, f, "Light the look review with this HDRI"))
+    _HDRI_ITEMS = items
+    return _HDRI_ITEMS
 
 
 def scaffold_surface_scene():

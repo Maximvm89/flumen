@@ -338,6 +338,67 @@ def cmd_fetch_look(args) -> int:
     return 0
 
 
+def cmd_look_review(args) -> int:
+    """Render a shaded look turntable + texture/UV sheet and publish them to
+    07_dailies, attached to the look's publish record. Fetches the look, model and
+    HDRI it needs, so it works standalone (re-generate) or right after a publish."""
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import tasks as T, lookdev, turntable
+    rr = cfg.remote_root.rstrip("/")
+    local_root = cfg.resolved_local_root() or os.getcwd()
+
+    def _dl(client, rel, dest):
+        client.download(rr + "/" + rel, dest)
+
+    with SFTPClient(creds) as client:
+        task = T.get_task(client, rr, args.task)
+        if not task:
+            print(f"error: task not found: {args.task}", file=sys.stderr)
+            return 1
+        entity = task["entity"]
+        asset = entity.split("/")[-1]
+        sel = next((l for l in T.published_looks(task) if l["look"] == args.look),
+                   None)
+        if not sel:
+            print(f"error: no look '{args.look}' for {args.task}", file=sys.stderr)
+            return 1
+        version = args.version or sel["version"]
+        base = f"{asset}_surface_{args.look}"
+        version_label = f"{base}_v{version:03d}"
+        pub_dir = f"03_assets/{entity}/surface/publish"
+        blend_rel = f"{pub_dir}/{version_label}.blend"
+        manifest_rel = f"{pub_dir}/{version_label}.manifest.json"
+
+        look_blend = os.path.join(local_root, *blend_rel.split("/"))
+        manifest_local = os.path.join(local_root, *manifest_rel.split("/"))
+        _dl(client, blend_rel, look_blend)
+        _dl(client, manifest_rel, manifest_local)
+        try:
+            client.download_dir(rr + "/" + pub_dir + "/textures/" + version_label,
+                                os.path.join(local_root, *pub_dir.split("/"),
+                                             "textures", version_label))
+        except Exception:  # noqa: BLE001
+            pass
+        # The model to shade: the asset's latest published model .blend.
+        model_task = T.get_task(client, rr, T.model_task_id(entity))
+        mpubs = T.published_files(model_task, ".blend") if model_task else []
+        if not mpubs:
+            print(f"error: no published model for {entity}", file=sys.stderr)
+            return 1
+        model_rel = mpubs[0]["rel"]
+        model_local = os.path.join(local_root, *model_rel.split("/"))
+        _dl(client, model_rel, model_local)
+
+    project_settings = turntable._load_project_settings(local_root)
+    hdri = lookdev.resolve_hdri(project_settings, args.hdri, local_root)
+    return turntable.run_look_review(
+        cfg, creds, task_id=args.task, entity=entity, base=base, version=version,
+        model_path=model_local, look_blend=look_blend,
+        manifest_path=manifest_local, blend_rel=blend_rel, hdri=hdri,
+        dry_run=args.dry_run)
+
+
 def cmd_next_version(args) -> int:
     """Print the next publish version for a task (from its server history). Used by
     the Blender add-on so versions stay monotonic across machines."""
@@ -612,6 +673,15 @@ def build_parser() -> argparse.ArgumentParser:
     fl.add_argument("--task", required=True, help="surface task id")
     fl.add_argument("--look", required=True, help="look name to fetch")
     fl.set_defaults(func=cmd_fetch_look)
+
+    lr = sub.add_parser("look-review", parents=[common],
+                        help="render a shaded look turntable + texture/UV sheet")
+    lr.add_argument("--task", required=True, help="surface task id")
+    lr.add_argument("--look", required=True, help="look name")
+    lr.add_argument("--version", type=int, help="look version (default: latest)")
+    lr.add_argument("--hdri", help="HDRI name under 05_library/hdri (default: "
+                                   "project default, else neutral)")
+    lr.set_defaults(func=cmd_look_review)
 
     nv = sub.add_parser("next-version", parents=[common],
                         help="print the next publish version for a task")

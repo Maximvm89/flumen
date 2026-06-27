@@ -418,6 +418,10 @@ class MainWindow(QMainWindow):
         b_copy.setToolTip("Copy the clip to the clipboard (e.g. for SyncSketch).")
         b_copy.clicked.connect(self._copy_review_clip)
         ops.addWidget(b_copy)
+        b_sheet = QPushButton("Texture sheet")
+        b_sheet.setToolTip("Open the look's texture/UV sheet (surface looks only).")
+        b_sheet.clicked.connect(self._open_review_sheet)
+        ops.addWidget(b_sheet)
         ops.addStretch(1)
         b_export = QPushButton("Export…")
         b_export.setToolTip("Export the visible items to a dated folder + index.html.")
@@ -558,6 +562,35 @@ class MainWindow(QMainWindow):
                 else "Could not copy to clipboard on this platform.")
 
         self._ensure_clip_then(items[0], _copy, "Fetching clip…")
+
+    def _open_review_sheet(self):
+        items = self._selected_review_items()
+        if not items:
+            QMessageBox.information(self, "No item selected", "Select a review item.")
+            return
+        it = items[0]
+        if not it.get("sheet"):
+            QMessageBox.information(self, "No texture sheet",
+                                    "This item has no texture/UV sheet (it's not a "
+                                    "surface look review).")
+            return
+        local = os.path.join(self.cfg.resolved_local_root(), *it["sheet"].split("/"))
+        if os.path.isfile(local):
+            clipboardmod.open_path(local)
+            return
+        remote = self.cfg.remote_root
+
+        def work():
+            self._conn_do(lambda c: c.download(
+                remote.rstrip("/") + "/" + it["sheet"], local))
+            return local
+
+        def done(p):
+            self._busy_buttons(False)
+            clipboardmod.open_path(p)
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Fetching texture sheet…")
 
     def _export_review(self):
         if not self.cfg:
