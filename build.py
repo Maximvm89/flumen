@@ -51,9 +51,45 @@ def _version() -> str:
 
 
 
+def _find_iscc() -> str | None:
+    """Locate the Inno Setup command-line compiler (Windows only)."""
+    found = shutil.which("ISCC")
+    if found:
+        return found
+    for base in (os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                 os.environ.get("ProgramFiles", r"C:\Program Files")):
+        for ver in ("Inno Setup 6", "Inno Setup 5"):
+            cand = os.path.join(base, ver, "ISCC.exe")
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+def _make_installer(version: str) -> int:
+    """Compile packaging/legami.iss into dist/Legami-Setup-<version>.exe."""
+    if os.name != "nt":
+        print("error: --installer builds a Windows installer and must run on "
+              "Windows (Inno Setup is Windows-only).", file=sys.stderr)
+        return 1
+    iscc = _find_iscc()
+    if not iscc:
+        print("error: Inno Setup not found. Install it from https://jrsoftware.org/"
+              "isdl.php (or 'winget install JRSoftware.InnoSetup'), then re-run.",
+              file=sys.stderr)
+        return 1
+    iss = os.path.join(ROOT, "packaging", "legami.iss")
+    _run([iscc, f"/DAppVersion={version.lstrip('v')}", iss])
+    out = os.path.join(ROOT, "dist", f"Legami-Setup-{version.lstrip('v')}.exe")
+    print(f"\nInstaller ready: {out}" if os.path.isfile(out)
+          else "warning: ISCC ran but the installer wasn't found where expected.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--zip", action="store_true", help="zip the bundle when done")
+    ap.add_argument("--installer", action="store_true",
+                    help="compile a Windows installer with Inno Setup (Windows only)")
     args = ap.parse_args()
 
     try:
@@ -101,6 +137,9 @@ def main() -> int:
         archive = os.path.join(ROOT, "dist", f"Legami-{tag}-{version}")
         shutil.make_archive(archive, "zip", os.path.join(ROOT, "dist"), "Legami")
         print(f"  zipped: {archive}.zip")
+
+    if args.installer:
+        return _make_installer(version)
     return 0
 
 

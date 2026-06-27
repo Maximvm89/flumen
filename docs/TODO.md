@@ -32,8 +32,10 @@ Running backlog of things to build/fix. Newest context at the top of each sectio
 
 ## Release / distribution
 
-- [ ] **First release tag.** Once the Windows build + sign-in flow is verified,
-  cut `v0.1.0` on `main` and publish the bundle via GitHub Releases.
+- [ ] **First release tag (`v0.1.0`).** Installer is ready: `python build.py
+  --installer` builds the per-user Windows `Legami-Setup-<version>.exe` via Inno
+  Setup. Follow [docs/RELEASING.md](RELEASING.md) — tag on `main`, build on Windows,
+  publish via GitHub Releases. Then automate with CI.
 - [ ] **Remove dead code?** `scripts/dist_sync.py` (the old SFTP source-sync) is
   unused now that the workflow is git + tagged releases. Decide: delete or keep.
 - [ ] **Process:** re-run `animpipe publish-config` whenever project settings or
