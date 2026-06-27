@@ -637,6 +637,7 @@ def cmd_resolve_assembly(args) -> int:
             if "=" in p:
                 k, v = p.split("=", 1)
                 picks[k] = v
+        fs, fe = E.frame_range(E.load_assembly(client, rr, shot_entity))
         resolved = E.resolved_elements(client, rr, shot_entity, step, settings,
                                        picks=picks)
         only = set(args.only or [])
@@ -659,7 +660,24 @@ def cmd_resolve_assembly(args) -> int:
                         "look": r.get("look", ""), "load": r.get("load", "link"),
                         "apply_look": r.get("apply_look", False),
                         "camera_name": r.get("camera_name", "")})
-    print(json.dumps(out))
+    print(json.dumps({"frame_start": fs, "frame_end": fe, "elements": out}))
+    return 0
+
+
+def cmd_assembly_set_range(args) -> int:
+    """Set a shot's duration (and optionally its start frame). Default start 1001."""
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import elements as E
+    with SFTPClient(creds) as client:
+        asm = E.load_assembly(client, cfg.remote_root, args.shot)
+        if args.start:
+            asm["frame_start"] = args.start
+        asm["duration"] = args.duration
+        asm = E.save_assembly(client, cfg.remote_root, args.shot, asm,
+                              actor=creds.user)
+    fs, fe = E.frame_range(asm)
+    print(f"{args.shot}: frames {fs}-{fe} ({asm['duration']} frame(s))")
     return 0
 
 
@@ -857,6 +875,15 @@ def build_parser() -> argparse.ArgumentParser:
     ar.add_argument("--shot", required=True, help="shot entity")
     ar.add_argument("--id", required=True, help="element id (see 'assembly list')")
     ar.set_defaults(func=cmd_assembly_remove)
+
+    asr = asm_sub.add_parser("set-range", parents=[common],
+                             help="set a shot's frame duration (start defaults 1001)")
+    asr.add_argument("--shot", required=True, help="shot entity")
+    asr.add_argument("--duration", type=int, required=True,
+                     help="shot length in frames (e.g. 100)")
+    asr.add_argument("--start", type=int, default=0,
+                     help="start frame (default: keep current / 1001)")
+    asr.set_defaults(func=cmd_assembly_set_range)
 
     ra = sub.add_parser("resolve-assembly", parents=[common],
                         help="resolve a shot's elements + download their publishes "

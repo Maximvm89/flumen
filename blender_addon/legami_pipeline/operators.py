@@ -1455,6 +1455,24 @@ _ELEMENT_LOADERS = {
 }
 
 
+# Shot frame range captured by the Build-shot dialog's invoke(), applied in
+# execute() so the timeline matches the shot even when nothing new is built.
+_BUILD_FRAME_RANGE = {"start": None, "end": None}
+
+
+def _apply_build_frame_range(context):
+    """Set the scene timeline to the captured shot range. Returns a short message
+    (e.g. 'timeline 1001-1100') or '' if no range was captured."""
+    fs, fe = _BUILD_FRAME_RANGE.get("start"), _BUILD_FRAME_RANGE.get("end")
+    if not fs or not fe:
+        return ""
+    sc = context.scene
+    sc.frame_start, sc.frame_end = int(fs), int(fe)
+    if not (int(fs) <= sc.frame_current <= int(fe)):
+        sc.frame_current = int(fs)
+    return f"timeline {int(fs)}-{int(fe)}"
+
+
 def _element_detail(el, present):
     """One-line description of what an element will bring in, for the dialog."""
     if present:
@@ -1519,16 +1537,22 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
                                    "to store relative paths.")
             return {"CANCELLED"}
 
-        listed = self._resolve(task, list_only=True)   # preview, no downloads
-        if listed is None:
+        data = self._resolve(task, list_only=True)      # preview, no downloads
+        if data is None:
             self.report({"ERROR"}, "Couldn't resolve the shot assembly — launch from "
                                    "the Workspace app and check your connection.")
             return {"CANCELLED"}
+        _BUILD_FRAME_RANGE["start"] = data.get("frame_start")
+        _BUILD_FRAME_RANGE["end"] = data.get("frame_end")
+        listed = data.get("elements") or []
         if not listed:
-            self.report({"WARNING"}, "Shot has no elements yet. Add them in the "
-                                     "Workspace app (right-click the shot ▸ Elements…) "
-                                     "and publish the assets' rigs/model.")
-            return {"CANCELLED"}
+            # No elements yet, but still set the shot's timeline from its range.
+            msg = _apply_build_frame_range(context)
+            self.report({"INFO"} if msg else {"WARNING"},
+                        f"No elements yet — {msg}." if msg
+                        else "Shot has no elements yet. Add them in the Workspace "
+                             "app (right-click the shot ▸ Elements…).")
+            return {"FINISHED"} if msg else {"CANCELLED"}
 
         existing = {c.name for c in bpy.data.collections}
         rows = context.window_manager.legami_build_items
@@ -1586,13 +1610,19 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
                     picks[eid] = it.step
             else:
                 deselected_ct += 1
+
+        # Always set the shot's timeline to its frame range, even if nothing new
+        # is built (e.g. everything already present).
+        tl_msg = _apply_build_frame_range(context)
         if not chosen:
-            self.report({"WARNING"},
-                        f"Nothing selected to build ({present_ct} already in scene).")
-            return {"CANCELLED"}
+            extra = f" — {tl_msg}" if tl_msg else ""
+            self.report({"INFO"},
+                        f"Nothing to build ({present_ct} already in scene){extra}.")
+            return {"FINISHED"}
 
         # downloads only the chosen, at their chosen steps
-        elements = self._resolve(task, only=chosen, picks=picks)
+        data = self._resolve(task, only=chosen, picks=picks)
+        elements = (data or {}).get("elements")
         if not elements:
             self.report({"ERROR"}, "Couldn't fetch the selected elements — check "
                                    "your connection and retry.")
@@ -1617,6 +1647,8 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             pass
 
         parts = [f"Built {len(built)} element(s)"]
+        if tl_msg:
+            parts.append(tl_msg)
         if present_ct:
             parts.append(f"{present_ct} already in scene")
         if deselected_ct:

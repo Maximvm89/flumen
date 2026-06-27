@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QFileDialog, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QMessageBox, QAbstractItemView, QGroupBox, QTabWidget,
     QComboBox, QTableWidget, QTableWidgetItem, QDialog, QFormLayout,
-    QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox,
+    QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox, QSpinBox,
 )
 
 from animpipe.config import ProjectConfig, SFTPCredentials, CACHED_CONFIG
@@ -1732,6 +1732,22 @@ class ElementsDialog(QDialog):
         add_row.addWidget(b_rm)
         root.addLayout(add_row)
 
+        # Shot frame range: start is fixed at 1001, the duration is set here.
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel("Shot duration (frames):"))
+        self.spin_duration = QSpinBox()
+        self.spin_duration.setRange(1, 100000)
+        self.spin_duration.setValue(
+            int(self._assembly.get("duration") or self._E.DEFAULT_DURATION))
+        self.spin_duration.valueChanged.connect(self._update_range_label)
+        dur_row.addWidget(self.spin_duration)
+        self.lbl_range = QLabel("")
+        self.lbl_range.setStyleSheet("color:#9aa;")
+        dur_row.addWidget(self.lbl_range)
+        dur_row.addStretch(1)
+        root.addLayout(dur_row)
+        self._update_range_label()
+
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._commit_enabled_then_accept)
         bb.rejected.connect(self.reject)
@@ -1749,6 +1765,11 @@ class ElementsDialog(QDialog):
                      e.get("look", ""), e["id"])
             for j, val in enumerate(cells, start=1):
                 self.table.setItem(i, j, QTableWidgetItem(val))
+
+    def _update_range_label(self):
+        start = int(self._assembly.get("frame_start") or self._E.DEFAULT_FRAME_START)
+        end = start + max(1, self.spin_duration.value()) - 1
+        self.lbl_range.setText(f"→ frames {start}–{end}")
 
     def _add_asset(self):
         ent = self.cb_asset.currentText().strip()
@@ -1777,6 +1798,8 @@ class ElementsDialog(QDialog):
             w = self.table.cellWidget(i, 0)
             if w is not None:
                 e["enabled"] = w.isChecked()
+        self._assembly["duration"] = self.spin_duration.value()
+        self._assembly.setdefault("frame_start", self._E.DEFAULT_FRAME_START)
         self.accept()
 
     def assembly(self) -> dict:

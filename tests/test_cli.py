@@ -194,7 +194,9 @@ def test_resolve_assembly_downloads_and_prints_json(monkeypatch, capsys, tmp_pat
     _patch(monkeypatch, srv, local_root=str(tmp_path))
     rc = cli.cmd_resolve_assembly(_args(task=shot_task["id"], shot=None, step=None, list=False, only=[], pick=[]))
     assert rc == 0
-    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert res["frame_start"] == 1001 and res["frame_end"] == 1100  # defaults
+    out = res["elements"]
     assert len(out) == 1
     el = out[0]
     assert el["id"] == "frankenstein" and el["source_step"] == "model"
@@ -236,7 +238,7 @@ def test_resolve_assembly_list_does_not_download(monkeypatch, capsys, tmp_path):
     rc = cli.cmd_resolve_assembly(_args(task=shot_task["id"], shot=None, step=None,
                                         list=True, only=[], pick=[]))
     assert rc == 0
-    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["elements"]
     assert {e["id"] for e in out} == {"frankenstein", "camera"}     # both listed
     assert all(e["blend_local"] == "" for e in out)                 # nothing fetched
     assert srv.downloads == []
@@ -265,7 +267,19 @@ def test_resolve_assembly_only_fetches_chosen(monkeypatch, capsys, tmp_path):
     rc = cli.cmd_resolve_assembly(_args(task=shot_task["id"], shot=None, step=None,
                                         list=False, only=["box"], pick=[]))
     assert rc == 0
-    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["elements"]
     assert [e["id"] for e in out] == ["box"]                        # filtered
     assert len(srv.downloads) == 1
     assert srv.downloads[0][0].endswith("box_model_v001.blend")     # only box fetched
+
+
+def test_assembly_set_range(monkeypatch, capsys):
+    from animpipe import elements as E
+    srv = _DownloadSrv()
+    _patch(monkeypatch, srv)
+    rc = cli.cmd_assembly_set_range(_args(shot="SEQ010/SH0010", duration=240, start=0))
+    assert rc == 0
+    assert "1001-1240" in capsys.readouterr().out
+    asm = E.load_assembly(srv, "/r", "SEQ010/SH0010")
+    assert asm["frame_start"] == 1001 and asm["duration"] == 240
+    assert E.frame_range(asm) == (1001, 1240)

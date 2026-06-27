@@ -22,6 +22,11 @@ SEQ_ROOT = "04_sequences"
 ASSEMBLY_NAME = "assembly.json"
 KINDS = ("asset", "camera")
 
+# Every shot starts at frame 1001; the duration (default 100 frames) is set per
+# shot in the Elements editor. End frame = start + duration - 1.
+DEFAULT_FRAME_START = 1001
+DEFAULT_DURATION = 100
+
 # Default per-step representation map. Overridable via project_settings.json
 # "assembly":{"representations":{...}}. Only the `layout` slice is wired in this
 # build; the rest define the seam for the lighting/alembic round.
@@ -79,7 +84,15 @@ def new_element(asset_entity: str, kind: str = "asset",
 
 
 def empty_assembly(shot_entity: str) -> dict:
-    return {"shot": shot_entity, "elements": []}
+    return {"shot": shot_entity, "frame_start": DEFAULT_FRAME_START,
+            "duration": DEFAULT_DURATION, "elements": []}
+
+
+def frame_range(assembly: dict) -> tuple[int, int]:
+    """(start, end) frames for a shot. end = start + duration - 1."""
+    start = int(assembly.get("frame_start") or DEFAULT_FRAME_START)
+    dur = int(assembly.get("duration") or DEFAULT_DURATION)
+    return start, start + max(1, dur) - 1
 
 
 def add_element(assembly: dict, element: dict) -> dict:
@@ -103,6 +116,12 @@ def normalize(assembly: dict, shot_entity: str = "") -> dict:
     """Coerce a loaded/partial doc to the full shape: backfill missing/duplicate
     ids, drop unknown kinds. Pure — never touches the network."""
     out = empty_assembly(assembly.get("shot") or shot_entity)
+    fs = assembly.get("frame_start")
+    if isinstance(fs, (int, float)) and fs > 0:
+        out["frame_start"] = int(fs)
+    du = assembly.get("duration")
+    if isinstance(du, (int, float)) and du > 0:
+        out["duration"] = int(du)
     for key in ("updated", "updated_by"):       # preserve top-level metadata
         if key in assembly:
             out[key] = assembly[key]

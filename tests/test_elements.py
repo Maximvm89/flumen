@@ -67,6 +67,27 @@ def test_normalize_backfills_ids_and_drops_dupes_and_unknown():
     assert cam["kind"] == "camera" and cam["asset"] == ""
 
 
+def test_frame_range_defaults_and_custom():
+    asm = E.empty_assembly("SEQ010/SH0010")
+    assert asm["frame_start"] == 1001 and asm["duration"] == 100
+    assert E.frame_range(asm) == (1001, 1100)         # default
+    asm["duration"] = 240
+    assert E.frame_range(asm) == (1001, 1240)
+
+
+def test_normalize_preserves_and_defaults_frame_range():
+    # missing -> defaults
+    n1 = E.normalize({"shot": "SEQ010/SH0010", "elements": []})
+    assert n1["frame_start"] == 1001 and n1["duration"] == 100
+    # present -> preserved; roundtrips through save/load
+    s = FakeSrv()
+    asm = E.empty_assembly("SEQ010/SH0010")
+    asm["duration"] = 175
+    E.save_assembly(s, "/r", "SEQ010/SH0010", asm)
+    loaded = E.load_assembly(s, "/r", "SEQ010/SH0010")
+    assert E.frame_range(loaded) == (1001, 1175)
+
+
 def test_resolve_element_mapping_per_step():
     e = E.new_element("characters/frankenstein")
     for step in ("layout", "animation"):
