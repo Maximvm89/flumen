@@ -710,9 +710,12 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             written, tex_entries, restore = _materialize_look_textures(
                 textures_dir, materials)
             try:
-                # Write ONLY the materials; RELATIVE remap bakes '//textures/…' paths.
+                # Write ONLY the materials; RELATIVE_ALL forces every texture path
+                # relative to the look .blend ('//textures/…') so it resolves on any
+                # machine. (Plain 'RELATIVE' only remaps already-relative paths and
+                # would leave our absolute publish paths absolute — dead on Windows.)
                 bpy.data.libraries.write(pub_path, materials,
-                                         path_remap="RELATIVE", fake_user=True)
+                                         path_remap="RELATIVE_ALL", fake_user=True)
             finally:
                 restore()      # leave the artist's working session untouched
             manifest = look_mod.build_look_manifest(
