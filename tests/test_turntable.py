@@ -71,7 +71,7 @@ def test_run_look_review_dry_run(tmp_path, capsys):
     assert ("07_dailies/characters/frank/surface/"
             "frank_surface_default_v002_turntable.mp4") in out
     assert "frank_surface_default_v002_textures.png" in out
-    assert "template" in out
+    assert "turntable + sheet" in out
 
 
 def test_look_dailies_rel():
