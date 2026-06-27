@@ -655,8 +655,12 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         if task and task.get("step") == "model":
             col.prop(context.window_manager, "legami_render_turntable")
         if task and task.get("step") == "surface":
-            col.prop(context.window_manager, "legami_look_name", text="Look name")
-            col.prop(context.window_manager, "legami_lookdev_hdri", text="Review HDRI")
+            wm = context.window_manager
+            col.prop(wm, "legami_look_name", text="Look name")
+            col.prop(wm, "legami_render_turntable", text="Render look review")
+            sub = col.column()
+            sub.enabled = wm.legami_render_turntable
+            sub.prop(wm, "legami_lookdev_hdri", text="Review HDRI")
         col.separator()
         _draw_checks(col, self._issues)
         col.separator()
@@ -775,7 +779,8 @@ class LEGAMI_OT_publish(bpy.types.Operator):
                 tt_msg = " Turntable rendering in background → dailies."
             except Exception as exc:  # noqa: BLE001
                 print("[Legami] could not start turntable:", exc)
-        elif task.get("step") == "surface":
+        elif (task.get("step") == "surface"
+                and context.window_manager.legami_render_turntable):
             try:
                 lr_args = ["look-review", "--task", task["id"], "--look", look_name]
                 hdri = context.window_manager.legami_lookdev_hdri
