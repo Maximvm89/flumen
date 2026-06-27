@@ -487,9 +487,6 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         task = active_task()
         if task and task.get("step") == "model":
             col.prop(context.window_manager, "legami_render_turntable")
-            sub = col.column()
-            sub.enabled = context.window_manager.legami_render_turntable
-            sub.prop(context.window_manager, "legami_upload_syncsketch")
         col.separator()
         _draw_checks(col, self._issues)
         col.separator()
@@ -568,10 +565,8 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         if (task.get("step") == "model"
                 and context.window_manager.legami_render_turntable):
             try:
-                tt_args = ["turntable", "--model", pub_path, "--task", task["id"]]
-                if not context.window_manager.legami_upload_syncsketch:
-                    tt_args.append("--no-syncsketch")
-                tt_cmd, _ = _toolkit_cmd(tt_args)
+                tt_cmd, _ = _toolkit_cmd(
+                    ["turntable", "--model", pub_path, "--task", task["id"]])
                 subprocess.Popen(tt_cmd, cwd=td)
                 tt_msg = " Turntable rendering in background → dailies."
             except Exception as exc:  # noqa: BLE001

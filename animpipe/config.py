@@ -28,8 +28,6 @@ LEGAMI_HOME = os.path.join(os.path.expanduser("~"), ".legami")
 USER_CRED_FILE = os.path.join(LEGAMI_HOME, "credentials.env")
 CACHE_DIR = os.path.join(LEGAMI_HOME, "cache")
 CACHED_CONFIG = os.path.join(CACHE_DIR, "config.yaml")
-# Shared SyncSketch service-account secret, fetched from the server at sign-in.
-CACHED_SYNCSKETCH = os.path.join(CACHE_DIR, "syncsketch.json")
 
 
 @dataclass

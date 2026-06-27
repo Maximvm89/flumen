@@ -22,9 +22,7 @@ datas += collect_data_files("imageio_ffmpeg")
 
 ICON = os.path.join(ROOT, "packaging", "legami.ico")  # embedded in the .exe files
 
-# syncsketch + requests are imported lazily (inside animpipe.syncsketch), so name
-# them explicitly to be sure the frozen bundle can push dailies to SyncSketch.
-hiddenimports = ["paramiko", "yaml", "dotenv", "syncsketch", "requests"]
+hiddenimports = ["paramiko", "yaml", "dotenv"]
 
 cli_a = Analysis(
     [os.path.join(ROOT, "packaging", "entry_animpipe.py")],

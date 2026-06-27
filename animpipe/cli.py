@@ -266,96 +266,7 @@ def cmd_turntable(args) -> int:
     creds = (SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
              if args.dry_run else SFTPCredentials.from_env(args.env))
     return turntable.run_turntable(cfg, creds, args.model, args.task,
-                                   dry_run=args.dry_run, preview=args.preview,
-                                   syncsketch=not args.no_syncsketch)
-
-
-def cmd_syncsketch_setup(args) -> int:
-    """Admin one-time: push the shared SyncSketch service-account secret to the
-    server (02_pipeline/syncsketch.json) and cache it locally. Artists pick it up
-    on their next sign-in. The secret is never committed to git."""
-    import json
-    import posixpath as _pp
-    import tempfile
-
-    from . import syncsketch as ss
-    from .config import CACHED_SYNCSKETCH, CACHE_DIR
-
-    cfg = ProjectConfig.load(args.config)
-    payload = json.dumps({"login": args.login, "api_key": args.api_key}, indent=2)
-    remote = _pp.join(cfg.remote_root, ss.SECRET_REL)
-    print(f"Upload: SyncSketch secret\n    -> {remote}")
-    if args.dry_run:
-        print("(dry-run: nothing uploaded)")
-        return 0
-
-    tmp = os.path.join(tempfile.mkdtemp(), "syncsketch.json")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(payload + "\n")
-    with _client(args) as client:
-        client.upload(tmp, remote)
-    # Cache locally too so this machine can upload immediately.
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(CACHED_SYNCSKETCH, "w", encoding="utf-8") as fh:
-        fh.write(payload + "\n")
-    try:
-        os.chmod(CACHED_SYNCSKETCH, 0o600)
-    except OSError:
-        pass
-    print("done — artists will pick up the SyncSketch login on next sign-in.")
-    return 0
-
-
-def cmd_syncsketch_sync(args) -> int:
-    """Backfill: upload every dailies video that has no SyncSketch review yet."""
-    from . import tasks as T
-    from . import syncsketch as ss
-
-    cfg = ProjectConfig.load(args.config)
-    settings = ss.SyncSketchSettings.from_project_settings(
-        _load_project_settings_for(cfg))
-    if not settings.configured():
-        print("SyncSketch is not enabled/configured in project_settings.json.")
-        return 1
-
-    creds = SFTPCredentials.from_env(args.env)
-    local_root = cfg.resolved_local_root()
-    # Read-only client even on --dry-run: we must read tasks to report what would
-    # upload. Writes (upload + record) are guarded by args.dry_run below.
-    with SFTPClient(creds) as client:
-        task_list = T.load_tasks(client, cfg.remote_root)
-        if args.task:
-            task_list = [t for t in task_list if t.get("id") == args.task]
-        pending = ss.pending_uploads(task_list)
-        if not pending:
-            print("Nothing to upload — all dailies are already on SyncSketch.")
-            return 0
-        print(f"{len(pending)} daily(ies) to upload.")
-        done = 0
-        for task, rec in pending:
-            rel = rec["turntable"]
-            version_label = os.path.splitext(os.path.basename(rel))[0]
-            version_label = version_label.replace("_turntable", "")
-            out_local = os.path.join(local_root, *rel.split("/"))
-            if args.dry_run:
-                print(f"(dry-run) would upload {rel} for task {task.get('id')}")
-                continue
-            if not os.path.isfile(out_local):  # fetch from server if not local
-                try:
-                    client.download(cfg.remote_root.rstrip("/") + "/" + rel, out_local)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"warning: could not fetch {rel} ({exc}); skipping.")
-                    continue
-            url = ss.try_upload_daily(
-                settings, project_name=cfg.name, video_local=out_local,
-                task=task, version_label=version_label, username=creds.user)
-            if url:
-                ss.record_review_url(client, cfg.remote_root, task["id"], url, creds.user)
-                print(f"  {task.get('id')}: {url}")
-                done += 1
-    print(f"uploaded {done} daily(ies) to SyncSketch."
-          if not args.dry_run else "(dry-run)")
-    return 0
+                                   dry_run=args.dry_run, preview=args.preview)
 
 
 def cmd_build_review(args) -> int:
@@ -507,20 +418,6 @@ def cmd_review_copy(args) -> int:
     return 0
 
 
-def _load_project_settings_for(cfg) -> dict:
-    """project_settings.json for the show, from the local cache/synced copy."""
-    import json
-    path = os.path.join(cfg.resolved_local_root(), "02_pipeline",
-                        "project_settings.json")
-    if os.path.isfile(path):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                return json.load(fh)
-        except ValueError:
-            return {}
-    return {}
-
-
 def build_parser() -> argparse.ArgumentParser:
     # Common flags live on a parent parser so they work either before OR after
     # the subcommand (e.g. both `animpipe --dry-run init-project` and
@@ -620,20 +517,7 @@ def build_parser() -> argparse.ArgumentParser:
     tt.add_argument("--task", required=True, help="task id")
     tt.add_argument("--preview", action="store_true",
                     help="open Blender interactively to preview framing (no render)")
-    tt.add_argument("--no-syncsketch", action="store_true",
-                    help="skip the automatic SyncSketch upload for this render")
     tt.set_defaults(func=cmd_turntable)
-
-    ssu = sub.add_parser("syncsketch-sync", parents=[common],
-                         help="upload any dailies not yet on SyncSketch (backfill)")
-    ssu.add_argument("--task", default="", help="limit to one task id")
-    ssu.set_defaults(func=cmd_syncsketch_sync)
-
-    sss = sub.add_parser("syncsketch-setup", parents=[common],
-                         help="admin: push the shared SyncSketch login to the server")
-    sss.add_argument("--login", required=True, help="SyncSketch service-account email")
-    sss.add_argument("--api-key", required=True, help="SyncSketch API key")
-    sss.set_defaults(func=cmd_syncsketch_setup)
 
     br = sub.add_parser("build-review", parents=[common],
                         help="collect dailies waiting for review into a dated folder")

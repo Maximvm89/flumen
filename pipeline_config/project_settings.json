@@ -61,13 +61,5 @@
   },
   "publish": {
     "locator": "PUBLISH"
-  },
-  "syncsketch": {
-    "_comment": "Auto-upload dailies to SyncSketch. Set account_id + project_id from your SyncSketch workspace, then 'animpipe syncsketch-setup --login <email> --api-key <token>' once to push the shared login to the server. enabled=false keeps it off until configured.",
-    "enabled": false,
-    "account_id": 0,
-    "project_id": 0,
-    "review_name_template": "{project} — {step}",
-    "item_name_template": "{entity}  {version_label}"
   }
 }
