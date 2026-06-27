@@ -43,12 +43,13 @@ NEWER_L_BG = QColor(203, 225, 255)
 NEWER_R_BG = QColor(255, 230, 191)
 DIFF_BG, DIFF_FG = QColor(252, 235, 235), QColor(163, 45, 45)
 
-# Task status visuals: status -> (cell background, text color, leading dot).
+# Task status visuals: status -> (text color, leading dot). No cell background —
+# the colored dot + bold text carry the signal, which reads on any theme.
 STATUS_STYLE = {
-    "todo":        (QColor(237, 238, 240), QColor(88, 92, 100), "⚪"),
-    "in_progress": (QColor(219, 234, 254), QColor(30, 64, 140), "🔵"),
-    "review":      (QColor(255, 237, 213), QColor(146, 64, 14), "🟠"),
-    "done":        (QColor(220, 243, 228), QColor(22, 101, 52), "🟢"),
+    "todo":        (QColor(150, 155, 165), "⚪"),
+    "in_progress": (QColor(96, 165, 250), "🔵"),
+    "review":      (QColor(245, 158, 66), "🟠"),
+    "done":        (QColor(74, 222, 128), "🟢"),
 }
 # A small icon per task type and per department/step (first substring match wins).
 TYPE_ICON = {"asset": "📦", "shot": "🎬"}
@@ -987,7 +988,7 @@ class MainWindow(QMainWindow):
             status = t.get("status", "")
             ttype = t.get("type", "")
             step = t.get("step", "")
-            bg, fg, dot = STATUS_STYLE.get(status, (None, None, "•"))
+            fg, dot = STATUS_STYLE.get(status, (None, "•"))
             cells = [
                 f"{TYPE_ICON.get(ttype, '•')}  {ttype}",
                 t.get("entity", ""),
@@ -1000,9 +1001,9 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(text)
                 if j == 0:
                     item.setData(Qt.UserRole, t)
-                if j == 3 and bg is not None:
-                    item.setBackground(QBrush(bg))
-                    item.setForeground(QBrush(fg))
+                if j == 3:
+                    if fg is not None:
+                        item.setForeground(QBrush(fg))
                     f = item.font()
                     f.setBold(True)
                     item.setFont(f)
