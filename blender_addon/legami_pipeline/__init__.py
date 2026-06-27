@@ -87,7 +87,8 @@ def register():
     # OCIO so default-config files (sRGB/AgX) stop warning. Self-heals on save.
     if os.environ.get("LEGAMI_PROJECT_ROOT"):
         bpy.app.timers.register(_color_startup, first_interval=0.2)
-        # Enable the project's extra add-ons (Add Camera Rigs, etc.).
+        # Make the project's extra add-ons available (install if needed + enable;
+        # e.g. Add Camera Rigs for layout).
         bpy.app.timers.register(_addons_startup, first_interval=0.1)
 
 

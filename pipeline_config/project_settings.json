@@ -6,7 +6,7 @@
     "code": "LEGAMI"
   },
   "addons": ["add_camera_rigs"],
-  "_addons_note": "Blender add-ons to auto-enable when launched through the app (module names; matched by leaf name so bundled or 4.2+ extension forms both work). They must already be installed in Blender. Default if omitted: add_camera_rigs (the layout camera rig).",
+  "_addons_note": "Blender add-ons to make available when launched through the app. For each, the addon is enabled if installed, else auto-installed from a project-shipped zip in 02_pipeline/blender_extensions/<name>.zip (which syncs to every machine), then enabled. Matched by module leaf name so bundled and 4.2+ extension forms both work. Default if omitted: add_camera_rigs (the layout Dolly/Crane camera rig).",
   "color_management": {
     "ocio_config_rel": "02_pipeline/ocio/config.ocio",
     "working_space": "ACEScg",
