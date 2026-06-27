@@ -1,4 +1,4 @@
-"""Tests for animpipe.review pure helpers + task stamping (no network)."""
+"""Tests for animpipe.review — the per-item review-status model (no network)."""
 
 import sys
 from pathlib import Path
@@ -7,16 +7,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from animpipe import review as R, tasks
-from test_tasks import FakeSrv  # reuse the in-memory fake
+from test_tasks import FakeSrv
 
 
 def _tt(entity, version):
-    step = "model"
-    return f"07_dailies/{entity}/{step}/{version}_turntable.mp4"
-
-
-def test_review_dir_rel():
-    assert R.review_dir_rel("2026-06-26") == "07_dailies/_reviews/2026-06-26"
+    return f"07_dailies/{entity}/model/{version}_turntable.mp4"
 
 
 def test_version_and_clip_name():
@@ -25,129 +20,82 @@ def test_version_and_clip_name():
     assert R.clip_name({"turntable": rel}) == "frankenstein_model_v003_turntable.mp4"
 
 
-def test_collectable_latest_per_task_only():
-    # Newest turntable per task, even with older + non-turntable publishes mixed in.
-    t_review = tasks.new_task("asset", "characters/frankenstein", "model")
-    t_review["status"] = "review"
-    t_review["publishes"] = [
-        {"turntable": _tt("characters/frankenstein", "v1")},   # superseded
-        {"turntable": _tt("characters/frankenstein", "v2")},   # superseded
-        {"turntable": _tt("characters/frankenstein", "v3")},   # newest -> collect
-        {"files": ["a.blend"]},                                # no turntable
-    ]
-    t_todo = tasks.new_task("asset", "props/axe", "model")
-    t_todo["status"] = "todo"
-    t_todo["publishes"] = [{"turntable": _tt("props/axe", "v1")}]  # wrong status
-
-    picked = R.collectable([t_review, t_todo])
-    assert len(picked) == 1
-    assert picked[0][1]["turntable"] == _tt("characters/frankenstein", "v3")
+def test_review_status_default_and_value():
+    assert R.review_status({}) == "to_review"
+    assert R.review_status({"review_status": "approved"}) == "approved"
+    assert R.review_status({"review_status": "bogus"}) == "to_review"
 
 
-def test_collectable_skips_when_newest_already_reviewed():
+def test_item_date_from_timestamp():
+    # 1782462729 -> a fixed UTC-ish date; just assert it formats as YYYY-MM-DD.
+    d = R.item_date({"time": 1782462729})
+    assert len(d) == 10 and d[4] == "-" and d[7] == "-"
+    assert R.item_date({}) == ""
+
+
+def test_review_items_every_version_filtered_and_sorted():
     t = tasks.new_task("asset", "characters/frankenstein", "model")
     t["status"] = "review"
     t["publishes"] = [
-        {"turntable": _tt("characters/frankenstein", "v1")},
-        {"turntable": _tt("characters/frankenstein", "v2"), "reviewed": "2026-06-01"},
+        {"turntable": _tt("characters/frankenstein", "frankenstein_model_v002"),
+         "time": 100, "by": "marco"},                                   # to_review
+        {"turntable": _tt("characters/frankenstein", "frankenstein_model_v003"),
+         "time": 200, "by": "marco", "review_status": "approved"},
+        {"files": ["x.blend"], "time": 300},                            # no turntable
     ]
-    assert R.collectable([t]) == []  # newest is collected; nothing new
+    items = R.review_items([t])
+    assert len(items) == 2                       # every turntable version, not the latest
+    assert {i["version"] for i in items} == {
+        "frankenstein_model_v002", "frankenstein_model_v003"}
+    # newest time first
+    assert items[0]["version"] == "frankenstein_model_v003"
+    assert items[0]["status"] == "approved" and items[1]["status"] == "to_review"
+    # status filter
+    appr = R.review_items([t], statuses=["approved"])
+    assert [i["version"] for i in appr] == ["frankenstein_model_v003"]
 
 
-def test_collectable_status_override():
-    t = tasks.new_task("asset", "props/axe", "model")
-    t["status"] = "done"
-    t["publishes"] = [{"turntable": _tt("props/axe", "v1")}]
-    assert R.collectable([t], status="review") == []
-    assert len(R.collectable([t], status="done")) == 1
+def test_set_status_on_task_approved_completes_task():
+    t = tasks.new_task("asset", "characters/frankenstein", "model")
+    t["status"] = "review"
+    rel = _tt("characters/frankenstein", "frankenstein_model_v004")
+    t["publishes"] = [{"turntable": rel, "time": 1}]
+    assert R.set_status_on_task(t, rel, "approved") is True
+    assert t["publishes"][0]["review_status"] == "approved"
+    assert t["status"] == "done"          # approving completes the task
 
 
-def test_mark_reviewed_targets_matching_record():
-    rel1 = _tt("characters/frankenstein", "v1")
-    rel2 = _tt("characters/frankenstein", "v2")
-    task = tasks.new_task("asset", "characters/frankenstein", "model")
-    task["publishes"] = [{"turntable": rel1}, {"turntable": rel2}]
-    assert R.mark_reviewed(task, rel2, "2026-06-26") is True
-    assert task["publishes"][0].get("reviewed") is None
-    assert task["publishes"][1]["reviewed"] == "2026-06-26"
-    assert R.mark_reviewed(task, "nope.mp4", "2026-06-26") is False
+def test_set_status_on_task_non_approved_leaves_task_status():
+    t = tasks.new_task("asset", "characters/frankenstein", "model")
+    t["status"] = "review"
+    rel = _tt("characters/frankenstein", "frankenstein_model_v004")
+    t["publishes"] = [{"turntable": rel}, {"turntable": rel}]  # dup records
+    assert R.set_status_on_task(t, rel, "reviewed") is True
+    assert all(r["review_status"] == "reviewed" for r in t["publishes"])  # both stamped
+    assert t["status"] == "review"        # unchanged
+    assert R.set_status_on_task(t, "no_such.mp4", "reviewed") is False
 
 
-def test_mark_reviewed_stamps_all_duplicate_records():
-    # Same turntable recorded on two publishes (the dup case): both get stamped so
-    # the newest (which collectable picks) doesn't re-collect forever.
-    rel = _tt("characters/panda", "v9")
-    task = tasks.new_task("asset", "characters/panda", "model")
-    task["status"] = "review"
-    task["publishes"] = [{"turntable": rel}, {"turntable": rel}]
-    assert R.mark_reviewed(task, rel, "2026-06-26") is True
-    assert all(r["reviewed"] == "2026-06-26" for r in task["publishes"])
-    assert R.collectable([task]) == []  # nothing left after stamping
-
-
-def test_merge_clips_dedupes_and_accumulates():
-    existing = [{"clip": "a.mp4", "entity": "x"}]
-    new = [{"clip": "a.mp4", "entity": "x"},   # dup -> dropped
-           {"clip": "b.mp4", "entity": "y"}]   # new -> kept
-    merged = R.merge_clips(existing, new)
-    assert [c["clip"] for c in merged] == ["a.mp4", "b.mp4"]
-
-
-def test_clear_reviewed_by_date_and_all():
-    task = tasks.new_task("asset", "characters/frankenstein", "model")
-    task["publishes"] = [
-        {"turntable": "a.mp4", "reviewed": "2026-06-26"},
-        {"turntable": "b.mp4", "reviewed": "2026-06-25"},
-        {"turntable": "c.mp4"},
-    ]
-    assert R.clear_reviewed(task, "2026-06-26") == 1
-    assert "reviewed" not in task["publishes"][0]
-    assert task["publishes"][1]["reviewed"] == "2026-06-25"  # other date untouched
-    assert R.clear_reviewed(task) == 1  # None -> clears the remaining stamp
-    assert all("reviewed" not in r for r in task["publishes"])
-
-
-def test_build_manifest_sorted_and_counted():
-    e1 = {"entity": "props/axe", "step": "model"}
-    e2 = {"entity": "characters/frankenstein", "step": "model"}
-    m = R.build_manifest([e1, e2], "2026-06-26")
-    assert m["count"] == 2 and m["date"] == "2026-06-26"
-    assert [c["entity"] for c in m["clips"]] == ["characters/frankenstein", "props/axe"]
-
-
-def test_render_index_html_lists_every_clip():
-    manifest = R.build_manifest([
-        {"entity": "characters/frankenstein", "step": "model",
-         "version": "frankenstein_model_v003", "by": "marco",
-         "description": "first pass",
-         "clip": "frankenstein_model_v003_turntable.mp4"},
-    ], "2026-06-26")
-    html = R.render_index_html(manifest)
-    assert "frankenstein_model_v003_turntable.mp4" in html
-    assert "marco" in html and "first pass" in html
-    assert "<video" in html and "2026-06-26" in html
-
-
-def test_render_index_html_escapes():
-    manifest = R.build_manifest([
-        {"entity": "a<b", "step": "model", "version": "v1", "by": "x",
-         "description": "a & <b>", "clip": "c.mp4"}], "2026-06-26")
-    html = R.render_index_html(manifest)
-    assert "a<b" not in html and "a&lt;b" in html
-    assert "a &amp; &lt;b&gt;" in html
-
-
-def test_record_collected_stamps_last_publish():
+def test_set_review_status_roundtrip_on_server():
     s = FakeSrv()
-    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/frankenstein", "model"))
-    tasks.publish_task(s, "/r", "marco", ["/tmp/frankenstein_model_v001.blend"], t["id"])
-    rel = _tt("characters/frankenstein", "frankenstein_model_v001")
-    # attach a turntable to the publish first (as turntable.record_turntable would)
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/panda", "model"))
+    rel = _tt("characters/panda", "panda_model_v001")
+    tasks.publish_task(s, "/r", "marco", ["/tmp/panda_model_v001.blend"], t["id"])
+    # attach a turntable to the publish (as the render would)
     from animpipe import turntable
     turntable.record_turntable(s, "/r", t["id"], rel, "marco")
-
-    assert R.record_collected(s, "/r", t["id"], rel, "2026-06-26", "marco") is True
+    assert R.set_review_status(s, "/r", t["id"], rel, "approved", "marco") is True
     reloaded = tasks.get_task(s, "/r", t["id"])
-    assert reloaded["publishes"][-1]["reviewed"] == "2026-06-26"
-    # idempotent-ish: a non-matching rel returns False
-    assert R.record_collected(s, "/r", t["id"], "other.mp4", "2026-06-26", "marco") is False
+    assert reloaded["publishes"][-1]["review_status"] == "approved"
+    assert reloaded["status"] == "done"
+
+
+def test_render_index_html_lists_items_and_status():
+    manifest = R.build_manifest([
+        {"entity": "characters/frankenstein", "step": "model",
+         "version": "frankenstein_model_v003", "by": "marco", "status": "approved",
+         "clip": "frankenstein_model_v003_turntable.mp4", "source": "x", "time": 1,
+         "description": "shading pass"}], "2026-06-27")
+    html = R.render_index_html(manifest)
+    assert "frankenstein_model_v003_turntable.mp4" in html
+    assert "Approved" in html and "marco" in html and "<video" in html

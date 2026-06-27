@@ -270,39 +270,32 @@ def cmd_turntable(args) -> int:
 
 
 def cmd_build_review(args) -> int:
-    """Collect the turntables waiting for review into a dated folder on the server,
-    write a clickable review sheet, and flag each as collected."""
+    """Export review items (optionally filtered by review status) to a dated folder
+    with a clickable index.html, for sharing/offline scrubbing."""
     from . import tasks as T
     from . import review as R
 
     cfg = ProjectConfig.load(args.config)
     date_str = args.date or R.today_str()
+    statuses = None if args.status == "all" else [args.status]
     creds = SFTPCredentials.from_env(args.env)
 
-    if args.dry_run:
-        # Read-only: just report what would collect.
-        with SFTPClient(creds) as client:
-            waiting = R.collectable(T.load_tasks(client, cfg.remote_root),
-                                    status=args.status)
-        if not waiting:
-            print(f"Nothing waiting for review (status '{args.status}').")
-            return 0
-        print(f"{len(waiting)} clip(s) for review {date_str}:")
-        for task, rec in waiting:
-            print(f"  {task.get('id')}  ->  {R.clip_name(rec)}")
-        print(f"(dry-run) would add {len(waiting)} clip(s) to "
-              f"{R.review_dir_rel(date_str)}/")
-        return 0
-
     with SFTPClient(creds) as client:
-        res = R.build_review_session(
-            client, remote_root=cfg.remote_root, project_name=cfg.name,
-            local_root=cfg.resolved_local_root(), username=creds.user,
-            date_str=date_str, status=args.status, log=print)
-    if not res["collected"]:
-        print(f"Nothing waiting for review (status '{args.status}').")
-        return 0
-    print(f"\nReview built -> {cfg.remote_root}/{res['folder_rel']}\n"
+        items = R.review_items(T.load_tasks(client, cfg.remote_root), statuses)
+        if not items:
+            print(f"No review items (status '{args.status}').")
+            return 0
+        if args.dry_run:
+            for it in items:
+                print(f"  {it['date']}  {it['entity']} · {it['version']}  "
+                      f"[{it['status']}]")
+            print(f"(dry-run) would export {len(items)} clip(s) to "
+                  f"{R.review_dir_rel(date_str)}/")
+            return 0
+        res = R.write_review_folder(
+            client, remote_root=cfg.remote_root, local_root=cfg.resolved_local_root(),
+            items=items, date_str=date_str, username=creds.user, log=print)
+    print(f"\nExported -> {cfg.remote_root}/{res['folder_rel']}\n"
           f"  local: {res['folder_local']}\n"
           f"  {res['count']} clip(s); open index.html to scrub the batch.")
     if getattr(args, "open", False):
@@ -311,45 +304,35 @@ def cmd_build_review(args) -> int:
     return 0
 
 
-def cmd_reset_review(args) -> int:
-    """Undo a review session: un-stamp the tasks collected that day and clear the
-    review folder, so 'build-review' can rebuild it from scratch."""
-    import shutil
-
+def cmd_review_status(args) -> int:
+    """Set the review status of a task's daily (approved completes the task)."""
     from . import tasks as T
     from . import review as R
 
     cfg = ProjectConfig.load(args.config)
-    date_str = args.date or R.today_str()
-    review_rel = R.review_dir_rel(date_str)
-    base = cfg.remote_root.rstrip("/") + "/" + review_rel
-
     creds = SFTPCredentials.from_env(args.env)
     with SFTPClient(creds) as client:
-        cleared = 0
-        for task in T.load_tasks(client, cfg.remote_root):
-            n = R.clear_reviewed(task, date_str)
-            if n:
-                cleared += n
-                print(f"  un-stamp {task.get('id')} ({n})")
-                if not args.dry_run:
-                    T.save_task(client, cfg.remote_root, task, actor=creds.user)
-        removed = 0
-        if client.exists(base):
-            for e in client.listdir(base):
-                if not e["is_dir"]:
-                    removed += 1
-                    if not args.dry_run:
-                        client.remove(base + "/" + e["name"])
+        task = T.get_task(client, cfg.remote_root, args.task)
+        if not task:
+            print(f"error: task not found: {args.task}", file=sys.stderr)
+            return 1
+        # Match the clip by filename substring against the task's turntables.
+        match = None
+        for rec in task.get("publishes") or []:
+            tt = rec.get("turntable")
+            if tt and (not args.clip or args.clip in os.path.basename(tt)):
+                match = tt
+        if not match:
+            print(f"error: no turntable matching '{args.clip}' on {args.task}",
+                  file=sys.stderr)
+            return 1
         if args.dry_run:
-            print(f"(dry-run) would un-stamp {cleared} record(s) and remove "
-                  f"{removed} file(s) from {review_rel}/")
+            print(f"(dry-run) would set {os.path.basename(match)} -> {args.status}")
             return 0
-        shutil.rmtree(os.path.join(cfg.resolved_local_root(), *review_rel.split("/")),
-                      ignore_errors=True)
-
-    print(f"Reset review {date_str}: un-stamped {cleared} record(s), cleared "
-          f"{removed} file(s). Run 'build-review' to rebuild.")
+        R.set_review_status(client, cfg.remote_root, args.task, match,
+                            args.status, creds.user)
+    print(f"{os.path.basename(match)} -> {args.status}"
+          + ("  (task -> done)" if args.status == "approved" else ""))
     return 0
 
 
@@ -520,20 +503,24 @@ def build_parser() -> argparse.ArgumentParser:
     tt.set_defaults(func=cmd_turntable)
 
     br = sub.add_parser("build-review", parents=[common],
-                        help="collect dailies waiting for review into a dated folder")
+                        help="export review items to a dated folder + index.html")
     br.add_argument("--date", default="",
-                    help="review session date (default: today, YYYY-MM-DD)")
-    br.add_argument("--status", default="review",
-                    help="task status to collect (default: review)")
+                    help="export folder date (default: today, YYYY-MM-DD)")
+    br.add_argument("--status", default="all",
+                    choices=["all", "to_review", "reviewed", "approved"],
+                    help="which review items to export (default: all)")
     br.add_argument("--open", action="store_true",
-                    help="reveal the review folder when done")
+                    help="reveal the export folder when done")
     br.set_defaults(func=cmd_build_review)
 
-    rr = sub.add_parser("reset-review", parents=[common],
-                        help="undo a review session so build-review can redo it")
-    rr.add_argument("--date", default="",
-                    help="review session date to reset (default: today)")
-    rr.set_defaults(func=cmd_reset_review)
+    rs = sub.add_parser("review-status", parents=[common],
+                        help="set a daily's review status (approved completes the task)")
+    rs.add_argument("--task", required=True, help="task id")
+    rs.add_argument("--clip", default="",
+                    help="match the turntable by filename substring (default: latest)")
+    rs.add_argument("--status", required=True,
+                    choices=["to_review", "reviewed", "approved"])
+    rs.set_defaults(func=cmd_review_status)
 
     rc = sub.add_parser("review-copy", parents=[common],
                         help="open the review folder (or copy one clip to clipboard)")

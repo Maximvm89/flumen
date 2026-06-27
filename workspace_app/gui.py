@@ -67,6 +67,14 @@ def step_icon(step: str) -> str:
             return ic
     return "▫️"
 
+
+# Review-item status visuals: status -> (text color, leading dot).
+REVIEW_STATUS_STYLE = {
+    "to_review": (QColor(245, 158, 66), "🟠"),
+    "reviewed":  (QColor(150, 155, 165), "⚪"),
+    "approved":  (QColor(74, 222, 128), "🟢"),
+}
+
 ROLE_NODE = Qt.UserRole
 ROLE_LOADED = Qt.UserRole + 1
 
@@ -138,7 +146,7 @@ class MainWindow(QMainWindow):
         # Auto-load shortly after the window appears.
         QTimer.singleShot(150, self._load_tasks)
         QTimer.singleShot(200, self._load_root)
-        QTimer.singleShot(250, self._refresh_review)
+        QTimer.singleShot(250, self._load_review_items)
 
     # ---- connection (persistent, serialized via lock) -----------------------
     def _conn_do(self, fn):
@@ -357,166 +365,225 @@ class MainWindow(QMainWindow):
     def _build_dailies_page(self) -> QWidget:
         page = QWidget()
         dl = QVBoxLayout(page)
+        self._review_items: list[dict] = []
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Review date:"))
-        self.ed_review_date = QLineEdit(reviewmod.today_str())
-        self.ed_review_date.setMaximumWidth(120)
-        self.ed_review_date.editingFinished.connect(self._refresh_review)
-        top.addWidget(self.ed_review_date)
-        self.b_review_build = QPushButton("Build / Update Review")
-        self.b_review_build.setToolTip(
-            "Collect the turntables of tasks in 'review' status into this day's "
-            "folder, and flag them as collected.")
-        self.b_review_build.clicked.connect(self._build_review)
-        top.addWidget(self.b_review_build)
+        top.addWidget(QLabel("Show:"))
+        self._review_filter_btns: dict[str, QPushButton] = {}
+        for st in reviewmod.REVIEW_STATUSES:
+            color, dot = REVIEW_STATUS_STYLE[st]
+            b = QPushButton(f"{dot} {reviewmod.REVIEW_LABELS[st]}")
+            b.setCheckable(True)
+            b.setChecked(st != "reviewed")   # default: hide 'reviewed'
+            b.setStyleSheet(
+                "QPushButton { padding:3px 12px; border-radius:6px; } "
+                f"QPushButton:checked {{ font-weight:600; color:{color.name()}; }}")
+            b.toggled.connect(self._render_review_tree)
+            self._review_filter_btns[st] = b
+            top.addWidget(b)
         top.addStretch(1)
-        self.b_review_refresh = QPushButton("Refresh")
-        self.b_review_refresh.clicked.connect(self._refresh_review)
-        top.addWidget(self.b_review_refresh)
+        b_refresh = QPushButton("Refresh")
+        b_refresh.clicked.connect(self._load_review_items)
+        top.addWidget(b_refresh)
         dl.addLayout(top)
 
-        self.lbl_review = QLabel("—")
-        self.lbl_review.setStyleSheet("color:#666;")
-        dl.addWidget(self.lbl_review)
-
-        self.review_list = QTableWidget(0, 1)
-        self.review_list.setHorizontalHeaderLabels(["Clip"])
-        self.review_list.horizontalHeader().setStretchLastSection(True)
-        self.review_list.verticalHeader().setVisible(False)
-        self.review_list.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.review_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.review_list.itemDoubleClicked.connect(lambda *_: self._copy_review_clip())
-        dl.addWidget(self.review_list, 1)
+        self.review_tree = QTreeWidget()
+        self.review_tree.setColumnCount(3)
+        self.review_tree.setHeaderLabels(["Item", "Artist", "Status"])
+        self.review_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.review_tree.setAlternatingRowColors(True)
+        self.review_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.review_tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.review_tree.itemDoubleClicked.connect(lambda *_: self._play_clip())
+        dl.addWidget(self.review_tree, 1)
 
         ops = QHBoxLayout()
-        self.b_review_view = QPushButton("Open Review Sheet")
-        self.b_review_view.setToolTip("Open index.html — all the day's clips in one "
-                                      "page to scrub through.")
-        self.b_review_view.clicked.connect(self._open_review_index)
-        self.b_review_open = QPushButton("Open Folder")
-        self.b_review_open.setToolTip("Open the review folder in Finder/Explorer to "
-                                      "drag clips into SyncSketch.")
-        self.b_review_open.clicked.connect(self._open_review_folder)
-        self.b_review_copy = QPushButton("Copy Clip to Clipboard")
-        self.b_review_copy.setToolTip("Copy the selected clip so SyncSketch ▸ MEDIA "
-                                      "▸ Upload from ▸ Clipboard can paste it.")
-        self.b_review_copy.clicked.connect(self._copy_review_clip)
-        ops.addWidget(self.b_review_view)
-        ops.addWidget(self.b_review_open)
-        ops.addWidget(self.b_review_copy)
+        ops.addWidget(QLabel("Set status:"))
+        self.cb_review_status = QComboBox()
+        for st in reviewmod.REVIEW_STATUSES:
+            self.cb_review_status.addItem(reviewmod.REVIEW_LABELS[st], st)
+        ops.addWidget(self.cb_review_status)
+        b_apply = QPushButton("Apply")
+        b_apply.clicked.connect(self._set_review_status)
+        ops.addWidget(b_apply)
+        ops.addSpacing(18)
+        b_play = QPushButton("▶ Play")
+        b_play.clicked.connect(self._play_clip)
+        ops.addWidget(b_play)
+        b_copy = QPushButton("Copy clip")
+        b_copy.setToolTip("Copy the clip to the clipboard (e.g. for SyncSketch).")
+        b_copy.clicked.connect(self._copy_review_clip)
+        ops.addWidget(b_copy)
         ops.addStretch(1)
+        b_export = QPushButton("Export…")
+        b_export.setToolTip("Export the visible items to a dated folder + index.html.")
+        b_export.clicked.connect(self._export_review)
+        ops.addWidget(b_export)
         dl.addLayout(ops)
         return page
 
-    def _open_review_index(self):
-        import webbrowser
-        folder = self._review_local_dir()
-        idx = os.path.join(folder, "index.html") if folder else None
-        if idx and os.path.isfile(idx):
-            webbrowser.open("file://" + idx)
-        else:
-            QMessageBox.information(
-                self, "No review sheet",
-                "No index.html for this date yet — click 'Build / Update Review' "
-                "first (or sync the review folder down).")
-
-    def _review_local_dir(self) -> str | None:
-        if not self.cfg:
-            return None
-        date_str = self.ed_review_date.text().strip() or reviewmod.today_str()
-        return os.path.join(self.cfg.resolved_local_root(),
-                            *reviewmod.review_dir_rel(date_str).split("/"))
-
-    def _refresh_review(self):
-        import glob
-        self.review_list.setRowCount(0)
-        folder = self._review_local_dir()
-        if not folder:
-            self.lbl_review.setText("Sign in to use dailies review.")
-            return
-        clips = sorted(glob.glob(os.path.join(folder, "*.mp4")))
-        self.review_list.setRowCount(len(clips))
-        for i, c in enumerate(clips):
-            item = QTableWidgetItem(os.path.basename(c))
-            item.setData(Qt.UserRole, c)
-            self.review_list.setItem(i, 0, item)
-        if clips:
-            self.lbl_review.setText(f"{len(clips)} clip(s) in {folder}")
-        elif os.path.isdir(folder):
-            self.lbl_review.setText(f"No clips yet in {folder}")
-        else:
-            self.lbl_review.setText("No review built for this date yet — "
-                                    "click 'Build / Update Review'.")
-
-    def _build_review(self):
+    def _load_review_items(self):
         if not self.cfg:
             return
-        date_str = self.ed_review_date.text().strip() or reviewmod.today_str()
-        user = self._creds_user_safe()
-        remote, pname = self.cfg.remote_root, self.cfg.name
-        local_root = self.cfg.resolved_local_root()
-        self.b_review_build.setEnabled(False)
-        self.status.showMessage(f"Building review {date_str}…")
+        remote = self.cfg.remote_root
 
         def work():
-            return self._conn_do(lambda c: reviewmod.build_review_session(
-                c, remote_root=remote, project_name=pname, local_root=local_root,
-                username=user, date_str=date_str))
+            return self._conn_do(lambda c: reviewmod.review_items(
+                tasksmod.load_tasks(c, remote)))
 
-        def done(res):
-            self.b_review_build.setEnabled(True)
-            n_new = len(res.get("collected") or [])
-            if n_new:
-                self.status.showMessage(
-                    f"Review {date_str}: added {n_new} clip(s) "
-                    f"({res.get('count', 0)} total).")
-            else:
-                self.status.showMessage(
-                    f"Review {date_str}: nothing new waiting for review.")
-            self._refresh_review()
+        def done(items):
+            self._busy_buttons(False)
+            self._review_items = items
+            self._render_review_tree()
 
-        job = Job(work)
-        self._jobs.append(job)
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Loading review items…")
 
-        def _fail(m, j=job):
-            if j in self._jobs:
-                self._jobs.remove(j)
-            self.b_review_build.setEnabled(True)
-            self._on_error(m)
+    def _render_review_tree(self):
+        from collections import OrderedDict
+        tree = self.review_tree
+        tree.clear()
+        active = {st for st, b in self._review_filter_btns.items() if b.isChecked()}
+        groups: "OrderedDict[str, list]" = OrderedDict()
+        for it in self._review_items:
+            if it["status"] not in active:
+                continue
+            groups.setdefault(it["date"] or "(no date)", []).append(it)
 
-        job.done.connect(lambda r, j=job: (
-            self._jobs.remove(j) if j in self._jobs else None, done(r)))
-        job.failed.connect(_fail)
-        job.start()
+        shown = 0
+        for date, items in groups.items():
+            parent = QTreeWidgetItem([f"{date}    ({len(items)})", "", ""])
+            pf = parent.font(0)
+            pf.setBold(True)
+            parent.setFont(0, pf)
+            parent.setFirstColumnSpanned(True)
+            tree.addTopLevelItem(parent)
+            for it in items:
+                label = f"{step_icon(it['step'])}  {it['entity']} · {it['version']}"
+                color, dot = REVIEW_STATUS_STYLE.get(it["status"], (None, "•"))
+                child = QTreeWidgetItem([
+                    label, it["by"],
+                    f"{dot}  {reviewmod.REVIEW_LABELS.get(it['status'], it['status'])}"])
+                if color is not None:
+                    child.setForeground(2, QBrush(color))
+                    cf = child.font(2)
+                    cf.setBold(True)
+                    child.setFont(2, cf)
+                child.setData(0, Qt.UserRole, it)
+                parent.addChild(child)
+                shown += 1
+            parent.setExpanded(True)
+        self.status.showMessage(f"{shown} review item(s) shown.")
 
-    def _open_review_folder(self):
-        folder = self._review_local_dir()
-        if folder and os.path.isdir(folder):
-            clipboardmod.reveal(folder)
-        else:
-            QMessageBox.information(self, "No folder",
-                                    "Build the review first (no local folder yet).")
+    def _selected_review_items(self) -> list[dict]:
+        out = []
+        for node in self.review_tree.selectedItems():
+            d = node.data(0, Qt.UserRole)
+            if d:
+                out.append(d)
+        return out
 
-    def _selected_review_clip(self) -> str | None:
-        rows = self.review_list.selectionModel().selectedRows()
-        if not rows:
-            return None
-        item = self.review_list.item(rows[0].row(), 0)
-        return item.data(Qt.UserRole) if item else None
+    def _set_review_status(self):
+        if not self.cfg:
+            return
+        items = self._selected_review_items()
+        if not items:
+            QMessageBox.information(self, "No items selected",
+                                    "Select review item(s) first.")
+            return
+        status = self.cb_review_status.currentData()
+        remote = self.cfg.remote_root
+        actor = self._creds_user_safe()
+        targets = [(it["task_id"], it["source"]) for it in items]
+
+        def work():
+            for tid, src in targets:
+                self._conn_do(lambda c, a=tid, b=src: reviewmod.set_review_status(
+                    c, remote, a, b, status, actor))
+            return len(targets)
+
+        def done(_n):
+            self._busy_buttons(False)
+            self._load_review_items()   # approve may have completed a task
+            self._load_tasks()          # reflect task-status changes in Tasks tab
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Updating review status…")
+
+    def _review_clip_local(self, it: dict) -> str:
+        return os.path.join(self.cfg.resolved_local_root(), *it["source"].split("/"))
+
+    def _ensure_clip_then(self, it: dict, after, busy: str):
+        """Make sure the item's mp4 is local (download if needed), then call after(path)."""
+        local = self._review_clip_local(it)
+        if os.path.isfile(local):
+            after(local)
+            return
+        remote = self.cfg.remote_root
+
+        def work():
+            self._conn_do(lambda c: c.download(remote.rstrip("/") + "/" + it["source"],
+                                               local))
+            return local
+
+        def done(p):
+            self._busy_buttons(False)
+            after(p)
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg=busy)
+
+    def _play_clip(self):
+        items = self._selected_review_items()
+        if not items:
+            QMessageBox.information(self, "No item selected",
+                                    "Select a review item to play.")
+            return
+        self._ensure_clip_then(items[0], clipboardmod.open_path, "Fetching clip…")
 
     def _copy_review_clip(self):
-        clip = self._selected_review_clip()
-        if not clip:
-            QMessageBox.information(self, "No clip selected",
-                                    "Select a clip in the list first.")
+        items = self._selected_review_items()
+        if not items:
+            QMessageBox.information(self, "No item selected", "Select a review item.")
             return
-        if clipboardmod.copy_file(clip):
+
+        def _copy(p):
+            ok = clipboardmod.copy_file(p)
             self.status.showMessage(
-                f"Copied {os.path.basename(clip)} — paste in SyncSketch "
-                "(MEDIA ▸ Upload from ▸ Clipboard).")
-        else:
-            self.status.showMessage("Could not copy to clipboard on this platform.")
+                f"Copied {os.path.basename(p)} to clipboard." if ok
+                else "Could not copy to clipboard on this platform.")
+
+        self._ensure_clip_then(items[0], _copy, "Fetching clip…")
+
+    def _export_review(self):
+        if not self.cfg:
+            return
+        active = {st for st, b in self._review_filter_btns.items() if b.isChecked()}
+        items = [it for it in self._review_items if it["status"] in active]
+        if not items:
+            QMessageBox.information(self, "Nothing to export",
+                                    "No visible items to export.")
+            return
+        date_str = reviewmod.today_str()
+        remote = self.cfg.remote_root
+        local_root = self.cfg.resolved_local_root()
+        actor = self._creds_user_safe()
+
+        def work():
+            return self._conn_do(lambda c: reviewmod.write_review_folder(
+                c, remote_root=remote, local_root=local_root, items=items,
+                date_str=date_str, username=actor))
+
+        def done(res):
+            self._busy_buttons(False)
+            self.status.showMessage(
+                f"Exported {res['count']} clip(s) -> {res['folder_local']}")
+            idx = os.path.join(res["folder_local"], "index.html")
+            if os.path.isfile(idx):
+                webbrowser.open("file://" + idx)
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Exporting review…")
 
     # ---- bug report ---------------------------------------------------------
     def _env_text(self) -> str:

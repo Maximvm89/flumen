@@ -58,6 +58,21 @@ def copy_file(path: str) -> bool:
     return False
 
 
+def open_path(path: str) -> bool:
+    """Open a file in its default application (e.g. play an mp4). Distinct from
+    reveal(), which selects it in the file manager."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", path], check=False)
+        elif sys.platform.startswith("win"):
+            os.startfile(path)  # noqa: S606 — user-facing open
+        else:
+            subprocess.run(["xdg-open", path], check=False)
+        return True
+    except (OSError, subprocess.SubprocessError, AttributeError):
+        return False
+
+
 def reveal(path: str) -> bool:
     """Open `path` in the file manager (a folder opens it; a file is selected)."""
     try:
