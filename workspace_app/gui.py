@@ -208,6 +208,9 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.b_signin, 2, 3)
         grid.addWidget(QLabel("Local folder:"), 1, 0)
         self.ed_local = QLineEdit()
+        # Persist the folder the moment the artist changes it, so it survives a
+        # restart without needing the "Configure Blender" button.
+        self.ed_local.editingFinished.connect(self._persist_local_root)
         grid.addWidget(self.ed_local, 1, 1, 1, 2)
         b_local = QPushButton("Browse…")
         b_local.clicked.connect(self._pick_local)
@@ -747,8 +750,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Config error", str(exc))
             return
         self.lbl_project.setText(f"{self.cfg.name} [{self.cfg.code}]  →  {self.cfg.remote_root}")
+        # Restore the saved folder (resolved_local_root reads the per-user file) and
+        # use it for the session, so it's filled in and sticky on every restart.
+        resolved = self.cfg.resolved_local_root()
         if not self.ed_local.text().strip():
-            self.ed_local.setText(self.cfg.resolved_local_root())
+            self.ed_local.setText(resolved)
+        self.cfg.local_root = self.ed_local.text().strip() or resolved
         self._refresh_user_label()
 
     def _refresh_user_label(self):
@@ -854,7 +861,22 @@ class MainWindow(QMainWindow):
         p = QFileDialog.getExistingDirectory(self, "Select local project folder")
         if p:
             self.ed_local.setText(p)
+            self._persist_local_root()
             self._load_root()
+
+    def _persist_local_root(self):
+        """Save the local folder per-user (survives restarts) and use it for the
+        rest of this session. Called whenever the field changes — browse, manual
+        edit, or the Configure button — so the artist never has to re-set it."""
+        local = self.ed_local.text().strip()
+        if not local:
+            return
+        try:
+            save_local_root(local)
+        except Exception:  # noqa: BLE001 — never let persistence crash the UI
+            pass
+        if self.cfg:
+            self.cfg.local_root = local
 
     # ---- actions ------------------------------------------------------------
     def _on_mirror(self):
@@ -883,10 +905,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Local folder", "Enter a local folder first.")
             return
         # Authoritative: persist per-user (survives the cached config.yaml being
-        # re-downloaded from the server on each sign-in).
-        save_local_root(local)
-        if self.cfg:
-            self.cfg.local_root = local   # use it for this session immediately
+        # re-downloaded from the server on each sign-in). The field also persists on
+        # browse/edit, so this button is just the explicit confirmation path.
+        self._persist_local_root()
         # Best-effort: also write it into a real (non-cached) config.yaml for devs.
         try:
             if os.path.abspath(self.config_path) != os.path.abspath(CACHED_CONFIG):
