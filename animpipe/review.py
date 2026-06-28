@@ -32,9 +32,13 @@ def review_dir_rel(date_str: str) -> str:
 
 
 def version_from_turntable(turntable_rel: str) -> str:
-    """'…/frankenstein_model_v003_turntable.mp4' -> 'frankenstein_model_v003'."""
+    """'…/frankenstein_model_v003_turntable.mp4' -> 'frankenstein_model_v003'.
+    Also strips the '_playblast' suffix used for shot playblasts."""
     base = os.path.splitext(os.path.basename(turntable_rel or ""))[0]
-    return base[: -len("_turntable")] if base.endswith("_turntable") else base
+    for suf in ("_turntable", "_playblast"):
+        if base.endswith(suf):
+            return base[: -len(suf)]
+    return base
 
 
 def clip_name(rec: dict) -> str:
@@ -59,6 +63,17 @@ def item_date(rec: dict) -> str:
         return ""
 
 
+_SHOT_STEPS = ("layout", "animation", "lighting", "comp")
+
+
+def _review_kind(step: str) -> str:
+    if step == "surface":
+        return "look"
+    if step in _SHOT_STEPS:
+        return "shot"
+    return "model"
+
+
 def review_items(task_list: list[dict],
                  statuses: list[str] | set[str] | None = None) -> list[dict]:
     """Every publish carrying a turntable, across all tasks, as a review item.
@@ -79,7 +94,7 @@ def review_items(task_list: list[dict],
                 "clip": clip_name(rec),
                 "source": rec.get("turntable", ""),
                 "sheet": rec.get("sheet", ""),       # texture/UV sheet (looks)
-                "kind": "look" if task.get("step") == "surface" else "model",
+                "kind": _review_kind(task.get("step", "")),
                 "by": rec.get("by", ""),
                 "description": rec.get("description", ""),
                 "time": rec.get("time"),

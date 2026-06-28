@@ -123,3 +123,39 @@ def test_surface_mesh_without_material_errors():
     issues = checks.run_checks("surface", _scene(), [loc, geo], textures=[])
     assert checks.has_errors(issues)
     assert any("material" in m for lvl, m in issues if lvl == checks.ERROR)
+
+
+def _shot_scene(camera=True, frame_start=1001, frame_end=1100, system="METRIC"):
+    s = _scene(system=system)
+    s.camera = object() if camera else None
+    s.frame_start = frame_start
+    s.frame_end = frame_end
+    return s
+
+
+def test_check_shot_ok():
+    issues = checks.check_shot(_shot_scene(), [])
+    assert issues == []                                  # camera + 1001-1100 range
+
+
+def test_check_shot_requires_camera():
+    issues = checks.check_shot(_shot_scene(camera=False), [])
+    assert checks.has_errors(issues)
+    assert any("camera" in m.lower() for _, m in issues)
+
+
+def test_check_shot_empty_range_errors():
+    issues = checks.check_shot(_shot_scene(frame_start=1001, frame_end=1001), [])
+    assert checks.has_errors(issues)
+
+
+def test_check_shot_wrong_start_warns():
+    issues = checks.check_shot(_shot_scene(frame_start=1, frame_end=100), [])
+    assert not checks.has_errors(issues)                 # warning, not error
+    assert any(lvl == checks.WARNING and "1001" in m for lvl, m in issues)
+
+
+def test_run_checks_shot_skips_publish_locator():
+    # a shot has no PUBLISH locator; the shot gate must not demand one
+    issues = checks.run_checks("layout", _shot_scene(), [], ttype="shot")
+    assert not checks.has_errors(issues)

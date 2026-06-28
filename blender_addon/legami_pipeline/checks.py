@@ -121,8 +121,31 @@ def check_surface(objects, locator_name, textures):
     return issues
 
 
-def run_checks(step, scene, objects, locator="PUBLISH", textures=None):
-    """Dispatch by task step. Every publish must have a populated publish locator."""
+def check_shot(scene, objects, frame_start_expected=1001):
+    """Shot (layout/anim) publish gate: a camera must be set and the timeline must
+    be the shot's frame range (starting at 1001). No publish locator — a shot is the
+    assembled scene, not a single asset under a locator."""
+    issues = check_units(scene)
+    if getattr(scene, "camera", None) is None:
+        issues.append((ERROR, "No active scene camera — Build shot creates the shot "
+                              "camera; set one before publishing."))
+    fs = int(getattr(scene, "frame_start", 0) or 0)
+    fe = int(getattr(scene, "frame_end", 0) or 0)
+    if fe <= fs:
+        issues.append((ERROR, f"Frame range is empty ({fs}-{fe}). Run Build shot to "
+                              f"set the shot's frame range."))
+    elif fs != frame_start_expected:
+        issues.append((WARNING, f"Frame start is {fs}, expected {frame_start_expected}"
+                               f" — run Build shot to align the timeline."))
+    return issues
+
+
+def run_checks(step, scene, objects, locator="PUBLISH", textures=None,
+               ttype=None, frame_start=1001):
+    """Dispatch by task type/step. Asset publishes need a populated publish locator;
+    a shot publish is checked for a camera + the right frame range instead."""
+    if ttype == "shot":
+        return check_shot(scene, objects, frame_start)
     if step == "model":
         issues = check_model(scene, objects)
     elif step == "surface":

@@ -493,11 +493,12 @@ def _collect_look(context):
     return materials, amap
 
 
-def _run_task_checks(step, context):
-    """run_checks with surface texture state injected for the surface step."""
+def _run_task_checks(step, context, ttype=None):
+    """run_checks with surface texture state injected for the surface step, and the
+    task type so shot publishes get the shot gate (camera + frame range)."""
     extra = _texture_check_records() if step == "surface" else None
     return checks.run_checks(step, context.scene, list(context.scene.objects),
-                             publish_locator_name(), textures=extra)
+                             publish_locator_name(), textures=extra, ttype=ttype)
 
 
 class LEGAMI_OT_turntable_framing(bpy.types.Operator):
@@ -695,7 +696,7 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             self.report({"ERROR"}, "No active task. Open this scene from the "
                                    "Workspace app's 'Open in Blender'.")
             return {"CANCELLED"}
-        self._issues = _run_task_checks(task["step"], context)
+        self._issues = _run_task_checks(task["step"], context, task.get("type"))
         if task.get("step") == "surface":
             global _EXISTING_LOOKS
             _EXISTING_LOOKS = _fetch_existing_looks(task["id"])
@@ -712,6 +713,9 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             wm = context.window_manager
             col.prop(wm, "legami_look_name", text="Look name")
             col.prop(wm, "legami_render_turntable", text="Render look review")
+        if task and task.get("type") == "shot":
+            col.prop(context.window_manager, "legami_render_turntable",
+                     text="Render playblast")
         col.separator()
         _draw_checks(col, self._issues)
         col.separator()
@@ -726,7 +730,7 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             self.report({"ERROR"}, "No active task.")
             return {"CANCELLED"}
 
-        issues = _run_task_checks(task["step"], context)
+        issues = _run_task_checks(task["step"], context, task.get("type"))
         if checks.has_errors(issues):
             errs = [m for lvl, m in issues if lvl == checks.ERROR]
             self.report({"ERROR"}, "Publish blocked: " + errs[0])
@@ -781,6 +785,16 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             texture_files = written
             kind = f"look '{look_name}': {len(materials)} material(s), " \
                    f"{len(written)} texture file(s)"
+        elif task.get("type") == "shot":
+            # Shot publish: save the assembled scene (linked rigs + camera +
+            # animation) as the versioned publish — no collection wrap, no FBX.
+            try:
+                bpy.ops.file.make_paths_relative()
+            except Exception:  # noqa: BLE001
+                pass
+            bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
+            files = [pub_path]
+            kind = ".blend (shot)"
         else:
             # Wrap the PUBLISH subtree in a collection named after the asset so a
             # downstream shot can LINK it as one unit (clean library overrides), and
@@ -856,6 +870,15 @@ class LEGAMI_OT_publish(bpy.types.Operator):
                 tt_msg = " Look review (turntable + texture sheet) rendering → dailies."
             except Exception as exc:  # noqa: BLE001
                 print("[Legami] could not start look review:", exc)
+        elif (task.get("type") == "shot"
+                and context.window_manager.legami_render_turntable):
+            try:
+                pb_cmd, _ = _toolkit_cmd(
+                    ["playblast", "--shot-file", pub_path, "--task", task["id"]])
+                subprocess.Popen(pb_cmd, cwd=td)
+                tt_msg = " Playblast rendering in background → dailies."
+            except Exception as exc:  # noqa: BLE001
+                print("[Legami] could not start playblast:", exc)
 
         warns = sum(1 for lvl, _ in issues if lvl == checks.WARNING)
         suffix = f" ({warns} warning(s))" if warns else ""

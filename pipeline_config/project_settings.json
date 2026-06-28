@@ -65,6 +65,15 @@
   "publish": {
     "locator": "PUBLISH"
   },
+  "_playblast_note": "Shot playblast (layout/anim): a render of the shot's frame range through the shot camera, pushed to 07_dailies on publish. engine BLENDER_EEVEE_NEXT renders full materials+textures+lighting (matches the shaded viewport; a soft key light is added if the shot has none). BLENDER_WORKBENCH is a fast flat/shadeless pass; for it, color=TEXTURE shows the texture maps. resolution/fps for the preview.",
+  "playblast": {
+    "engine": "BLENDER_EEVEE_NEXT",
+    "color": "TEXTURE",
+    "resolution_x": 1280,
+    "resolution_y": 720,
+    "fps": 24,
+    "view_transform": ""
+  },
   "_assembly_note": "Shot 'elements' (breakdown): how each element resolves per step. layout/animation link the asset's rig (model fallback); lighting will load the alembic cache + apply looks (next round). camera_step = which shot step publishes the shot's own camera. Omit to use the built-in defaults.",
   "assembly": {
     "camera_step": "layout",

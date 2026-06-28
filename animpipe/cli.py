@@ -429,6 +429,20 @@ def cmd_turntable(args) -> int:
                                    dry_run=args.dry_run, preview=args.preview)
 
 
+def cmd_playblast(args) -> int:
+    """Render a shot playblast (its frame range through the shot camera) and publish
+    it to 07_dailies, attached to the publish record. Used after a shot publish."""
+    cfg = ProjectConfig.load(args.config)
+    if not args.dry_run and not os.path.isfile(args.shot_file):
+        print(f"error: shot file not found: {args.shot_file}", file=sys.stderr)
+        return 1
+    from . import playblast
+    creds = (SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
+             if args.dry_run else SFTPCredentials.from_env(args.env))
+    return playblast.run_playblast(cfg, creds, args.shot_file, args.task,
+                                   dry_run=args.dry_run)
+
+
 def cmd_build_review(args) -> int:
     """Export review items (optionally filtered by review status) to a dated folder
     with a clickable index.html, for sharing/offline scrubbing."""
@@ -819,6 +833,13 @@ def build_parser() -> argparse.ArgumentParser:
     tt.add_argument("--preview", action="store_true",
                     help="open Blender interactively to preview framing (no render)")
     tt.set_defaults(func=cmd_turntable)
+
+    pbl = sub.add_parser("playblast", parents=[common],
+                         help="render a shot playblast and publish it to 07_dailies")
+    pbl.add_argument("--shot-file", required=True, dest="shot_file",
+                     help="published shot .blend to playblast")
+    pbl.add_argument("--task", required=True, help="shot task id")
+    pbl.set_defaults(func=cmd_playblast)
 
     br = sub.add_parser("build-review", parents=[common],
                         help="export review items to a dated folder + index.html")

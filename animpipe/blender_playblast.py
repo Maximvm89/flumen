@@ -1,0 +1,146 @@
+"""Headless playblast render, driven by env vars from animpipe.playblast.
+
+Blender opens the published shot .blend (camera + linked rigs + animation); this
+script renders its frame range through the scene camera into a PNG sequence with a
+fast engine (Workbench by default), writing an fps sidecar for the encoder.
+"""
+
+import json
+import math
+import os
+
+import bpy
+
+_EEVEE = {"BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"}
+_OK_ENGINES = _EEVEE | {"BLENDER_WORKBENCH", "CYCLES"}
+
+
+def _env(key, default=""):
+    return os.environ.get(key, default)
+
+
+def _set_engine(render, requested):
+    """Set the requested engine, falling back across EEVEE id changes / Workbench."""
+    for eng in (requested, "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE", "BLENDER_WORKBENCH"):
+        if not eng:
+            continue
+        try:
+            render.engine = eng
+            return render.engine
+        except (TypeError, ValueError):
+            continue
+    return render.engine
+
+
+def _boost_shadows(scene):
+    """Bump EEVEE's shadow pool to the largest size so a busy shot doesn't overflow
+    it ('Shadow buffer full'). Same fix as the turntable."""
+    ee = getattr(scene, "eevee", None)
+    if not ee or not hasattr(ee, "shadow_pool_size"):
+        return
+    try:
+        items = [i.identifier for i in
+                 ee.bl_rna.properties["shadow_pool_size"].enum_items]
+        if items:
+            ee.shadow_pool_size = items[-1]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ensure_lighting(scene):
+    """If the shot carries no lights (typical in layout), add a soft key sun + a
+    little ambient world so the EEVEE playblast reads textured + shaded, not black."""
+    if any(getattr(o, "type", "") == "LIGHT" for o in scene.objects):
+        return
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new("PB_World")
+    try:
+        scene.world.use_nodes = True
+        bg = scene.world.node_tree.nodes.get("Background")
+        if bg is not None:
+            bg.inputs[0].default_value = (0.25, 0.25, 0.27, 1.0)   # ambient fill
+            bg.inputs[1].default_value = 1.0
+    except Exception:  # noqa: BLE001
+        pass
+    key = bpy.data.lights.new("PB_Key", type="SUN")
+    key.energy = 2.5
+    ob = bpy.data.objects.new("PB_Key", key)
+    ob.rotation_euler = (math.radians(55), 0.0, math.radians(35))
+    scene.collection.objects.link(ob)
+
+
+def main():
+    scene = bpy.context.scene
+    frames_dir = _env("LEGAMI_PB_FRAMES_DIR")
+    if not frames_dir:
+        print("[playblast] no frames dir; aborting.")
+        return
+    os.makedirs(frames_dir, exist_ok=True)
+
+    # A camera is required to render — prefer the scene camera, else the first one.
+    if scene.camera is None:
+        scene.camera = next((o for o in scene.objects if o.type == "CAMERA"), None)
+    if scene.camera is None:
+        print("[playblast] no camera in the shot; nothing to render.")
+        return
+
+    r = scene.render
+    requested = _env("LEGAMI_PB_ENGINE", "BLENDER_EEVEE_NEXT")
+    engine = _set_engine(r, requested if requested in _OK_ENGINES else "BLENDER_EEVEE_NEXT")
+    r.resolution_x = int(_env("LEGAMI_PB_RESX", "1280"))
+    r.resolution_y = int(_env("LEGAMI_PB_RESY", "720"))
+    r.resolution_percentage = 100
+    r.film_transparent = False
+    r.image_settings.file_format = "PNG"
+    r.filepath = os.path.join(frames_dir, "frame_")
+
+    # Burn frame number + camera into the corner so reviewers can call timings.
+    r.use_stamp = True
+    for attr, on in (("use_stamp_frame", True), ("use_stamp_camera", True),
+                     ("use_stamp_date", False), ("use_stamp_render_time", False),
+                     ("use_stamp_filename", False), ("use_stamp_scene", False)):
+        if hasattr(r, attr):
+            setattr(r, attr, on)
+
+    # EEVEE (default): renders the real materials + textures + lighting, so the
+    # playblast matches the artist's shaded viewport. Make sure it's lit and the
+    # shadow pool is big enough.
+    if engine in _EEVEE:
+        _ensure_lighting(scene)
+        _boost_shadows(scene)
+    # Workbench: fast solid shading. TEXTURE colour shows the texture maps but is
+    # flat/shadeless; MATERIAL shows flat base colours. Opt in via playblast.engine.
+    elif engine == "BLENDER_WORKBENCH":
+        color = _env("LEGAMI_PB_COLOR", "TEXTURE").upper()
+        if color not in {"MATERIAL", "TEXTURE", "SINGLE", "OBJECT", "VERTEX", "RANDOM"}:
+            color = "TEXTURE"
+        try:
+            shading = scene.display.shading
+            shading.light = "STUDIO"
+            shading.color_type = color
+            shading.show_cavity = False
+        except Exception:  # noqa: BLE001
+            pass
+
+    view = _env("LEGAMI_PB_VIEW", "")
+    if view:
+        try:
+            scene.view_settings.view_transform = view
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Frame range comes from the file (Build shot set it); allow an env override.
+    if _env("LEGAMI_PB_START"):
+        scene.frame_start = int(_env("LEGAMI_PB_START"))
+    if _env("LEGAMI_PB_END"):
+        scene.frame_end = int(_env("LEGAMI_PB_END"))
+
+    with open(os.path.join(frames_dir, "_tt_meta.json"), "w", encoding="utf-8") as fh:
+        json.dump({"fps": int(scene.render.fps)}, fh)
+
+    print(f"[playblast] {engine} {r.resolution_x}x{r.resolution_y} "
+          f"frames {scene.frame_start}-{scene.frame_end} cam={scene.camera.name}")
+    bpy.ops.render.render(animation=True)
+
+
+main()

@@ -185,3 +185,13 @@ def test_render_index_html_lists_items_and_status():
     html = R.render_index_html(manifest)
     assert "frankenstein_model_v003_turntable.mp4" in html
     assert "Approved" in html and "marco" in html and "<video" in html
+
+
+def test_playblast_version_and_shot_kind():
+    rel = ("07_dailies/SEQ010/SH0010/layout/SH0010_layout_v002_playblast.mp4")
+    assert R.version_from_turntable(rel) == "SH0010_layout_v002"
+    shot = tasks.new_task("shot", "SEQ010/SH0010", "layout")
+    shot["publishes"] = [{"turntable": rel, "time": 1, "by": "marco"}]
+    items = R.review_items([shot])
+    assert len(items) == 1
+    assert items[0]["kind"] == "shot" and items[0]["version"] == "SH0010_layout_v002"

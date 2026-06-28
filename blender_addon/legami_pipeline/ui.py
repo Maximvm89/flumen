@@ -38,9 +38,12 @@ class LEGAMI_MT_menu(bpy.types.Menu):
                          icon="INFO")
             layout.separator()
 
-        layout.operator("legami.add_publish_locator", icon="EMPTY_AXIS")
-        layout.operator("legami.preview_turntable", icon="CAMERA_DATA")
-        layout.separator()
+        # Asset/modelling tools (publish locator + turntable preview) — these don't
+        # belong in a shot, so hide them when a shot task is open.
+        if not (task and task.get("type") == "shot"):
+            layout.operator("legami.add_publish_locator", icon="EMPTY_AXIS")
+            layout.operator("legami.preview_turntable", icon="CAMERA_DATA")
+            layout.separator()
 
         layout.operator("legami.apply_project_settings", icon="CHECKMARK")
         layout.operator("legami.verify_ocio", icon="COLOR")
@@ -64,6 +67,12 @@ class LEGAMI_PT_turntable(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Legami"
+
+    @classmethod
+    def poll(cls, context):
+        # Turntable framing is per-asset — hide the panel in a shot context.
+        task = _ops.active_task()
+        return not (task and task.get("type") == "shot")
 
     def draw(self, context):
         layout = self.layout
