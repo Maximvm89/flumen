@@ -314,8 +314,9 @@ def test_resolve_assembly_includes_animation(monkeypatch, capsys, tmp_path):
                                         list=False, only=[], pick=[]))
     assert rc == 0
     res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert res["anim"]["elements"] == {"frankenstein": {"frank_rig": "A"}}
-    assert res["anim"]["blend_local"].endswith("SH0010_layout_v001_anim.blend")
+    fr = res["anim"]["elements"]["frankenstein"]
+    assert fr["objects"] == {"frank_rig": "A"}
+    assert fr["blend_local"].endswith("SH0010_layout_v001_anim.blend")
     assert any(r.endswith("SH0010_layout_v001_anim.blend") for r, _ in srv.downloads)
 
     # --list previews without the (downloaded) animation
@@ -323,3 +324,41 @@ def test_resolve_assembly_includes_animation(monkeypatch, capsys, tmp_path):
                                         list=True, only=[], pick=[]))
     res2 = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert "anim" not in res2
+
+
+def test_list_animations_downloads_and_prints(monkeypatch, capsys, tmp_path):
+    import json
+    from animpipe import elements as E
+    srv = _DownloadSrv()
+    shot = "SEQ010/SH0010"
+    lt = tasks.make_id("shot", shot, "layout")
+    st = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    pub = "04_sequences/SEQ010/SH0010/layout/publish/anim"
+    t = tasks.get_task(srv, "/r", lt)
+    t["publishes"] = [{"files": [pub + "/SH0010_layout_v005_anim.blend",
+                                 pub + "/SH0010_layout_v005_anim.manifest.json"],
+                       "time": 5, "by": "marco", "description": "take 5"}]
+    tasks.save_task(srv, "/r", t)
+    srv.files["/r/" + pub + "/SH0010_layout_v005_anim.manifest.json"] = \
+        ('{"version":5,"elements":{"camera":{"SEQ010_SH0010":"CamA"}},'
+         '"hashes":{"camera":"h5"}}')
+
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    rc = cli.cmd_list_animations(_args(task=st["id"], shot=None, step=None,
+                                       no_fetch=False))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out[0]["version"] == "v005"
+    assert out[0]["elements"] == {"camera": {"SEQ010_SH0010": "CamA"}}
+    assert out[0]["hashes"] == {"camera": "h5"}
+    assert out[0]["blend_local"].endswith("SH0010_layout_v005_anim.blend")
+    assert any(r.endswith("SH0010_layout_v005_anim.blend") for r, _ in srv.downloads)
+
+    # --no-fetch: metadata + hashes only, no downloads, no blend_local
+    srv.downloads.clear()
+    rc = cli.cmd_list_animations(_args(task=st["id"], shot=None, step=None,
+                                       no_fetch=True))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out[0]["hashes"] == {"camera": "h5"} and "blend_local" not in out[0]
+    assert srv.downloads == []

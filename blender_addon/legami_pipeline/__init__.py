@@ -82,6 +82,12 @@ def register():
     # reliably populate a props dialog, so they live on the WindowManager).
     bpy.types.WindowManager.legami_build_items = bpy.props.CollectionProperty(
         type=_ops.LEGAMI_AssemblyItem)
+    # Per-element rows for the Load-animation dialog.
+    bpy.types.WindowManager.legami_anim_items = bpy.props.CollectionProperty(
+        type=_ops.LEGAMI_AnimItem)
+    # Per-element rows for the shot publish dialog (which animation to publish).
+    bpy.types.WindowManager.legami_publish_items = bpy.props.CollectionProperty(
+        type=_ops.LEGAMI_PublishItem)
     # Add a "Legami" menu to the top menu bar (next to Help).
     bpy.types.TOPBAR_MT_editor_menus.append(_ui.draw_menu)
     # Fresh surface task: start from a clean, shading-ready scene.
@@ -103,6 +109,8 @@ def unregister():
     del bpy.types.WindowManager.legami_look_name
     del bpy.types.WindowManager.legami_lookdev_hdri
     del bpy.types.WindowManager.legami_build_items
+    del bpy.types.WindowManager.legami_anim_items
+    del bpy.types.WindowManager.legami_publish_items
     for cls in reversed(_ALL_CLASSES):
         bpy.utils.unregister_class(cls)
 

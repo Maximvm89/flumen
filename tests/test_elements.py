@@ -206,14 +206,19 @@ def test_resolved_elements_camera_always_builds_rig():
     assert res[0]["camera_name"] == "SEQ010_SH0010"
 
 
-def test_resolved_animation_finds_latest_anim_publish():
+def test_resolved_animation_per_element_newest():
     s = FakeSrv()
     shot = "SEQ010/SH0010"
     lt = tasks.make_id("shot", shot, "layout")
     tasks.save_task(s, "/r", tasks.new_task("shot", shot, "layout"))
-    # publish a shot .blend (in publish/) + its anim .blend + manifest (in
-    # publish/anim/, a separate folder) for v001, then v002
     pub = "04_sequences/SEQ010/SH0010/layout/publish"
+    # v001 published BOTH camera + frankenstein; v002 re-published ONLY the camera
+    # (frankenstein unchanged). Each element must resolve to its newest version.
+    manifests = {
+        1: ('{"version":1,"elements":{"camera":{"SEQ010_SH0010":"CamA"},'
+            '"frankenstein":{"frank_rig":"FrankA"}}}'),
+        2: '{"version":2,"elements":{"camera":{"SEQ010_SH0010":"CamB"}}}',
+    }
     for v in (1, 2):
         t = tasks.get_task(s, "/r", lt)
         man = pub + f"/anim/SH0010_layout_v{v:03d}_anim.manifest.json"
@@ -222,18 +227,57 @@ def test_resolved_animation_finds_latest_anim_publish():
                       pub + f"/anim/SH0010_layout_v{v:03d}_anim.blend", man],
             "time": v, "by": "marco"}]
         tasks.save_task(s, "/r", t)
-    s.files["/r/" + pub + "/anim/SH0010_layout_v002_anim.manifest.json"] = \
-        '{"version": 2, "elements": {"frankenstein": {"frank_rig": "A"}}}'
+        s.files["/r/" + man] = manifests[v]
 
     ra = E.resolved_animation(s, "/r", shot, "layout")
-    assert ra is not None
-    assert ra["blend_rel"].endswith("SH0010_layout_v002_anim.blend")   # newest
-    assert ra["elements"] == {"frankenstein": {"frank_rig": "A"}}
-    # the main shot .blend must NOT be picked as the anim artifact
-    assert "_anim.blend" in ra["blend_rel"]
+    # camera from v002 (newest), frankenstein from v001 (its newest containing it)
+    assert ra["elements"]["camera"]["objects"] == {"SEQ010_SH0010": "CamB"}
+    assert ra["elements"]["camera"]["blend_rel"].endswith("v002_anim.blend")
+    assert ra["elements"]["frankenstein"]["objects"] == {"frank_rig": "FrankA"}
+    assert ra["elements"]["frankenstein"]["blend_rel"].endswith("v001_anim.blend")
+
+
+def test_latest_anim_hashes_newest_per_element():
+    anims = [
+        {"version": "v002", "hashes": {"camera": "c2"}},                 # newest
+        {"version": "v001", "hashes": {"camera": "c1", "frankenstein": "f1"}},
+    ]
+    assert E.latest_anim_hashes(anims) == {"camera": "c2", "frankenstein": "f1"}
 
 
 def test_resolved_animation_none_when_unpublished():
     s = FakeSrv()
     tasks.save_task(s, "/r", tasks.new_task("shot", "SEQ010/SH0010", "layout"))
     assert E.resolved_animation(s, "/r", "SEQ010/SH0010", "layout") is None
+
+
+def test_published_animations_lists_all_versions_with_elements():
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    lt = tasks.make_id("shot", shot, "layout")
+    tasks.save_task(s, "/r", tasks.new_task("shot", shot, "layout"))
+    pub = "04_sequences/SEQ010/SH0010/layout/publish/anim"
+    # two anim publishes: v005 has only the camera, v006 has camera + frankenstein
+    specs = {
+        5: '{"version":5,"elements":{"camera":{"SEQ010_SH0010":"CamA"}}}',
+        6: ('{"version":6,"elements":{"camera":{"SEQ010_SH0010":"CamB"},'
+            '"frankenstein":{"frank_rig":"FrankA"}}}'),
+    }
+    for v, man in specs.items():
+        t = tasks.get_task(s, "/r", lt)
+        t["publishes"] = (t.get("publishes") or []) + [{
+            "files": [pub + f"/SH0010_layout_v{v:03d}_anim.blend",
+                      pub + f"/SH0010_layout_v{v:03d}_anim.manifest.json"],
+            "time": v, "by": "marco", "description": f"take {v}"}]
+        tasks.save_task(s, "/r", t)
+        s.files["/r/" + pub + f"/SH0010_layout_v{v:03d}_anim.manifest.json"] = man
+
+    anims = E.published_animations(s, "/r", shot, "layout")
+    assert [a["version"] for a in anims] == ["v006", "v005"]      # newest first
+    assert anims[0]["elements"]["frankenstein"] == {"frank_rig": "FrankA"}
+    assert anims[1]["elements"] == {"camera": {"SEQ010_SH0010": "CamA"}}
+    assert anims[0]["by"] == "marco" and anims[0]["description"] == "take 6"
+
+
+def test_anim_version_label():
+    assert E.anim_version_label("SH0010_layout_v007_anim.blend") == "v007"

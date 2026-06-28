@@ -683,6 +683,77 @@ def _wrap_publish_in_collection(context, coll_name, loc):
     return restore
 
 
+# Stash between the shot publish dialog's invoke() and execute(): the current
+# per-element hashes + the newest published anim version label.
+_SHOT_PUBLISH = {}
+
+
+def _shell_json(args):
+    """Run a toolkit command and parse its last line as JSON, or None."""
+    cmd, td = _toolkit_cmd(args)
+    if cmd is None:
+        return None
+    try:
+        out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+        return json.loads(out.splitlines()[-1]) if out else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _prepare_shot_publish_anim(context, task):
+    """Snapshot poses, hash each element's animation, compare to the last publish, and
+    populate the publish dialog's per-element checkable list (changed/new pre-checked,
+    unchanged unchecked). Also gathers each element's source step + newest published
+    anim version so execute() can stamp the holders for the playblast HUD."""
+    global _SHOT_PUBLISH
+    _snapshot_poses(context)
+    cur = _element_anim_hashes()
+
+    # Last published hashes + the newest anim version per element (for dedup + the HUD).
+    anims = _shell_json(["list-animations", "--task", task["id"], "--no-fetch"]) or []
+    last, anim_vers = {}, {}
+    for a in anims:                         # newest first
+        for eid, h in (a.get("hashes") or {}).items():
+            last.setdefault(eid, h)
+        for eid in (a.get("elements") or {}):
+            anim_vers.setdefault(eid, a.get("version", ""))
+    last_label = anims[0]["version"] if anims else ""
+
+    # Each element's source step (rig/model/camera), from the assembly resolution.
+    steps = {}
+    res = _shell_json(["resolve-assembly", "--task", task["id"], "--list"]) or {}
+    for el in res.get("elements", []):
+        steps[el["id"]] = ("camera" if el.get("kind") == "camera"
+                           else el.get("source_step", ""))
+
+    rows = context.window_manager.legami_publish_items
+    rows.clear()
+    for eid in sorted(cur):
+        it = rows.add()
+        it.element_id = eid
+        it.label = eid
+        if eid not in last:
+            it.status = "new"
+        elif last[eid] != cur[eid]:
+            it.status = "changed"
+        else:
+            it.status = "unchanged"
+        it.ref = last_label if it.status == "unchanged" else ""
+        it.enabled = it.status in ("new", "changed")
+    _SHOT_PUBLISH = {"hashes": cur, "last_label": last_label,
+                     "steps": steps, "anim_vers": anim_vers}
+
+
+class LEGAMI_PublishItem(bpy.types.PropertyGroup):
+    """One row in the shot publish dialog: an animated element + whether to publish
+    its animation this version."""
+    enabled: bpy.props.BoolProperty(name="Publish", default=True)
+    element_id: bpy.props.StringProperty()
+    label: bpy.props.StringProperty()
+    status: bpy.props.StringProperty()      # changed | unchanged | new
+    ref: bpy.props.StringProperty()         # the version it's unchanged against
+
+
 class LEGAMI_OT_publish(bpy.types.Operator):
     bl_idname = "legami.publish"
     bl_label = "Publish"
@@ -701,6 +772,8 @@ class LEGAMI_OT_publish(bpy.types.Operator):
         if task.get("step") == "surface":
             global _EXISTING_LOOKS
             _EXISTING_LOOKS = _fetch_existing_looks(task["id"])
+        if task.get("type") == "shot":
+            _prepare_shot_publish_anim(context, task)
         return context.window_manager.invoke_props_dialog(
             self, width=480, title="Publish", confirm_text="Publish")
 
@@ -715,6 +788,17 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             col.prop(wm, "legami_look_name", text="Look name")
             col.prop(wm, "legami_render_turntable", text="Render look review")
         if task and task.get("type") == "shot":
+            rows = context.window_manager.legami_publish_items
+            if len(rows):
+                box = col.box()
+                box.label(text="Animation to publish (changed are pre-selected):")
+                for it in rows:
+                    row = box.row(align=True)
+                    row.prop(it, "enabled", text="")
+                    row.label(text=it.label, icon="ARMATURE_DATA")
+                    tag = (f"unchanged (= {it.ref})" if it.status == "unchanged"
+                           else it.status)
+                    row.label(text=tag)
             col.prop(context.window_manager, "legami_render_turntable",
                      text="Render playblast")
         col.separator()
@@ -787,8 +871,36 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             kind = f"look '{look_name}': {len(materials)} material(s), " \
                    f"{len(written)} texture file(s)"
         elif task.get("type") == "shot":
-            # Shot publish: save the assembled scene (linked rigs + camera +
-            # animation) as the versioned publish — no collection wrap, no FBX.
+            # Publish only the elements the artist checked in the dialog (changed/new
+            # are pre-checked). If there are animated elements but none are selected
+            # (nothing changed) -> block: no new version, no duplicate data.
+            rows = context.window_manager.legami_publish_items
+            chosen = {it.element_id for it in rows if it.enabled}
+            if len(rows) and not chosen:
+                last = _SHOT_PUBLISH.get("last_label", "")
+                self.report({"ERROR"}, "No animation changes"
+                            + (f" since {last}" if last else "")
+                            + " — nothing to publish.")
+                return {"CANCELLED"}
+            # Stamp every element holder for the playblast HUD: its step (rig/model/
+            # camera) and the anim version playing — the newest published version, or
+            # THIS version for the elements being published now. Done here (not just at
+            # Build shot) so it's complete regardless of when the shot was assembled.
+            steps = _SHOT_PUBLISH.get("steps", {})
+            anim_vers = _SHOT_PUBLISH.get("anim_vers", {})
+            this_ver = f"v{version:03d}"
+            for coll in bpy.data.collections:
+                if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
+                    continue
+                eid = coll.name[len(ELEMENT_HOLDER_PREFIX):]
+                if steps.get(eid):
+                    coll["legami_step"] = steps[eid]
+                if eid in chosen:
+                    coll["legami_anim"] = this_ver
+                elif anim_vers.get(eid):
+                    coll["legami_anim"] = anim_vers[eid]
+            # Save the assembled scene (linked rigs + camera + animation) as the
+            # versioned publish — no collection wrap, no FBX.
             try:
                 bpy.ops.file.make_paths_relative()
             except Exception:  # noqa: BLE001
@@ -796,20 +908,18 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
             files = [pub_path]
             kind = ".blend (shot)"
-            # Also publish each element's animation as editable Actions + a manifest,
-            # so Build shot can re-apply it onto freshly-linked rigs on a rebuild.
-            # First snapshot any moved-but-unkeyed poses so static offsets aren't lost.
-            _snapshot_poses(context)
-            actions, elem_actions = _collect_element_animation()
+            # Publish only the CHOSEN elements' animation as editable Actions + a
+            # manifest (with content hashes for dedup), in publish/anim/ so it's never
+            # an openable workfile. Rides texture_files (preserves the subpath).
+            actions, elem_actions = (_collect_element_animation(only_ids=chosen)
+                                     if chosen else (set(), {}))
             if actions:
-                # The anim artifacts go in publish/anim/ (not beside the shot
-                # publishes) so they're never offered as an openable workfile. They
-                # ride the texture_files path, which preserves the publish/ subpath.
                 anim_dir = os.path.join(publish_dir, "anim")
                 os.makedirs(anim_dir, exist_ok=True)
                 anim_path = os.path.join(anim_dir, f"{base}_v{version:03d}_anim.blend")
                 bpy.data.libraries.write(anim_path, actions, fake_user=True)
-                manifest = anim_mod.build_anim_manifest(version, elem_actions)
+                hashes = _SHOT_PUBLISH.get("hashes") or _element_anim_hashes()
+                manifest = anim_mod.build_anim_manifest(version, elem_actions, hashes)
                 anim_manifest_path = anim_mod.anim_manifest_path(anim_path)
                 with open(anim_manifest_path, "w") as fh:
                     json.dump(manifest, fh, indent=2)
@@ -1475,16 +1585,18 @@ def _snapshot_poses(context):
     return keyed
 
 
-def _collect_element_animation():
+def _collect_element_animation(only_ids=None):
     """Gather each element's animation: the Action on every animated object inside an
     'element__*' holder. Returns (set_of_actions, {element_id: {obj_name: action_name}})
-    for libraries.write + the manifest."""
+    for libraries.write + the manifest. `only_ids` limits to those element ids."""
     actions = set()
     elem_actions = {}
     for coll in bpy.data.collections:
         if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
             continue
         eid = coll.name[len(ELEMENT_HOLDER_PREFIX):]
+        if only_ids is not None and eid not in only_ids:
+            continue
         mapping = {}
         for o in coll.all_objects:
             ad = getattr(o, "animation_data", None)
@@ -1495,6 +1607,49 @@ def _collect_element_animation():
         if mapping:
             elem_actions[eid] = mapping
     return actions, elem_actions
+
+
+def _action_fcurves(obj):
+    """Every F-curve of an object's active action (legacy + 4.4+ slotted channelbag)."""
+    ad = getattr(obj, "animation_data", None)
+    act = getattr(ad, "action", None) if ad else None
+    if not act:
+        return []
+    fcs = list(getattr(act, "fcurves", []) or [])           # legacy
+    for layer in getattr(act, "layers", []) or []:          # slotted
+        for strip in getattr(layer, "strips", []) or []:
+            try:
+                slot = ad.action_slot
+                cbag = strip.channelbag(slot) if slot else None
+            except Exception:  # noqa: BLE001
+                cbag = None
+            if cbag:
+                fcs.extend(cbag.fcurves)
+    return fcs
+
+
+def _element_anim_hashes(only_ids=None):
+    """A deterministic content hash per element with animation: a sha1 of every
+    object's F-curves (data_path#index = frame:value;…, rounded + sorted). Identical
+    animation -> identical hash, so a publish can tell what actually changed."""
+    import hashlib
+    out = {}
+    for coll in bpy.data.collections:
+        if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
+            continue
+        eid = coll.name[len(ELEMENT_HOLDER_PREFIX):]
+        if only_ids is not None and eid not in only_ids:
+            continue
+        parts = []
+        for o in coll.all_objects:
+            for fc in _action_fcurves(o):
+                kfs = ";".join(f"{k.co[0]:.4f}:{k.co[1]:.6f}"
+                               for k in fc.keyframe_points)
+                parts.append(f"{o.name}/{fc.data_path}#{fc.array_index}={kfs}")
+        if parts:
+            blob = "|".join(sorted(parts)).encode("utf-8")
+            out[eid] = hashlib.sha1(blob).hexdigest()
+    return out
 
 
 def _apply_element_animation(holder, anim_blend, action_map):
@@ -1798,9 +1953,8 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             self.report({"ERROR"}, "Couldn't fetch the selected elements — check "
                                    "your connection and retry.")
             return {"CANCELLED"}
-        anim = (data or {}).get("anim") or {}
-        anim_blend = anim.get("blend_local")
-        anim_elements = anim.get("elements") or {}
+        # Per-element animation: each element resolves to its own newest version.
+        anim_elements = ((data or {}).get("anim") or {}).get("elements") or {}
 
         built, skipped, animated = [], [], 0
         for el in elements:
@@ -1813,11 +1967,17 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             except Exception as exc:  # noqa: BLE001 — one bad element never kills it
                 holder, err = None, str(exc)
             (built if holder else skipped).append((el, err))
-            # Re-apply this element's published animation onto the fresh rig.
-            amap = anim_elements.get(el.get("id"))
-            if holder and anim_blend and amap:
+            if holder:
+                # Stamp the holder so the playblast HUD can show what's in the shot.
+                holder["legami_step"] = ("camera" if el.get("kind") == "camera"
+                                         else el.get("source_step", ""))
+            # Re-apply this element's published animation (its own newest version).
+            ael = anim_elements.get(el.get("id"))
+            if holder and ael and ael.get("blend_local") and ael.get("objects"):
                 try:
-                    animated += _apply_element_animation(holder, anim_blend, amap)
+                    animated += _apply_element_animation(
+                        holder, ael["blend_local"], ael["objects"])
+                    holder["legami_anim"] = ael.get("version", "")
                 except Exception as exc:  # noqa: BLE001
                     print("[Legami] could not apply animation:", exc)
 
@@ -1860,6 +2020,131 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             return None
 
 
+# Published animations for the Load-animation dialog: {version_label: {blend_local,
+# elements, by, description}}, set in invoke() and read in execute().
+_LOAD_ANIM = {}
+_ANIM_ENUM_CACHE = {}
+
+
+def _anim_version_items(self, context):
+    """Per-row version dropdown — the published anim versions that include this
+    element, newest first, labelled with the publisher/notes."""
+    key = self.versions_csv or ""
+    if key not in _ANIM_ENUM_CACHE:
+        items = []
+        for v in [x for x in key.split(",") if x]:
+            meta = _LOAD_ANIM.get(v, {})
+            who = meta.get("by") or ""
+            desc = (meta.get("description") or "").splitlines()[0][:32]
+            label = v + (f"  ·  {who}" if who else "") + (f"  ·  {desc}" if desc else "")
+            items.append((v, label, ""))
+        _ANIM_ENUM_CACHE[key] = items or [("", "", "")]
+    return _ANIM_ENUM_CACHE[key]
+
+
+class LEGAMI_AnimItem(bpy.types.PropertyGroup):
+    """One row in the Load-animation dialog: an element + which published version to
+    load onto it."""
+    enabled: bpy.props.BoolProperty(name="Load", default=True)
+    element_id: bpy.props.StringProperty()
+    label: bpy.props.StringProperty()
+    versions_csv: bpy.props.StringProperty()
+    version: bpy.props.EnumProperty(name="Version", items=_anim_version_items)
+
+
+class LEGAMI_OT_load_animation(bpy.types.Operator):
+    bl_idname = "legami.load_animation"
+    bl_label = "Load animation"
+    bl_description = ("Load published animation onto the shot's elements — pick a "
+                      "published version per element (mix versions across elements)")
+
+    def invoke(self, context, event):
+        task = active_task()
+        if not task or task.get("type") != "shot":
+            self.report({"ERROR"}, "Open a shot task from the Workspace app.")
+            return {"CANCELLED"}
+        anims = self._list(task)
+        if anims is None:
+            self.report({"ERROR"}, "Couldn't list animations — launch from the "
+                                   "Workspace app and check your connection.")
+            return {"CANCELLED"}
+        if not anims:
+            self.report({"WARNING"}, "No published animation for this shot yet.")
+            return {"CANCELLED"}
+
+        global _LOAD_ANIM
+        _LOAD_ANIM = {a["version"]: {"blend_local": a.get("blend_local", ""),
+                                     "elements": a.get("elements", {}),
+                                     "by": a.get("by", ""),
+                                     "description": a.get("description", "")}
+                      for a in anims}
+
+        in_scene = {c.name[len(ELEMENT_HOLDER_PREFIX):] for c in bpy.data.collections
+                    if c.name.startswith(ELEMENT_HOLDER_PREFIX)}
+        rows = context.window_manager.legami_anim_items
+        rows.clear()
+        for eid in sorted(in_scene):
+            versions = [a["version"] for a in anims
+                        if eid in (a.get("elements") or {})]   # newest first
+            if not versions:
+                continue
+            it = rows.add()
+            it.element_id = eid
+            it.label = eid
+            it.versions_csv = ",".join(versions)
+            it.version = versions[0]
+            it.enabled = True
+        if not len(rows):
+            self.report({"WARNING"}, "No elements in the scene have published "
+                                     "animation. Build the shot first.")
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=520, title="Load animation", confirm_text="Load")
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.label(text="Choose a published animation per element:")
+        box = col.box()
+        for it in context.window_manager.legami_anim_items:
+            row = box.row(align=True)
+            row.prop(it, "enabled", text="")
+            row.label(text=it.label, icon="ARMATURE_DATA")
+            sub = row.row()
+            sub.enabled = it.enabled
+            sub.prop(it, "version", text="")
+
+    def execute(self, context):
+        objs, els = 0, 0
+        for it in context.window_manager.legami_anim_items:
+            if not it.enabled:
+                continue
+            data = _LOAD_ANIM.get(it.version)
+            holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + it.element_id)
+            amap = (data.get("elements") or {}).get(it.element_id) if data else None
+            if holder and data and data.get("blend_local") and amap:
+                try:
+                    n = _apply_element_animation(holder, data["blend_local"], amap)
+                except Exception as exc:  # noqa: BLE001
+                    print("[Legami] load animation failed:", exc)
+                    n = 0
+                if n:
+                    objs += n
+                    els += 1
+        self.report({"INFO"} if els else {"WARNING"},
+                    f"Loaded animation onto {els} element(s) ({objs} object(s)).")
+        return {"FINISHED"} if els else {"CANCELLED"}
+
+    def _list(self, task):
+        cmd, td = _toolkit_cmd(["list-animations", "--task", task["id"]])
+        if cmd is None:
+            return None
+        try:
+            out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+            return json.loads(out.splitlines()[-1]) if out else []
+        except Exception:  # noqa: BLE001
+            return None
+
+
 CLASSES = (
     LEGAMI_OT_apply_project_settings,
     LEGAMI_OT_verify_ocio,
@@ -1867,11 +2152,14 @@ CLASSES = (
     LEGAMI_OT_add_locator,
     LEGAMI_OT_save_to_task,
     LEGAMI_OT_check,
+    LEGAMI_PublishItem,             # PropertyGroup — register before the operator
     LEGAMI_OT_publish,
     LEGAMI_OT_load_model,
     LEGAMI_OT_apply_look,
     LEGAMI_AssemblyItem,            # PropertyGroup — register before the operator
     LEGAMI_OT_build_shot,
+    LEGAMI_AnimItem,                # PropertyGroup — register before the operator
+    LEGAMI_OT_load_animation,
     LEGAMI_OT_turntable_framing,
     LEGAMI_OT_preview_turntable,
 )

@@ -30,6 +30,54 @@ def playblast_settings(project_settings: dict) -> dict:
     return s
 
 
+def _overlay_element_info(frames_dir: str, task: dict, version_label: str) -> None:
+    """Burn an element breakdown HUD into each playblast frame: every element, the
+    step it was loaded from, and the published animation version playing. Reads the
+    `_pb_info.json` the render script wrote. Best-effort (no Pillow -> skip)."""
+    import glob
+    import json as _json
+
+    info_path = os.path.join(frames_dir, "_pb_info.json")
+    frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
+    if not (os.path.isfile(info_path) and frames):
+        return
+    try:
+        elements = (_json.load(open(info_path, encoding="utf-8")) or {}).get(
+            "elements") or []
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:  # noqa: BLE001
+        return
+
+    def _mono(size):
+        for name in ("DejaVuSansMono.ttf", "DejaVuSans.ttf"):
+            try:
+                return ImageFont.truetype(name, size)
+            except Exception:  # noqa: BLE001
+                continue
+        return ImageFont.load_default()
+
+    title = f"{(task or {}).get('entity', '')}  ·  {version_label}"
+    lines = [f"{'ELEMENT':<16}{'STEP':<10}ANIM"]
+    for e in elements:
+        lines.append(f"{e['id']:<16}{(e['step'] or '-'):<10}{e['anim'] or '-'}")
+    font, tfont = _mono(15), _mono(17)
+    pad, line_h = 8, 20
+
+    for fp in frames:
+        img = Image.open(fp).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+        rows = [title] + lines
+        fonts = [tfont] + [font] * len(lines)
+        w = max(d.textlength(r, font=f) for r, f in zip(rows, fonts)) + pad * 2
+        h = line_h * len(rows) + pad * 2
+        d.rectangle([6, 6, 6 + w, 6 + h], fill=(0, 0, 0, 150))
+        y = 6 + pad
+        for r, f in zip(rows, fonts):
+            d.text((6 + pad, y), r, font=f, fill=(255, 255, 255, 255))
+            y += line_h
+        img.save(fp)
+
+
 def playblast_rel(task: dict, version_label: str) -> str:
     """Where the playblast lands (relative to remote_root / local_root):
     07_dailies/<entity>/<step>/<version_label>_playblast.mp4"""
@@ -91,6 +139,8 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     print("Rendering playblast frames…")
     subprocess.run([blender, "--background", shot_blend, "--python", script],
                    env=env, check=True)
+
+    _overlay_element_info(frames_dir, task, version_label)
 
     fps = _meta_fps(frames_dir, pb["fps"])
     print(f"Encoding MP4 -> {out_local}")

@@ -676,18 +676,60 @@ def cmd_resolve_assembly(args) -> int:
                         "camera_name": r.get("camera_name", "")})
 
         # The shot's published animation (Actions) — Build shot re-applies it onto the
-        # freshly-linked rigs. Skipped for --list (the dialog doesn't need it).
+        # freshly-linked rigs. Resolved PER ELEMENT to its newest version, so each
+        # element's blend may differ. Skipped for --list (the dialog doesn't need it).
         anim = {}
         if not args.list:
             ra = E.resolved_animation(client, rr, shot_entity, step)
             if ra:
-                ab_local = os.path.join(local_root, *ra["blend_rel"].split("/"))
-                client.download(rr + "/" + ra["blend_rel"], ab_local)
-                anim = {"blend_local": ab_local, "elements": ra["elements"]}
+                elems, blends = {}, {}
+                for eid, info in ra["elements"].items():
+                    brel = info["blend_rel"]
+                    if brel not in blends:
+                        local = os.path.join(local_root, *brel.split("/"))
+                        client.download(rr + "/" + brel, local)
+                        blends[brel] = local
+                    elems[eid] = {"blend_local": blends[brel],
+                                  "objects": info["objects"],
+                                  "version": info.get("version", "")}
+                if elems:
+                    anim = {"elements": elems}
     result = {"frame_start": fs, "frame_end": fe, "elements": out}
     if anim:
         result["anim"] = anim
     print(json.dumps(result))
+    return 0
+
+
+def cmd_list_animations(args) -> int:
+    """List the shot step's published animations (newest first) and download each
+    _anim.blend locally, printing JSON for the 'Load animation' picker so the artist
+    can choose a published version per element."""
+    import json
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import tasks as T, elements as E
+    rr = cfg.remote_root.rstrip("/")
+    local_root = cfg.resolved_local_root() or os.getcwd()
+    with SFTPClient(creds) as client:
+        if args.task:
+            t = T.get_task(client, rr, args.task)
+            if not t or t.get("type") != "shot":
+                print(f"error: not a shot task: {args.task}", file=sys.stderr)
+                return 1
+            shot_entity, step = t["entity"], (args.step or t["step"])
+        elif args.shot and args.step:
+            shot_entity, step = args.shot, args.step
+        else:
+            print("error: give --task, or both --shot and --step", file=sys.stderr)
+            return 1
+        anims = E.published_animations(client, rr, shot_entity, step)
+        if not args.no_fetch:                    # --no-fetch: metadata + hashes only
+            for a in anims:
+                local = os.path.join(local_root, *a["blend_rel"].split("/"))
+                client.download(rr + "/" + a["blend_rel"], local)
+                a["blend_local"] = local
+    print(json.dumps(anims))
     return 0
 
 
@@ -933,6 +975,16 @@ def build_parser() -> argparse.ArgumentParser:
     ra.add_argument("--pick", action="append", default=[],
                     help="override an element's step as id=step (repeatable)")
     ra.set_defaults(func=cmd_resolve_assembly)
+
+    lan = sub.add_parser("list-animations", parents=[common],
+                         help="list a shot's published animations (+ fetch them) for "
+                              "the Load-animation picker")
+    lan.add_argument("--task", help="shot task id (entity + step)")
+    lan.add_argument("--shot", help="shot entity (if not using --task)")
+    lan.add_argument("--step", help="shot step; default: the task's step")
+    lan.add_argument("--no-fetch", action="store_true",
+                     help="metadata + hashes only, don't download the anim blends")
+    lan.set_defaults(func=cmd_list_animations)
 
     return p
 

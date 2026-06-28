@@ -29,6 +29,10 @@ class LEGAMI_MT_menu(bpy.types.Menu):
             if task.get("type") == "shot" and task.get("step") == "layout":
                 layout.operator("legami.build_shot", text="Build shot",
                                 icon="OUTLINER_OB_GROUP_INSTANCE")
+            # Load published animation onto the shot's elements (pick a version each).
+            if task.get("type") == "shot":
+                layout.operator("legami.load_animation", text="Load animation…",
+                                icon="ANIM_DATA")
             layout.operator("legami.save_to_task", icon="FILE_TICK")
             layout.operator("legami.run_checks", icon="CHECKMARK")
             layout.operator("legami.publish", text="Publish…", icon="EXPORT")

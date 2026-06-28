@@ -26,7 +26,9 @@ def test_build_anim_manifest_groups_per_element_and_drops_empty():
         "frankenstein": {"frank_rig": "frank_rigAction"},
         "camera": {"SEQ010_SH0010": "CamAction"},
         "box": {},                       # no animation -> dropped
-    })
+    }, hashes={"frankenstein": "h1", "camera": "h2", "box": "hx", "gone": "hy"})
     assert m["version"] == 3
     assert set(m["elements"]) == {"frankenstein", "camera"}
     assert m["elements"]["camera"] == {"SEQ010_SH0010": "CamAction"}
+    # hashes kept only for published elements (box dropped, 'gone' never present)
+    assert m["hashes"] == {"frankenstein": "h1", "camera": "h2"}

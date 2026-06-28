@@ -272,27 +272,69 @@ ANIM_BLEND_SUFFIX = "_anim.blend"
 
 def resolved_animation(sftp, remote_root: str, shot_entity: str,
                        step: str) -> dict | None:
-    """The shot step's latest published animation: {blend_rel, manifest_rel,
-    elements:{id:{obj:action}}} or None. The anim artifact is the publish whose file
-    name ends '_anim.blend' (the main shot .blend is excluded by that suffix)."""
-    import json
-    from . import tasks
+    """The animation to re-apply on Build shot, resolved PER ELEMENT to the newest
+    published version that actually contains it: {elements: {id: {blend_rel,
+    objects:{obj:action}, version}}} or None. Per-element (not just the single latest
+    publish) so an element that wasn't re-published in the most recent version — e.g.
+    its animation was unchanged — still resolves from the version that has it."""
+    anims = published_animations(sftp, remote_root, shot_entity, step)  # newest first
+    elements = {}
+    for a in anims:
+        for eid, objs in (a.get("elements") or {}).items():
+            if eid not in elements:
+                elements[eid] = {"blend_rel": a["blend_rel"], "objects": objs,
+                                 "version": a["version"]}
+    return {"elements": elements} if elements else None
+
+
+_ANIM_VER_RE = re.compile(r"_v(\d+)_anim\.blend$")
+
+
+def anim_version_label(name: str) -> str:
+    """'SH0010_layout_v007_anim.blend' -> 'v007'."""
     import os as _os
+    m = _ANIM_VER_RE.search(name or "")
+    return f"v{int(m.group(1)):03d}" if m else _os.path.splitext(name or "")[0]
+
+
+def published_animations(sftp, remote_root: str, shot_entity: str,
+                         step: str) -> list[dict]:
+    """Every published animation for the shot step (newest first): a list of
+    {version, blend_rel, by, description, time, elements:{id:{obj:action}}}. Feeds
+    the 'Load animation' picker so the artist can choose a version per element."""
+    import json as _json
+    from . import tasks
     t = tasks.get_task(sftp, remote_root, tasks.make_id("shot", shot_entity, step))
     if not t:
-        return None
-    anims = [p for p in tasks.published_files(t)
-             if p["name"].endswith(ANIM_BLEND_SUFFIX)]
-    if not anims:
-        return None
-    blend_rel = anims[0]["rel"]            # newest first
-    manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
-    elements = {}
-    txt = sftp.read_text(remote_root.rstrip("/") + "/" + manifest_rel)
-    if txt:
-        try:
-            elements = (json.loads(txt) or {}).get("elements") or {}
-        except ValueError:
-            elements = {}
-    return {"blend_rel": blend_rel, "manifest_rel": manifest_rel,
-            "elements": elements}
+        return []
+    rr = remote_root.rstrip("/")
+    out = []
+    for p in tasks.published_files(t):                 # newest name first
+        if not p["name"].endswith(ANIM_BLEND_SUFFIX):
+            continue
+        blend_rel = p["rel"]
+        manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
+        elements, hashes = {}, {}
+        txt = sftp.read_text(rr + "/" + manifest_rel)
+        if txt:
+            try:
+                m = _json.loads(txt) or {}
+                elements = m.get("elements") or {}
+                hashes = m.get("hashes") or {}
+            except ValueError:
+                elements, hashes = {}, {}
+        out.append({"version": anim_version_label(p["name"]),
+                    "blend_rel": blend_rel, "by": p.get("by"),
+                    "description": p.get("description", ""), "time": p.get("time"),
+                    "elements": elements, "hashes": hashes})
+    return out
+
+
+def latest_anim_hashes(anims: list[dict]) -> dict:
+    """The newest published content hash per element, from a published_animations()
+    list (newest first). Drives the publish dialog's changed/unchanged detection."""
+    out = {}
+    for a in anims:
+        for eid, h in (a.get("hashes") or {}).items():
+            out.setdefault(eid, h)
+    return out

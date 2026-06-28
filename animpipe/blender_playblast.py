@@ -138,6 +138,18 @@ def main():
     with open(os.path.join(frames_dir, "_tt_meta.json"), "w", encoding="utf-8") as fh:
         json.dump({"fps": int(scene.render.fps)}, fh)
 
+    # Element breakdown for the playblast HUD: each element holder carries the step
+    # it was loaded from + the animation version playing (stamped at Build/publish).
+    elements = []
+    for c in bpy.data.collections:
+        if c.name.startswith("element__"):
+            elements.append({"id": c.name[len("element__"):],
+                             "step": c.get("legami_step", ""),
+                             "anim": c.get("legami_anim", "")})
+    elements.sort(key=lambda e: e["id"])
+    with open(os.path.join(frames_dir, "_pb_info.json"), "w", encoding="utf-8") as fh:
+        json.dump({"elements": elements}, fh)
+
     print(f"[playblast] {engine} {r.resolution_x}x{r.resolution_y} "
           f"frames {scene.frame_start}-{scene.frame_end} cam={scene.camera.name}")
     bpy.ops.render.render(animation=True)
