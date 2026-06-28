@@ -718,6 +718,10 @@ class MainWindow(QMainWindow):
         if dlg.include_log:
             if applog.copy_full(applog.LOG_PATH, os.path.join(folder, "log.txt")):
                 attached.append("log.txt")
+            # Blender's console (turntable/publish/render output) is its own file.
+            if applog.copy_full(applog.BLENDER_LOG_PATH,
+                                os.path.join(folder, "blender.log")):
+                attached.append("blender.log")
             log_tail = applog.read_tail(applog.LOG_PATH, 200)
 
         url, _ = bugreport.build_issue(
@@ -725,8 +729,8 @@ class MainWindow(QMainWindow):
         webbrowser.open(url)
         clipboardmod.reveal(folder)
         self.status.showMessage(
-            "Opened a pre-filled GitHub issue — drag log.txt/screenshot.png from the "
-            "folder into it, then Submit.")
+            "Opened a pre-filled GitHub issue — drag the files (log.txt, "
+            "blender.log, screenshot.png) from the folder into it, then Submit.")
 
     # ---- config / creds -----------------------------------------------------
     def _load_config(self):
@@ -1404,7 +1408,8 @@ class MainWindow(QMainWindow):
                 mp = self._fetch_model_publish(task, local_root, remote_root)
                 if mp:
                     extra_env["LEGAMI_MODEL_PUBLISH"] = mp
-            return launch(cfg, creds, extra_env=extra_env, open_file=open_file)
+            return launch(cfg, creds, extra_env=extra_env, open_file=open_file,
+                          log_path=applog.prepare_blender_log())
 
         def done(rc):
             self._busy_buttons(False)

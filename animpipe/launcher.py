@@ -95,7 +95,8 @@ def sync_pipeline_config(cfg: ProjectConfig, creds: SFTPCredentials,
 
 def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | None = None,
            dry_run: bool = False, no_sync: bool = False,
-           extra_env: dict | None = None, open_file: str | None = None) -> int:
+           extra_env: dict | None = None, open_file: str | None = None,
+           log_path: str | None = None) -> int:
     local_root = cfg.resolved_local_root()
     if not no_sync:
         local_root = sync_pipeline_config(cfg, creds, dry_run=dry_run)
@@ -164,6 +165,30 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
         print(f"warning: add-on bootstrap not found ({bootstrap}); the Legami menu "
               f"won't auto-load.", file=sys.stderr)
     cmd += (extra_args or [])
-    # Detach so closing the terminal doesn't kill Blender.
-    subprocess.Popen(cmd, env=env)
+
+    # Capture Blender's console output for bug reports. Blender (and everything it
+    # spawns downstream — the add-on, the toolkit it shells out to for turntables/
+    # publishes, the nested headless render, ffmpeg) inherits this stdout, so a
+    # single redirect collects the whole tree. We point it at the app log FILE
+    # rather than a pipe so closing the Workspace app can't break Blender's stdout
+    # (a pipe whose read end vanished would SIGPIPE Blender). On a frozen windowed
+    # .exe there's no console at all, so without this the output is simply lost.
+    out = None
+    if log_path:
+        try:
+            out = open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")
+            out.write(f"---- Blender session: {open_file or 'new scene'} "
+                      f"({os.path.basename(blender)}) ----\n")
+            out.flush()
+        except OSError:
+            out = None
+    try:
+        # Detach so closing the terminal doesn't kill Blender. When `out` is set,
+        # Blender's stdout+stderr go to the log file (its own dup of the fd), so we
+        # can close our handle right after spawning.
+        subprocess.Popen(cmd, env=env,
+                         stdout=out, stderr=(subprocess.STDOUT if out else None))
+    finally:
+        if out is not None:
+            out.close()
     return 0
