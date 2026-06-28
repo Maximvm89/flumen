@@ -15,6 +15,29 @@ _EEVEE = {"BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"}
 _OK_ENGINES = _EEVEE | {"BLENDER_WORKBENCH", "CYCLES"}
 
 
+def _install_render_progress(scene, label="rendering playblast"):
+    """Print a LEGAMI_PROGRESS line per rendered frame so the add-on's publish
+    progress bar can follow the background playblast. Best-effort."""
+    import time
+    start, end = scene.frame_start, scene.frame_end
+    total = max(1, end - start + 1)
+    t0 = time.monotonic()
+
+    def _on_post(scn, *_a):
+        done = max(1, scn.frame_current - start + 1)
+        pct = max(0, min(100, int(done * 100 / total)))
+        eta = ""
+        elapsed = time.monotonic() - t0
+        if 0 < done < total and elapsed > 0:
+            eta = str(int((total - done) * (elapsed / done)))
+        print(f"LEGAMI_PROGRESS {pct} {eta} {label} frame "
+              f"{scn.frame_current}/{end}", flush=True)
+    try:
+        bpy.app.handlers.render_post.append(_on_post)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _env(key, default=""):
     return os.environ.get(key, default)
 
@@ -152,6 +175,7 @@ def main():
 
     print(f"[playblast] {engine} {r.resolution_x}x{r.resolution_y} "
           f"frames {scene.frame_start}-{scene.frame_end} cam={scene.camera.name}")
+    _install_render_progress(scene)
     bpy.ops.render.render(animation=True)
 
 

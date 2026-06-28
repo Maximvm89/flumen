@@ -1027,29 +1027,41 @@ def _human_eta(eta):
 
 
 class LEGAMI_OT_publish_upload(bpy.types.Operator):
-    """Run the publish upload as a background subprocess and show a live progress
-    bar (Blender's progress cursor + a status-bar message with %, ETA), so the UI
-    no longer freezes during the SFTP transfer. Kicks the background review render
-    when the upload completes."""
+    """Run the publish upload — then the review render (turntable/look/playblast) —
+    as background subprocesses, showing a live progress bar (Blender's progress
+    cursor + a status-bar message with %, ETA) for BOTH phases, so the UI never
+    freezes and the artist always sees what's happening."""
     bl_idname = "legami.publish_upload"
     bl_label = "Publishing…"
 
     def invoke(self, context, event):
-        import queue
-        import threading
         self._data = dict(_PENDING_UPLOAD)
         if not self._data.get("cmd"):
             self.report({"ERROR"}, "Nothing to upload.")
             return {"CANCELLED"}
+        wm = context.window_manager
+        wm.progress_begin(0, 100)
+        self._timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        # Phase 1: upload. (Phase 2, the render, starts when this finishes.)
+        if not self._begin(context, self._data["cmd"], self._data["cwd"],
+                           "Publishing", "upload"):
+            return self._teardown(context, cancelled=True,
+                                  msg="Could not start upload.")
+        return {"RUNNING_MODAL"}
+
+    def _begin(self, context, cmd, cwd, label, phase):
+        """Start a subprocess + a daemon reader thread feeding a queue. Returns
+        False if the process couldn't be launched."""
+        import queue
+        import threading
         try:
             self._proc = subprocess.Popen(
-                self._data["cmd"], cwd=self._data["cwd"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1)
         except Exception as exc:  # noqa: BLE001
-            self.report({"ERROR"}, f"Could not start upload: {exc}")
-            return {"CANCELLED"}
-
+            print("[Legami] could not start", phase, ":", exc)
+            return False
         self._queue = queue.Queue()
 
         def _reader(proc, q):
@@ -1062,14 +1074,9 @@ class LEGAMI_OT_publish_upload(bpy.types.Operator):
         self._thread = threading.Thread(
             target=_reader, args=(self._proc, self._queue), daemon=True)
         self._thread.start()
-
-        self._pct, self._eta = 0, None
-        wm = context.window_manager
-        wm.progress_begin(0, 100)
-        self._status(context, "Publishing… starting")
-        self._timer = wm.event_timer_add(0.1, window=context.window)
-        wm.modal_handler_add(self)
-        return {"RUNNING_MODAL"}
+        self._label, self._phase, self._pct, self._eta = label, phase, 0, None
+        self._status(context, f"{label}… starting")
+        return True
 
     def modal(self, context, event):
         if event.type != 'TIMER':
@@ -1090,10 +1097,39 @@ class LEGAMI_OT_publish_upload(bpy.types.Operator):
                 context.window_manager.progress_update(self._pct)
                 eta = _human_eta(self._eta)
                 self._status(context,
-                             f"Publishing… {self._pct}%" + (f" · {eta}" if eta else ""))
+                             f"{self._label}… {self._pct}%" + (f" · {eta}" if eta else ""))
+            elif self._phase == "render":
+                # Frames are done but the toolkit is still encoding/uploading the
+                # clip — keep the status meaningful instead of stuck at 100%.
+                low = line.lower()
+                if "encoding" in low:
+                    self._status(context, f"{self._label}… encoding video")
+                elif "published" in low or "uploading" in low:
+                    self._status(context, f"{self._label}… uploading")
         if eof:
-            return self._finish(context)
+            return self._phase_done(context)
         return {"PASS_THROUGH"}
+
+    def _phase_done(self, context):
+        rc = self._proc.poll()
+        if self._phase == "upload":
+            if rc not in (0, None):
+                return self._teardown(
+                    context, cancelled=True,
+                    msg="Publish upload failed — see the console / blender.log.")
+            plan = self._render_plan()
+            if plan:
+                cmd, cwd, label, note = plan
+                self._note = note
+                context.window_manager.progress_update(0)
+                if self._begin(context, cmd, cwd, label, "render"):
+                    return {"PASS_THROUGH"}      # phase 2 now running
+            # No render (or it wouldn't start): we're done after the upload.
+            return self._teardown(context, msg=self._data.get("success", "Published."))
+        # Phase 2 (render) finished — publish already succeeded regardless.
+        tail = (getattr(self, "_note", "") if rc in (0, None)
+                else "  (review render failed — see blender.log)")
+        return self._teardown(context, msg=self._data.get("success", "Published.") + tail)
 
     def _status(self, context, text):
         try:
@@ -1101,7 +1137,7 @@ class LEGAMI_OT_publish_upload(bpy.types.Operator):
         except Exception:  # noqa: BLE001
             pass
 
-    def _finish(self, context):
+    def _teardown(self, context, msg, cancelled=False):
         wm = context.window_manager
         try:
             wm.event_timer_remove(self._timer)
@@ -1109,41 +1145,30 @@ class LEGAMI_OT_publish_upload(bpy.types.Operator):
             pass
         wm.progress_end()
         self._status(context, None)  # clear the status bar
-        rc = self._proc.poll()
-        if rc not in (0, None):
-            self.report({"ERROR"},
-                        "Publish upload failed — see the console / blender.log.")
-            return {"CANCELLED"}
-        msg = self._data.get("success", "Published.") + self._kick_render()
-        self.report({"INFO"}, msg)
-        return {"FINISHED"}
+        self.report({"ERROR"} if cancelled else {"INFO"}, msg)
+        return {"CANCELLED"} if cancelled else {"FINISHED"}
 
-    def _kick_render(self):
-        """Start the review media (turntable/look-review/playblast) in the
-        background, as the blocking path did — but only after the upload lands."""
+    def _render_plan(self):
+        """Build the review-render command to run as phase 2, or None. Returns
+        (cmd, cwd, status_label, done_note)."""
         d = self._data
         if not d.get("render"):
-            return ""
+            return None
         if d.get("step") == "model":
             cmd = ["turntable", "--model", d["pub_path"], "--task", d["task_id"]]
-            note = " Turntable rendering in background → dailies."
+            label, note = "Rendering turntable", "  Turntable published → dailies."
         elif d.get("step") == "surface":
             cmd = ["look-review", "--task", d["task_id"], "--look", d["look_name"]]
-            note = " Look review (turntable + texture sheet) rendering → dailies."
+            label, note = "Rendering look review", "  Look review published → dailies."
         elif d.get("ttype") == "shot":
             cmd = ["playblast", "--shot-file", d["pub_path"], "--task", d["task_id"]]
-            note = " Playblast rendering in background → dailies."
+            label, note = "Rendering playblast", "  Playblast published → dailies."
         else:
-            return ""
+            return None
         full, td = _toolkit_cmd(cmd)
         if not full:
-            return ""
-        try:
-            subprocess.Popen(full, cwd=td)
-            return note
-        except Exception as exc:  # noqa: BLE001
-            print("[Legami] could not start background render:", exc)
-            return ""
+            return None
+        return full, td, label, note
 
 
 def _addon_module_by_leaf(leaf):

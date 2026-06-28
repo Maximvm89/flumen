@@ -21,6 +21,29 @@ import mathutils
 _PREVIEW = os.environ.get("LEGAMI_TT_PREVIEW", "0") not in ("0", "", "false", "False")
 
 
+def _install_render_progress(scene, label="rendering turntable"):
+    """Print a LEGAMI_PROGRESS line after each rendered frame so the add-on's
+    publish progress bar can follow the background render. Best-effort."""
+    import time
+    start, end = scene.frame_start, scene.frame_end
+    total = max(1, end - start + 1)
+    t0 = time.monotonic()
+
+    def _on_post(scn, *_a):
+        done = max(1, scn.frame_current - start + 1)
+        pct = max(0, min(100, int(done * 100 / total)))
+        eta = ""
+        elapsed = time.monotonic() - t0
+        if 0 < done < total and elapsed > 0:
+            eta = str(int((total - done) * (elapsed / done)))
+        print(f"LEGAMI_PROGRESS {pct} {eta} {label} frame "
+              f"{scn.frame_current}/{end}", flush=True)
+    try:
+        bpy.app.handlers.render_post.append(_on_post)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _bbox_center_size():
     objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     if not objs:
@@ -436,6 +459,7 @@ def run_template_mode():
         return
     _boost_shadows(scene)
     frames_dir = _png_output(scene)
+    _install_render_progress(scene)
     bpy.ops.render.render(animation=True)
     _write_meta(frames_dir, scene)
     print("[Legami] template turntable frames rendered to", frames_dir)
@@ -543,6 +567,7 @@ def build_and_render():
         return
     _boost_shadows(scene)
     frames_dir = _png_output(scene)
+    _install_render_progress(scene)
     bpy.ops.render.render(animation=True)
     _write_meta(frames_dir, scene)
     print("[Legami] turntable frames rendered to", frames_dir)
