@@ -55,6 +55,21 @@ def test_review_items_every_version_filtered_and_sorted():
     assert [i["version"] for i in appr] == ["frankenstein_model_v003"]
 
 
+def test_matches_query_across_fields_and_terms():
+    it = {"entity": "characters/frankenstein", "step": "surface",
+          "version": "frankenstein_surface_rosa_v001", "by": "leonardo.milossi",
+          "status": "to_review", "description": "first look", "date": "2026-06-28"}
+    assert R.matches_query(it, "")                 # empty -> everything
+    assert R.matches_query(it, "frankenstein")     # entity/version
+    assert R.matches_query(it, "surface")          # step
+    assert R.matches_query(it, "leonardo")         # artist
+    assert R.matches_query(it, "rosa")             # version detail
+    assert R.matches_query(it, "To review")        # status label
+    assert R.matches_query(it, "frank rosa leo")   # all terms must match (AND)
+    assert not R.matches_query(it, "marco")        # different artist
+    assert not R.matches_query(it, "frank zzz")    # one term misses -> no match
+
+
 def test_set_status_on_task_approved_completes_task():
     t = tasks.new_task("asset", "characters/frankenstein", "model")
     t["status"] = "review"

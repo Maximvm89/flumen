@@ -106,6 +106,22 @@ def review_items(task_list: list[dict],
     return out
 
 
+def matches_query(item: dict, query: str) -> bool:
+    """Case-insensitive search across a review item's fields. Every
+    whitespace-separated term must appear somewhere (entity, step, version,
+    artist, status, description, date)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return True
+    hay = " ".join([
+        item.get("entity", ""), item.get("step", ""), item.get("version", ""),
+        item.get("by", ""), item.get("status", ""),
+        REVIEW_LABELS.get(item.get("status", ""), ""),
+        item.get("description", ""), item.get("date", ""),
+    ]).lower()
+    return all(term in hay for term in q.split())
+
+
 def set_status_on_task(task: dict, turntable_rel: str, status: str) -> bool:
     """Set review_status on every publish record carrying `turntable_rel`. If the
     status is 'approved', also complete the task (status -> done). Mutates `task`;

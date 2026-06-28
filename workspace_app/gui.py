@@ -389,7 +389,13 @@ class MainWindow(QMainWindow):
             b.toggled.connect(self._render_review_tree)
             self._review_filter_btns[st] = b
             top.addWidget(b)
-        top.addStretch(1)
+        top.addSpacing(12)
+        self.ed_review_search = QLineEdit()
+        self.ed_review_search.setPlaceholderText("Search… (entity, step, version, artist)")
+        self.ed_review_search.setClearButtonEnabled(True)
+        self.ed_review_search.textChanged.connect(self._render_review_tree)
+        self.ed_review_search.setMinimumWidth(220)
+        top.addWidget(self.ed_review_search, 1)
         b_refresh = QPushButton("Refresh")
         b_refresh.clicked.connect(self._load_review_items)
         top.addWidget(b_refresh)
@@ -464,9 +470,12 @@ class MainWindow(QMainWindow):
         tree = self.review_tree
         tree.clear()
         active = {st for st, b in self._review_filter_btns.items() if b.isChecked()}
+        query = self.ed_review_search.text()
         groups: "OrderedDict[str, list]" = OrderedDict()
         for it in self._review_items:
             if it["status"] not in active:
+                continue
+            if not reviewmod.matches_query(it, query):
                 continue
             groups.setdefault(it["date"] or "(no date)", []).append(it)
 
@@ -647,7 +656,9 @@ class MainWindow(QMainWindow):
         if not items:
             active = {st for st, b in self._review_filter_btns.items()
                       if b.isChecked()}
-            items = [it for it in self._review_items if it["status"] in active]
+            query = self.ed_review_search.text()
+            items = [it for it in self._review_items
+                     if it["status"] in active and reviewmod.matches_query(it, query)]
         if not items:
             QMessageBox.information(self, "Nothing to export",
                                     "Select the review(s) to export, or show some "
