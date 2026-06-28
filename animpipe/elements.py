@@ -232,26 +232,14 @@ def resolved_elements(sftp, remote_root: str, shot_entity: str, step: str,
             continue
 
         if e["kind"] == "camera":
-            # The shot's OWN camera. If layout has published one, bring it in
-            # (append — editable shot data). Otherwise BUILD a fresh Dolly camera
-            # rig named after the shot, ready for the layout artist to animate.
-            cstep = camera_step(settings)
-            ct = tasks.get_task(sftp, remote_root,
-                                tasks.make_id("shot", shot_entity, cstep))
-            cpubs = tasks.published_files(ct) if ct else []
-            cam_name = shot_entity.replace("/", "_")
-            if cpubs:
-                out.append({"id": e["id"], "label": e["label"], "kind": "camera",
-                            "asset": "", "blend_rel": cpubs[0]["rel"],
-                            "source_step": cstep, "available_steps": [],
-                            "look": "", "load": "append", "apply_look": False,
-                            "camera_name": cam_name})
-            else:
-                out.append({"id": e["id"], "label": e["label"], "kind": "camera",
-                            "asset": "", "blend_rel": "",
-                            "source_step": cstep, "available_steps": [],
-                            "look": "", "load": "create_rig", "apply_look": False,
-                            "camera_name": cam_name})
+            # The shot's OWN camera = a fresh Dolly camera rig named after the shot.
+            # Its animation comes back via the published anim Actions (re-applied on
+            # Build shot), exactly like the character rigs.
+            out.append({"id": e["id"], "label": e["label"], "kind": "camera",
+                        "asset": "", "blend_rel": "",
+                        "source_step": camera_step(settings), "available_steps": [],
+                        "look": "", "load": "create_rig", "apply_look": False,
+                        "camera_name": shot_entity.replace("/", "_")})
             continue
 
         # asset element: the geometry steps with a publish, in preference order
@@ -277,3 +265,34 @@ def resolved_elements(sftp, remote_root: str, shot_entity: str, step: str,
                     "look": e.get("look", ""), "load": spec.get("load", "link"),
                     "apply_look": bool(spec.get("apply_look", False))})
     return out
+
+
+ANIM_BLEND_SUFFIX = "_anim.blend"
+
+
+def resolved_animation(sftp, remote_root: str, shot_entity: str,
+                       step: str) -> dict | None:
+    """The shot step's latest published animation: {blend_rel, manifest_rel,
+    elements:{id:{obj:action}}} or None. The anim artifact is the publish whose file
+    name ends '_anim.blend' (the main shot .blend is excluded by that suffix)."""
+    import json
+    from . import tasks
+    import os as _os
+    t = tasks.get_task(sftp, remote_root, tasks.make_id("shot", shot_entity, step))
+    if not t:
+        return None
+    anims = [p for p in tasks.published_files(t)
+             if p["name"].endswith(ANIM_BLEND_SUFFIX)]
+    if not anims:
+        return None
+    blend_rel = anims[0]["rel"]            # newest first
+    manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
+    elements = {}
+    txt = sftp.read_text(remote_root.rstrip("/") + "/" + manifest_rel)
+    if txt:
+        try:
+            elements = (json.loads(txt) or {}).get("elements") or {}
+        except ValueError:
+            elements = {}
+    return {"blend_rel": blend_rel, "manifest_rel": manifest_rel,
+            "elements": elements}

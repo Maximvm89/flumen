@@ -283,3 +283,43 @@ def test_assembly_set_range(monkeypatch, capsys):
     asm = E.load_assembly(srv, "/r", "SEQ010/SH0010")
     assert asm["frame_start"] == 1001 and asm["duration"] == 240
     assert E.frame_range(asm) == (1001, 1240)
+
+
+def test_resolve_assembly_includes_animation(monkeypatch, capsys, tmp_path):
+    import json
+    from animpipe import turntable, elements as E
+    monkeypatch.setattr(turntable, "_load_project_settings", lambda _r: {})
+    srv = _DownloadSrv()
+    ent = "characters/frankenstein"
+    tasks.save_task(srv, "/r", tasks.new_task("asset", ent, "model"))
+    tasks.publish_task(srv, "/r", "marco", ["/tmp/frankenstein_model_v001.blend"],
+                       tasks.make_id("asset", ent, "model"))
+    shot = "SEQ010/SH0010"
+    lt = tasks.make_id("shot", shot, "layout")
+    st = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    asm = E.empty_assembly(shot); E.add_element(asm, E.new_element(ent))
+    E.save_assembly(srv, "/r", shot, asm)
+    pub = "04_sequences/SEQ010/SH0010/layout/publish"
+    t = tasks.get_task(srv, "/r", lt)
+    t["publishes"] = [{"files": [pub + "/SH0010_layout_v001.blend",
+                                 pub + "/SH0010_layout_v001_anim.blend",
+                                 pub + "/SH0010_layout_v001_anim.manifest.json"],
+                       "time": 1, "by": "marco"}]
+    tasks.save_task(srv, "/r", t)
+    srv.files["/r/" + pub + "/SH0010_layout_v001_anim.manifest.json"] = \
+        '{"version":1,"elements":{"frankenstein":{"frank_rig":"A"}}}'
+
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    rc = cli.cmd_resolve_assembly(_args(task=st["id"], shot=None, step=None,
+                                        list=False, only=[], pick=[]))
+    assert rc == 0
+    res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert res["anim"]["elements"] == {"frankenstein": {"frank_rig": "A"}}
+    assert res["anim"]["blend_local"].endswith("SH0010_layout_v001_anim.blend")
+    assert any(r.endswith("SH0010_layout_v001_anim.blend") for r, _ in srv.downloads)
+
+    # --list previews without the (downloaded) animation
+    rc = cli.cmd_resolve_assembly(_args(task=st["id"], shot=None, step=None,
+                                        list=True, only=[], pick=[]))
+    res2 = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert "anim" not in res2

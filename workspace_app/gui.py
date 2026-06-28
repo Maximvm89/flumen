@@ -1248,7 +1248,10 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         # Surface publishes are look libraries (no scene) — not openable as workfiles.
-        pubs = [] if t.get("step") == "surface" else tasksmod.published_files(t)
+        # Anim artifacts (…_anim.blend) are actions-only and also not openable.
+        pubs = ([] if t.get("step") == "surface"
+                else [p for p in tasksmod.published_files(t)
+                      if not p["name"].endswith("_anim.blend")])
         act_open = menu.addAction("Open in Blender (latest)")
         ver_menu = menu.addMenu("Open version")
         ver_actions = {}
@@ -1350,8 +1353,10 @@ class MainWindow(QMainWindow):
         if task.get("step") == "surface":
             blend_rel = None
         # Open priority: chosen version > latest published > latest local work file.
+        # Skip …_anim.blend (actions-only artifacts), never an openable workfile.
         if blend_rel is None and task.get("step") != "surface":
-            pubs = tasksmod.published_files(task)
+            pubs = [p for p in tasksmod.published_files(task)
+                    if not p["name"].endswith("_anim.blend")]
             blend_rel = pubs[0]["rel"] if pubs else None
         open_file = None
         if blend_rel:

@@ -12,6 +12,7 @@ from . import settings_io
 from . import checks
 from . import textures
 from . import look as look_mod
+from . import anim as anim_mod
 
 
 def _prefs():
@@ -795,6 +796,25 @@ class LEGAMI_OT_publish(bpy.types.Operator):
             bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
             files = [pub_path]
             kind = ".blend (shot)"
+            # Also publish each element's animation as editable Actions + a manifest,
+            # so Build shot can re-apply it onto freshly-linked rigs on a rebuild.
+            # First snapshot any moved-but-unkeyed poses so static offsets aren't lost.
+            _snapshot_poses(context)
+            actions, elem_actions = _collect_element_animation()
+            if actions:
+                # The anim artifacts go in publish/anim/ (not beside the shot
+                # publishes) so they're never offered as an openable workfile. They
+                # ride the texture_files path, which preserves the publish/ subpath.
+                anim_dir = os.path.join(publish_dir, "anim")
+                os.makedirs(anim_dir, exist_ok=True)
+                anim_path = os.path.join(anim_dir, f"{base}_v{version:03d}_anim.blend")
+                bpy.data.libraries.write(anim_path, actions, fake_user=True)
+                manifest = anim_mod.build_anim_manifest(version, elem_actions)
+                anim_manifest_path = anim_mod.anim_manifest_path(anim_path)
+                with open(anim_manifest_path, "w") as fh:
+                    json.dump(manifest, fh, indent=2)
+                texture_files += [anim_path, anim_manifest_path]
+                kind += f" + anim ({len(actions)} action(s))"
         else:
             # Wrap the PUBLISH subtree in a collection named after the asset so a
             # downstream shot can LINK it as one unit (clean library overrides), and
@@ -1389,6 +1409,134 @@ def _link_asset_element(context, element):
     return holder, None
 
 
+def _animated_paths(obj):
+    """The set of data-paths that already have an F-curve on obj's action (handles
+    both legacy and Blender 4.4+ slotted actions)."""
+    ad = getattr(obj, "animation_data", None)
+    act = getattr(ad, "action", None) if ad else None
+    if not act:
+        return set()
+    paths = {fc.data_path for fc in getattr(act, "fcurves", []) or []}   # legacy
+    for layer in getattr(act, "layers", []) or []:                      # slotted
+        for strip in getattr(layer, "strips", []) or []:
+            try:
+                slot = ad.action_slot
+                cbag = strip.channelbag(slot) if slot else None
+            except Exception:  # noqa: BLE001
+                cbag = None
+            if cbag:
+                paths.update(fc.data_path for fc in cbag.fcurves)
+    return paths
+
+
+def _snapshot_poses(context):
+    """Before publishing, key every MOVED but un-keyed pose bone (and rig object) at
+    the shot's start frame, so static offsets the artist changed without keyframing
+    are captured in the Action and survive a rebuild. Channels that are already
+    animated are left untouched. Returns the number of channels keyed."""
+    scene = context.scene
+    start = int(getattr(scene, "frame_start", 1001))
+    prev = scene.frame_current
+    scene.frame_set(start)
+    rest = {"location": (0.0, 0.0, 0.0), "scale": (1.0, 1.0, 1.0),
+            "rotation_euler": (0.0, 0.0, 0.0),
+            "rotation_quaternion": (1.0, 0.0, 0.0, 0.0)}
+    keyed = 0
+
+    def snap(target, prefix, animated):
+        nonlocal keyed
+        rot = ("rotation_quaternion"
+               if getattr(target, "rotation_mode", "XYZ") == "QUATERNION"
+               else "rotation_euler")
+        for ch in ("location", rot, "scale"):
+            path = (prefix + "." + ch) if prefix else ch
+            if path in animated:                       # already animated — leave it
+                continue
+            if tuple(getattr(target, ch)) == rest[ch]:  # at rest — nothing to capture
+                continue
+            try:
+                target.keyframe_insert(data_path=ch, frame=start)
+                keyed += 1
+            except Exception:  # noqa: BLE001
+                pass
+
+    for coll in bpy.data.collections:
+        if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
+            continue
+        for o in coll.all_objects:
+            if getattr(o, "type", "") != "ARMATURE" or not getattr(o, "pose", None):
+                continue
+            o.animation_data_create()
+            animated = _animated_paths(o)
+            snap(o, "", animated)                       # the rig object itself
+            for pb in o.pose.bones:
+                snap(pb, 'pose.bones["%s"]' % pb.name, animated)
+    scene.frame_set(prev)
+    return keyed
+
+
+def _collect_element_animation():
+    """Gather each element's animation: the Action on every animated object inside an
+    'element__*' holder. Returns (set_of_actions, {element_id: {obj_name: action_name}})
+    for libraries.write + the manifest."""
+    actions = set()
+    elem_actions = {}
+    for coll in bpy.data.collections:
+        if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
+            continue
+        eid = coll.name[len(ELEMENT_HOLDER_PREFIX):]
+        mapping = {}
+        for o in coll.all_objects:
+            ad = getattr(o, "animation_data", None)
+            act = getattr(ad, "action", None) if ad else None
+            if act is not None:
+                actions.add(act)
+                mapping[o.name] = act.name
+        if mapping:
+            elem_actions[eid] = mapping
+    return actions, elem_actions
+
+
+def _apply_element_animation(holder, anim_blend, action_map):
+    """Append the published Actions and assign them onto this element's objects by
+    name, so a freshly-built element comes back animated."""
+    if not (anim_blend and action_map and os.path.isfile(anim_blend)):
+        return 0
+    want = set(action_map.values())
+    with bpy.data.libraries.load(anim_blend, link=False) as (src, dst):
+        req_names = [a for a in src.actions if a in want]
+        dst.actions = list(req_names)     # a SEPARATE copy — Blender fills dst.actions
+                                          # with datablocks on exit; req_names must stay
+                                          # the name strings (else the lookup below
+                                          # keys on datablocks and never matches).
+    # Map the REQUESTED name -> loaded datablock by order. Don't key on the loaded
+    # action's .name: appending when an orphan of the same name exists (e.g. after
+    # deleting the element in place) forces a '.001' suffix that wouldn't match the
+    # manifest name. Same zip pattern as look material append.
+    loaded = {name: blk for name, blk in zip(req_names, dst.actions)
+              if blk is not None}
+    applied = 0
+    for o in holder.all_objects:
+        act = loaded.get(action_map.get(o.name, ""))
+        if act is None:
+            continue
+        o.animation_data_create()
+        o.animation_data.action = act
+        # Blender 4.4+ slotted actions: a slot must be bound to drive the object. It
+        # auto-binds when the object name matches the action's slot; force the first
+        # slot otherwise. (No-op on older Blender without slots.)
+        try:
+            ad = o.animation_data
+            if getattr(ad, "action_slot", None) is None:
+                slots = getattr(act, "slots", None)
+                if slots and len(slots):
+                    ad.action_slot = slots[0]
+        except Exception:  # noqa: BLE001
+            pass
+        applied += 1
+    return applied
+
+
 def _build_camera_rig(context, element):
     """Build a fresh Dolly camera rig (Add Camera Rigs add-on) named after the shot
     and place it under the element holder — the layout artist's camera to animate.
@@ -1650,8 +1798,11 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             self.report({"ERROR"}, "Couldn't fetch the selected elements — check "
                                    "your connection and retry.")
             return {"CANCELLED"}
+        anim = (data or {}).get("anim") or {}
+        anim_blend = anim.get("blend_local")
+        anim_elements = anim.get("elements") or {}
 
-        built, skipped = [], []
+        built, skipped, animated = [], [], 0
         for el in elements:
             loader = _ELEMENT_LOADERS.get(el.get("kind"))
             if loader is None:
@@ -1662,6 +1813,13 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             except Exception as exc:  # noqa: BLE001 — one bad element never kills it
                 holder, err = None, str(exc)
             (built if holder else skipped).append((el, err))
+            # Re-apply this element's published animation onto the fresh rig.
+            amap = anim_elements.get(el.get("id"))
+            if holder and anim_blend and amap:
+                try:
+                    animated += _apply_element_animation(holder, anim_blend, amap)
+                except Exception as exc:  # noqa: BLE001
+                    print("[Legami] could not apply animation:", exc)
 
         # Store linked-library paths relative to the shot .blend (cross-machine).
         try:
@@ -1670,6 +1828,8 @@ class LEGAMI_OT_build_shot(bpy.types.Operator):
             pass
 
         parts = [f"Built {len(built)} element(s)"]
+        if animated:
+            parts.append(f"re-applied animation to {animated} object(s)")
         if tl_msg:
             parts.append(tl_msg)
         if present_ct:

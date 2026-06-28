@@ -189,7 +189,9 @@ def test_resolved_elements_available_steps_and_pick():
     assert res3[0]["source_step"] == "rig"
 
 
-def test_resolved_elements_camera_appends_published():
+def test_resolved_elements_camera_always_builds_rig():
+    # The camera is always a fresh Dolly rig (named after the shot); its animation
+    # comes back via the published anim Actions, not by appending a shot publish.
     s = FakeSrv()
     shot = "SEQ010/SH0010"
     tasks.save_task(s, "/r", tasks.new_task("shot", shot, "layout"))
@@ -200,18 +202,38 @@ def test_resolved_elements_camera_appends_published():
     E.save_assembly(s, "/r", shot, asm)
     res = E.resolved_elements(s, "/r", shot, "layout")
     assert len(res) == 1 and res[0]["kind"] == "camera"
-    assert res[0]["source_step"] == "layout" and res[0]["load"] == "append"
-    assert res[0]["blend_rel"].endswith("SH0010_layout_v001.blend")
+    assert res[0]["load"] == "create_rig" and res[0]["blend_rel"] == ""
     assert res[0]["camera_name"] == "SEQ010_SH0010"
 
 
-def test_resolved_elements_camera_builds_rig_when_unpublished():
+def test_resolved_animation_finds_latest_anim_publish():
     s = FakeSrv()
     shot = "SEQ010/SH0010"
-    asm = E.empty_assembly(shot)
-    E.add_element(asm, E.new_element("", "camera"))
-    E.save_assembly(s, "/r", shot, asm)
-    res = E.resolved_elements(s, "/r", shot, "layout")
-    # no published camera -> emit a build-a-Dolly-rig element, named after the shot
-    assert len(res) == 1 and res[0]["load"] == "create_rig"
-    assert res[0]["blend_rel"] == "" and res[0]["camera_name"] == "SEQ010_SH0010"
+    lt = tasks.make_id("shot", shot, "layout")
+    tasks.save_task(s, "/r", tasks.new_task("shot", shot, "layout"))
+    # publish a shot .blend (in publish/) + its anim .blend + manifest (in
+    # publish/anim/, a separate folder) for v001, then v002
+    pub = "04_sequences/SEQ010/SH0010/layout/publish"
+    for v in (1, 2):
+        t = tasks.get_task(s, "/r", lt)
+        man = pub + f"/anim/SH0010_layout_v{v:03d}_anim.manifest.json"
+        t["publishes"] = (t.get("publishes") or []) + [{
+            "files": [pub + f"/SH0010_layout_v{v:03d}.blend",
+                      pub + f"/anim/SH0010_layout_v{v:03d}_anim.blend", man],
+            "time": v, "by": "marco"}]
+        tasks.save_task(s, "/r", t)
+    s.files["/r/" + pub + "/anim/SH0010_layout_v002_anim.manifest.json"] = \
+        '{"version": 2, "elements": {"frankenstein": {"frank_rig": "A"}}}'
+
+    ra = E.resolved_animation(s, "/r", shot, "layout")
+    assert ra is not None
+    assert ra["blend_rel"].endswith("SH0010_layout_v002_anim.blend")   # newest
+    assert ra["elements"] == {"frankenstein": {"frank_rig": "A"}}
+    # the main shot .blend must NOT be picked as the anim artifact
+    assert "_anim.blend" in ra["blend_rel"]
+
+
+def test_resolved_animation_none_when_unpublished():
+    s = FakeSrv()
+    tasks.save_task(s, "/r", tasks.new_task("shot", "SEQ010/SH0010", "layout"))
+    assert E.resolved_animation(s, "/r", "SEQ010/SH0010", "layout") is None

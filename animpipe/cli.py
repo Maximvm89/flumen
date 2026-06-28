@@ -674,7 +674,20 @@ def cmd_resolve_assembly(args) -> int:
                         "look": r.get("look", ""), "load": r.get("load", "link"),
                         "apply_look": r.get("apply_look", False),
                         "camera_name": r.get("camera_name", "")})
-    print(json.dumps({"frame_start": fs, "frame_end": fe, "elements": out}))
+
+        # The shot's published animation (Actions) — Build shot re-applies it onto the
+        # freshly-linked rigs. Skipped for --list (the dialog doesn't need it).
+        anim = {}
+        if not args.list:
+            ra = E.resolved_animation(client, rr, shot_entity, step)
+            if ra:
+                ab_local = os.path.join(local_root, *ra["blend_rel"].split("/"))
+                client.download(rr + "/" + ra["blend_rel"], ab_local)
+                anim = {"blend_local": ab_local, "elements": ra["elements"]}
+    result = {"frame_start": fs, "frame_end": fe, "elements": out}
+    if anim:
+        result["anim"] = anim
+    print(json.dumps(result))
     return 0
 
 
