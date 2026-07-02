@@ -39,6 +39,8 @@ class FLUMEN_MT_menu(bpy.types.Menu):
             if task.get("type") == "shot":
                 layout.operator("flumen.load_animation", text="Load animation…",
                                 icon="ANIM_DATA")
+            layout.operator("flumen.add_review_camera", icon="VIEW_CAMERA")
+            layout.operator("flumen.render_review", icon="RENDER_STILL")
             layout.operator("flumen.save_to_task", icon="FILE_TICK")
             layout.operator("flumen.run_checks", icon="CHECKMARK")
             layout.operator("flumen.auto_fix", icon="TOOL_SETTINGS")

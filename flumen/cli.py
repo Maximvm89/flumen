@@ -408,6 +408,30 @@ def cmd_list_asset_publishes(args) -> int:
     return 0
 
 
+def cmd_review_still(args) -> int:
+    """Upload a rendered review still into 07_dailies/<entity>/<step>/ and fire
+    the dailies notification. Used by the Blender 'Render review' tool."""
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import tasks as T, ledger, notify
+    if not os.path.isfile(args.file):
+        print(f"error: file not found: {args.file}", file=sys.stderr)
+        return 1
+    rr = cfg.remote_root.rstrip("/")
+    with SFTPClient(creds) as client:
+        task = T.get_task(client, rr, args.task)
+        if not task:
+            print(f"error: task not found: {args.task}", file=sys.stderr)
+            return 1
+        rel = (f"07_dailies/{task['entity']}/{task['step']}/"
+               f"{os.path.basename(args.file)}")
+        client.upload(args.file, rr + "/" + rel)
+        ledger.record_uploads(client, rr, creds.user, [rel])
+        notify.announce_dailies(client, rr, task, {}, [rel], creds.user)
+    print(f"review still -> {rr}/{rel}")
+    return 0
+
+
 def cmd_fetch_look(args) -> int:
     """Download a published look (its .blend + manifest + textures/) into the local
     mirror and print the local .blend path. Used by 'Apply look' so downstream can
@@ -1003,6 +1027,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="list a surface task's published looks (JSON)")
     ll.add_argument("--task", required=True, help="surface task id")
     ll.set_defaults(func=cmd_list_looks)
+
+    rs = sub.add_parser("review-still", parents=[common],
+                        help="upload a review still to 07_dailies + notify")
+    rs.add_argument("--task", required=True, help="task id")
+    rs.add_argument("--file", required=True, help="rendered image (local path)")
+    rs.set_defaults(func=cmd_review_still)
 
     ld = sub.add_parser("list-dressings", parents=[common],
                         help="list an environment's published set-dressings (JSON)")

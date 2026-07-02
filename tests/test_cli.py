@@ -516,3 +516,30 @@ def test_resolve_assembly_missing_dressing_warns_not_fatal(monkeypatch, capsys,
     assert el["blend_local"]                              # env still resolves
     assert "never_published" in el["dressing_error"]
     assert "dressing" not in el or not isinstance(el.get("dressing"), dict)
+
+
+def test_review_still_uploads_and_notifies(monkeypatch, capsys, tmp_path):
+    from flumen import notify
+    srv = _DownloadSrv()
+    srv.uploads = []
+    srv.upload = lambda local, remote, callback=None: srv.uploads.append(remote)
+    t = tasks.save_task(srv, "/r",
+                        tasks.new_task("asset", "environments/disco", "model"))
+    img = tmp_path / "disco_model_review_20260702_140000.png"
+    img.write_bytes(b"png")
+    announced = []
+    monkeypatch.setattr(notify, "announce_dailies",
+                        lambda c, rr, task, rec, media, actor:
+                        announced.append(media) or True)
+    _patch(monkeypatch, srv)
+    rc = cli.cmd_review_still(_args(task=t["id"], file=str(img)))
+    assert rc == 0
+    assert srv.uploads == ["/r/07_dailies/environments/disco/model/"
+                           "disco_model_review_20260702_140000.png"]
+    assert announced == [["07_dailies/environments/disco/model/"
+                          "disco_model_review_20260702_140000.png"]]
+    out = capsys.readouterr().out
+    assert "review still ->" in out
+    # missing file / task -> clean errors
+    assert cli.cmd_review_still(_args(task=t["id"], file="/nope.png")) == 1
+    assert cli.cmd_review_still(_args(task="nope", file=str(img))) == 1

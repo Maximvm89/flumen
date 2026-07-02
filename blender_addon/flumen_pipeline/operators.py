@@ -1060,11 +1060,15 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                             f"{len(unmanaged)} prop holder(s) without a prop_root "
                             f"empty won't be in the manifest (use Add prop): "
                             + ", ".join(unmanaged[:3]))
+            restore_review = _unlink_review_camera(context)
             try:
-                bpy.ops.file.make_paths_relative()
-            except Exception:  # noqa: BLE001
-                pass
-            bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
+                try:
+                    bpy.ops.file.make_paths_relative()
+                except Exception:  # noqa: BLE001
+                    pass
+                bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
+            finally:
+                restore_review()
             workfile_rel = _project_rel(pub_path)
             manifest = {
                 "dressing": dressing_name, "version": version,
@@ -1107,11 +1111,15 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                     coll["flumen_anim"] = anim_vers[eid]
             # Save the assembled scene (linked rigs + camera + animation) as the
             # versioned publish — no collection wrap, no FBX.
+            restore_review = _unlink_review_camera(context)
             try:
-                bpy.ops.file.make_paths_relative()
-            except Exception:  # noqa: BLE001
-                pass
-            bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
+                try:
+                    bpy.ops.file.make_paths_relative()
+                except Exception:  # noqa: BLE001
+                    pass
+                bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
+            finally:
+                restore_review()
             files = [pub_path]
             kind = ".blend (shot)"
             # Publish only the CHOSEN elements' animation as editable Actions + a
@@ -2302,22 +2310,30 @@ def _apply_element_animation(holder, anim_blend, action_map):
 
 
 def _build_camera_rig(context, element):
-    """Build a fresh Dolly camera rig (Add Camera Rigs add-on) named after the shot
-    and place it under the element holder — the layout artist's camera to animate.
-    Only the armature + camera go into the holder; the add-on's WGT-* bone shapes
-    stay in its hidden Widgets collection (they're shapes, not controls)."""
+    """Build a fresh Dolly camera rig for a shot element (see _spawn_dolly_rig)."""
     holder = _element_holder(context, element["id"])
     name = element.get("camera_name") or "shot_camera"
+    _rig, _cam, err = _spawn_dolly_rig(context, holder, name)
+    if err:
+        return None, err
+    return holder, None
+
+
+def _spawn_dolly_rig(context, holder, name):
+    """Build a Dolly camera rig (Add Camera Rigs add-on) into `holder` and make
+    its camera the scene camera. Only the armature + camera go into the holder;
+    the add-on's WGT-* bone shapes stay in its hidden Widgets collection (they're
+    shapes, not controls). Returns (rig, cam, error)."""
     before_objs = set(bpy.data.objects)
     before_colls = set(bpy.data.collections)
     try:
         bpy.ops.object.build_camera_rig(mode="DOLLY")
     except Exception as exc:  # noqa: BLE001 — add-on missing/disabled
-        return None, f"camera-rig add-on unavailable ({exc})"
+        return None, None, f"camera-rig add-on unavailable ({exc})"
     new_objs = [o for o in bpy.data.objects if o not in before_objs]
     new_colls = [c for c in bpy.data.collections if c not in before_colls]
     if not new_objs:
-        return None, "camera rig build produced nothing"
+        return None, None, "camera rig build produced nothing"
     rig = next((o for o in new_objs if o.type == "ARMATURE"), None)
     cam = next((o for o in new_objs if o.type == "CAMERA"), None)
 
@@ -2355,7 +2371,126 @@ def _build_camera_rig(context, element):
             cam.name = name + "_Camera"
     if cam is not None:
         context.scene.camera = cam
-    return holder, None
+    return rig, cam, None
+
+
+# --- review camera --------------------------------------------------------------
+# A local dolly rig for framing review renders. Lives in its own collection and is
+# EXCLUDED from every publish: the model post-process strips it (outside the
+# PUBLISH locator), and dressing/shot publishes unlink it around the save.
+REVIEW_CAM_COLL = "review_camera"
+
+
+def _unlink_review_camera(context):
+    """Temporarily remove the review-camera collection from the scene (and hand
+    the scene camera back to a non-review camera) so a saved publish copy never
+    carries it. Returns a restore() callable."""
+    coll = bpy.data.collections.get(REVIEW_CAM_COLL)
+    if coll is None:
+        return lambda: None
+    sc = context.scene.collection
+    scene = context.scene
+    was_linked = coll.name in sc.children
+    prior_cam = scene.camera
+    review_cams = {o for o in coll.all_objects if o.type == "CAMERA"}
+    if scene.camera in review_cams:
+        scene.camera = next((o for o in scene.objects
+                             if o.type == "CAMERA" and o not in review_cams), None)
+    if was_linked:
+        try:
+            sc.children.unlink(coll)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def restore():
+        if was_linked:
+            try:
+                sc.children.link(coll)
+            except Exception:  # noqa: BLE001
+                pass
+        scene.camera = prior_cam
+    return restore
+
+
+class FLUMEN_OT_add_review_camera(bpy.types.Operator):
+    bl_idname = "flumen.add_review_camera"
+    bl_label = "Add review camera"
+    bl_description = ("Add a local Dolly camera rig for framing review renders. "
+                      "Never published at any stage — position it, then use "
+                      "'Render review still'")
+
+    def execute(self, context):
+        if bpy.data.collections.get(REVIEW_CAM_COLL) is not None:
+            self.report({"INFO"}, "Review camera already in the scene.")
+            return {"FINISHED"}
+        holder = _named_holder(context, REVIEW_CAM_COLL)
+        rig, cam, err = _spawn_dolly_rig(context, holder, "REVIEW")
+        if err:
+            try:
+                context.scene.collection.children.unlink(holder)
+                bpy.data.collections.remove(holder)
+            except Exception:  # noqa: BLE001
+                pass
+            self.report({"ERROR"}, f"Could not build the review camera: {err}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Review camera added (scene camera set) — frame "
+                              "your view, then 'Render review still'.")
+        return {"FINISHED"}
+
+
+class FLUMEN_OT_render_review(bpy.types.Operator):
+    bl_idname = "flumen.render_review"
+    bl_label = "Render review still"
+    bl_description = ("Render the current frame through the review camera and "
+                      "upload it to 07_dailies (with the usual notification)")
+
+    def execute(self, context):
+        import tempfile
+        import time as _time
+        task = active_task()
+        if not task:
+            self.report({"ERROR"}, "No active task — open from the Workspace app.")
+            return {"CANCELLED"}
+        coll = bpy.data.collections.get(REVIEW_CAM_COLL)
+        cam = next((o for o in coll.all_objects if o.type == "CAMERA"),
+                   None) if coll else None
+        if cam is None:
+            self.report({"ERROR"}, "No review camera — run 'Add review camera' "
+                                   "first.")
+            return {"CANCELLED"}
+
+        leaf = task.get("entity", "review").split("/")[-1]
+        stamp = _time.strftime("%Y%m%d_%H%M%S")
+        out = os.path.join(tempfile.gettempdir(),
+                           f"{leaf}_{task.get('step', '')}_review_{stamp}.png")
+        scene = context.scene
+        r = scene.render
+        prior = (scene.camera, r.filepath, r.image_settings.file_format)
+        try:
+            scene.camera = cam
+            r.image_settings.file_format = "PNG"
+            r.filepath = out
+            bpy.ops.render.render(write_still=True)
+        finally:
+            scene.camera, r.filepath, r.image_settings.file_format = prior
+        if not os.path.isfile(out):
+            self.report({"ERROR"}, "Render produced no image.")
+            return {"CANCELLED"}
+
+        cmd, td = _toolkit_cmd(["review-still", "--task", task["id"],
+                                "--file", out])
+        if cmd is None:
+            self.report({"WARNING"}, f"Rendered to {out}, but the toolkit isn't "
+                                     f"available to upload.")
+            return {"FINISHED"}
+        try:
+            subprocess.Popen(cmd, cwd=td)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, f"Rendered, but upload failed to start: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Review rendered — uploading "
+                              f"{os.path.basename(out)} to dailies in background.")
+        return {"FINISHED"}
 
 
 def _load_camera_element(context, element):
@@ -2790,6 +2925,8 @@ CLASSES = (
     FLUMEN_OT_add_prop,
     FLUMEN_OT_auto_fix,
     FLUMEN_OT_show_log,
+    FLUMEN_OT_add_review_camera,
+    FLUMEN_OT_render_review,
     FLUMEN_OT_publish_upload,
     FLUMEN_OT_load_model,
     FLUMEN_OT_apply_look,
