@@ -2438,15 +2438,75 @@ class FLUMEN_OT_add_review_camera(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# In-flight review render: {out, task_id, prior} while the F12-style render job
+# runs; the render_complete/render_cancel handlers below consume it. The render
+# is INVOKE_DEFAULT so the normal Render window (progress bar, Esc to cancel)
+# shows — a blocking exec render would freeze the UI with no feedback.
+_REVIEW_PENDING = None
+
+
+def _review_render_finish(cancelled):
+    """One-shot epilogue for the review render: restore camera/output settings,
+    then (on success) hand the PNG to `flumen review-still` in the background."""
+    global _REVIEW_PENDING
+    pending, _REVIEW_PENDING = _REVIEW_PENDING, None
+    for handlers, fn in ((bpy.app.handlers.render_complete, _on_review_complete),
+                         (bpy.app.handlers.render_cancel, _on_review_cancel)):
+        try:
+            handlers.remove(fn)
+        except ValueError:
+            pass
+    if pending is None:
+        return
+    scene = bpy.context.scene
+    r = scene.render
+    out = pending["out"]
+    if not cancelled and not os.path.isfile(out):
+        # write_still can lag the completion handler — save the result ourselves.
+        try:
+            bpy.data.images["Render Result"].save_render(filepath=out)
+        except Exception as exc:  # noqa: BLE001
+            print("[Flumen] review: could not save the render:", exc)
+    scene.camera, r.filepath, r.image_settings.file_format = pending["prior"]
+    if cancelled:
+        print("[Flumen] review render cancelled — nothing uploaded.")
+        return
+    if not os.path.isfile(out):
+        print("[Flumen] review render produced no image — nothing uploaded.")
+        return
+    cmd, td = _toolkit_cmd(["review-still", "--task", pending["task_id"],
+                            "--file", out])
+    if cmd is None:
+        print(f"[Flumen] review rendered to {out}, but the toolkit isn't "
+              f"available to upload.")
+        return
+    try:
+        subprocess.Popen(cmd, cwd=td)
+        print(f"[Flumen] review: uploading {os.path.basename(out)} "
+              f"to dailies in background.")
+    except Exception as exc:  # noqa: BLE001
+        print("[Flumen] review: upload failed to start:", exc)
+
+
+def _on_review_complete(scene, *args):
+    _review_render_finish(cancelled=False)
+
+
+def _on_review_cancel(scene, *args):
+    _review_render_finish(cancelled=True)
+
+
 class FLUMEN_OT_render_review(bpy.types.Operator):
     bl_idname = "flumen.render_review"
     bl_label = "Render review still"
-    bl_description = ("Render the current frame through the review camera and "
-                      "upload it to 07_dailies (with the usual notification)")
+    bl_description = ("Render the current frame through the review camera "
+                      "(progress in the render window) and upload it to "
+                      "07_dailies (with the usual notification)")
 
     def execute(self, context):
         import tempfile
         import time as _time
+        global _REVIEW_PENDING
         task = active_task()
         if not task:
             self.report({"ERROR"}, "No active task — open from the Workspace app.")
@@ -2458,6 +2518,9 @@ class FLUMEN_OT_render_review(bpy.types.Operator):
             self.report({"ERROR"}, "No review camera — run 'Add review camera' "
                                    "first.")
             return {"CANCELLED"}
+        if _REVIEW_PENDING is not None:
+            self.report({"WARNING"}, "A review render is already in progress.")
+            return {"CANCELLED"}
 
         leaf = task.get("entity", "review").split("/")[-1]
         stamp = _time.strftime("%Y%m%d_%H%M%S")
@@ -2466,30 +2529,24 @@ class FLUMEN_OT_render_review(bpy.types.Operator):
         scene = context.scene
         r = scene.render
         prior = (scene.camera, r.filepath, r.image_settings.file_format)
+        scene.camera = cam
+        r.image_settings.file_format = "PNG"
+        r.filepath = out
+        _REVIEW_PENDING = {"out": out, "task_id": task["id"], "prior": prior}
+        bpy.app.handlers.render_complete.append(_on_review_complete)
+        bpy.app.handlers.render_cancel.append(_on_review_cancel)
         try:
-            scene.camera = cam
-            r.image_settings.file_format = "PNG"
-            r.filepath = out
-            bpy.ops.render.render(write_still=True)
-        finally:
-            scene.camera, r.filepath, r.image_settings.file_format = prior
-        if not os.path.isfile(out):
-            self.report({"ERROR"}, "Render produced no image.")
-            return {"CANCELLED"}
-
-        cmd, td = _toolkit_cmd(["review-still", "--task", task["id"],
-                                "--file", out])
-        if cmd is None:
-            self.report({"WARNING"}, f"Rendered to {out}, but the toolkit isn't "
-                                     f"available to upload.")
-            return {"FINISHED"}
-        try:
-            subprocess.Popen(cmd, cwd=td)
+            res = bpy.ops.render.render("INVOKE_DEFAULT", write_still=True)
         except Exception as exc:  # noqa: BLE001
-            self.report({"ERROR"}, f"Rendered, but upload failed to start: {exc}")
+            _review_render_finish(cancelled=True)
+            self.report({"ERROR"}, f"Could not start the render: {exc}")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Review rendered — uploading "
-                              f"{os.path.basename(out)} to dailies in background.")
+        if "CANCELLED" in res:
+            _review_render_finish(cancelled=True)
+            self.report({"ERROR"}, "Could not start the render.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Rendering review still — watch the render window; "
+                              "the upload starts when it finishes.")
         return {"FINISHED"}
 
 
