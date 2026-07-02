@@ -2412,16 +2412,51 @@ def _unlink_review_camera(context):
     return restore
 
 
+def _add_review_headlight(context, holder, cam):
+    """A shadowless sun parented to the review camera — it lights whatever the
+    camera looks at, like a DCC viewport headlight. No shadows means walls and
+    ceilings can't block it (interiors light up too), and a sun adds ~zero render
+    cost. Only added when the scene has no render-enabled lights of its own
+    (emissive materials don't count — an unlit set renders black without this).
+    Returns True if the headlight was added."""
+    if cam is None:
+        return False
+    if any(o.name.startswith("REVIEW_headlight") for o in holder.all_objects):
+        return False
+    review = set(holder.all_objects)
+    for o in context.scene.objects:
+        if o.type == "LIGHT" and o not in review and not o.hide_render:
+            return False
+    data = bpy.data.lights.new("REVIEW_headlight", "SUN")
+    data.energy = 3.0        # W/m² — tweak the light if the still is too hot/dim
+    try:
+        data.use_shadow = False
+    except AttributeError:   # older Blender: shadow flag lives elsewhere; harmless
+        pass
+    light = bpy.data.objects.new("REVIEW_headlight", data)
+    holder.objects.link(light)
+    light.parent = cam       # identity transform: shines exactly where cam looks
+    return True
+
+
 class FLUMEN_OT_add_review_camera(bpy.types.Operator):
     bl_idname = "flumen.add_review_camera"
     bl_label = "Add review camera"
-    bl_description = ("Add a local Dolly camera rig for framing review renders. "
+    bl_description = ("Add a local Dolly camera rig for framing review renders "
+                      "(plus a camera headlight if the scene has no lights). "
                       "Never published at any stage — position it, then use "
                       "'Render review still'")
 
     def execute(self, context):
-        if bpy.data.collections.get(REVIEW_CAM_COLL) is not None:
-            self.report({"INFO"}, "Review camera already in the scene.")
+        existing = bpy.data.collections.get(REVIEW_CAM_COLL)
+        if existing is not None:
+            cam = next((o for o in existing.all_objects if o.type == "CAMERA"),
+                       None)
+            if _add_review_headlight(context, existing, cam):
+                self.report({"INFO"}, "Review camera already there — added a "
+                                      "headlight (the scene has no lights).")
+            else:
+                self.report({"INFO"}, "Review camera already in the scene.")
             return {"FINISHED"}
         holder = _named_holder(context, REVIEW_CAM_COLL)
         rig, cam, err = _spawn_dolly_rig(context, holder, "REVIEW")
@@ -2433,8 +2468,11 @@ class FLUMEN_OT_add_review_camera(bpy.types.Operator):
                 pass
             self.report({"ERROR"}, f"Could not build the review camera: {err}")
             return {"CANCELLED"}
-        self.report({"INFO"}, "Review camera added (scene camera set) — frame "
-                              "your view, then 'Render review still'.")
+        lit = _add_review_headlight(context, holder, cam)
+        self.report({"INFO"}, "Review camera added (scene camera set"
+                              + (", headlight on — the scene has no lights"
+                                 if lit else "")
+                              + ") — frame your view, then 'Render review still'.")
         return {"FINISHED"}
 
 
