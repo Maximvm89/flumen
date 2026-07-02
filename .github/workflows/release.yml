@@ -38,6 +38,8 @@ jobs:
           name: Flumen ${{ github.ref_name }}
           files: dist/Flumen-Setup-*.exe
           fail_on_unmatched_files: true
+          # Auto-append a changelog built from the commits since the last tag.
+          generate_release_notes: true
           body: |
             Per-user Windows installer (no admin required).
 
@@ -47,3 +49,38 @@ jobs:
 
             > The installer is **unsigned** — on first run Windows SmartScreen shows
             > "Windows protected your PC" → **More info → Run anyway**.
+
+      # Announce the release in Discord. Free: a channel webhook + this step.
+      # No-op until the DISCORD_WEBHOOK secret is set (Server Settings ->
+      # Integrations -> Webhooks -> copy URL; then `gh secret set DISCORD_WEBHOOK`).
+      - name: Announce on Discord
+        if: success()
+        shell: bash
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK not set - skipping announcement."
+            exit 0
+          fi
+          # Pull the published release (body now includes the auto changelog).
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json body,url,name > release.json
+          jq -n --slurpfile r release.json --arg tag "$TAG" '
+            {
+              username: "Flumen Releases",
+              embeds: [{
+                title: $r[0].name,
+                url: $r[0].url,
+                description: ($r[0].body | if length > 3500
+                              then .[:3500] + "\n…(truncated)" else . end),
+                color: 9109504,
+                footer: {text: "Download: Flumen-Setup-\($tag | ltrimstr("v")).exe"}
+              }]
+            }' > payload.json
+          curl -sf -H "Content-Type: application/json" \
+               -d @payload.json "$DISCORD_WEBHOOK" \
+            && echo "Announced $TAG on Discord." \
+            || echo "warning: Discord announce failed (release still published)."
