@@ -32,23 +32,37 @@ jobs:
       - name: Build bundle + installer
         run: python build.py --installer
 
+      # Changelog from commit subjects since the previous tag. (GitHub's
+      # generate_release_notes builds from merged PRs — we commit straight to
+      # main, so that produces only a compare link.)
+      - name: Build changelog
+        shell: bash
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            echo "Per-user Windows installer (no admin required)."
+            echo
+            echo "> The installer is **unsigned** — on first run Windows SmartScreen shows"
+            echo "> \"Windows protected your PC\" → **More info → Run anyway**."
+            echo
+            echo "## What's changed"
+            if [ -n "$PREV" ]; then
+              git log "$PREV..${GITHUB_REF_NAME}" --no-merges --format='- %s'
+              echo
+              echo "**Full changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV...${GITHUB_REF_NAME}"
+            else
+              git log --no-merges --format='- %s'
+            fi
+          } > release_body.md
+          cat release_body.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Flumen ${{ github.ref_name }}
           files: dist/Flumen-Setup-*.exe
           fail_on_unmatched_files: true
-          # Auto-append a changelog built from the commits since the last tag.
-          generate_release_notes: true
-          body: |
-            Per-user Windows installer (no admin required).
-
-            Workspace app (tasks, file sync, Dailies review, bug reporter),
-            Blender add-on (project settings, publish, turntable framing/preview),
-            turntable dailies + review folder, review-copy.
-
-            > The installer is **unsigned** — on first run Windows SmartScreen shows
-            > "Windows protected your PC" → **More info → Run anyway**.
+          body_path: release_body.md
 
       # Announce the release in Discord. Free: a channel webhook + this step.
       # No-op until the DISCORD_WEBHOOK secret is set (Server Settings ->
