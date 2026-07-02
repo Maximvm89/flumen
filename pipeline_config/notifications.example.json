@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Team notifications. Copy to notifications.json, fill it in, and upload to",
+    "<remote_root>/02_pipeline/notifications.json:",
+    "    flumen put pipeline_config/notifications.json 02_pipeline/",
+    "Every dailies drop (turntable / look review / playblast) then mails the",
+    "recipients with the full publish info. Validate with: flumen notify-test.",
+    "The smtp password can live here (the server config is team-private) or in",
+    "each machine's .env via password_env."
+  ],
+  "dailies_email": {
+    "enabled": true,
+    "recipients": ["supervisor@studio.com", "lead@studio.com"],
+    "smtp": {
+      "host": "smtp.studio.com",
+      "port": 587,
+      "user": "pipeline@studio.com",
+      "password": "",
+      "password_env": "FLUMEN_SMTP_PASSWORD",
+      "starttls": true,
+      "from": "Flumen <pipeline@studio.com>"
+    }
+  }
+}

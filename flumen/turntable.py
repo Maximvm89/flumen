@@ -53,15 +53,19 @@ def dailies_rel(task: dict, version_label: str) -> str:
 
 def record_turntable(sftp, remote_root: str, task_id: str, rel: str,
                      username: str) -> str | None:
-    """Attach the turntable to the task's most recent publish entry + ledger."""
-    from . import tasks, ledger
+    """Attach the turntable to the task's most recent publish entry + ledger,
+    and mail the dailies notification (if the team configured one)."""
+    from . import tasks, ledger, notify
     task = tasks.get_task(sftp, remote_root, task_id)
     if not task:
         return None
+    rec = {}
     if task.get("publishes"):
-        task["publishes"][-1]["turntable"] = rel
+        rec = task["publishes"][-1]
+        rec["turntable"] = rel
     tasks.save_task(sftp, remote_root, task, actor=username)
     ledger.record_uploads(sftp, remote_root, username, [rel])
+    notify.announce_dailies(sftp, remote_root, task, rec, [rel], username)
     return rel
 
 
@@ -77,22 +81,25 @@ def record_review_media(sftp, remote_root: str, task_id: str, blend_rel: str,
     """Attach review media (turntable mp4 and/or texture sheet) to the publish
     record that produced `blend_rel` — matched by file, NOT 'latest', since several
     looks may publish between renders. Returns True if a record matched."""
-    from . import tasks, ledger
+    from . import tasks, ledger, notify
     task = tasks.get_task(sftp, remote_root, task_id)
     if not task:
         return False
     hit = False
+    matched = {}
     for rec in task.get("publishes") or []:
         if blend_rel in (rec.get("files") or []):
             if turntable:
                 rec["turntable"] = turntable
             if sheet:
                 rec["sheet"] = sheet
+            matched = rec
             hit = True
     if hit:
         tasks.save_task(sftp, remote_root, task, actor=username)
-        ledger.record_uploads(sftp, remote_root, username,
-                              [r for r in (turntable, sheet) if r])
+        media = [r for r in (turntable, sheet) if r]
+        ledger.record_uploads(sftp, remote_root, username, media)
+        notify.announce_dailies(sftp, remote_root, task, matched, media, username)
     return hit
 
 

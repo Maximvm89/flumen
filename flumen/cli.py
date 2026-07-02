@@ -54,6 +54,35 @@ def cmd_test_connection(args) -> int:
     return 0
 
 
+def cmd_notify_test(args) -> int:
+    """Validate the dailies-email config end-to-end: load notifications.json from
+    the server and send a test mail to every recipient."""
+    from . import notify
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    with SFTPClient(creds) as client:
+        nc = (notify.load_notify_config(client, cfg.remote_root)
+              or {}).get("dailies_email") or {}
+    if not nc:
+        print(f"error: no dailies_email block in "
+              f"{cfg.remote_root}/{notify.NOTIFY_FILE_REL}", file=sys.stderr)
+        return 1
+    if not nc.get("recipients"):
+        print("error: dailies_email.recipients is empty.", file=sys.stderr)
+        return 1
+    if not nc.get("enabled"):
+        print("note: dailies_email.enabled is false — sending the test anyway.")
+    subject = "[Flumen] Test notification"
+    body = (f"This is a test from `flumen notify-test`.\n\n"
+            f"Project root: {cfg.remote_root}\n"
+            f"Recipients: {', '.join(nc['recipients'])}\n\n— Flumen")
+    ok = notify.send_email(nc.get("smtp") or {}, list(nc["recipients"]),
+                           subject, body)
+    print("Test mail sent." if ok else "error: test mail FAILED — check smtp "
+          "host/port/user/password in notifications.json.")
+    return 0 if ok else 1
+
+
 def cmd_init_project(args) -> int:
     cfg = ProjectConfig.load(args.config)
     paths = schema_mod.project_paths(cfg.schema, cfg.remote_root)
@@ -789,6 +818,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("test-connection", parents=[common],
                    help="verify SFTP credentials") \
         .set_defaults(func=cmd_test_connection)
+
+    nt = sub.add_parser("notify-test", parents=[common],
+                        help="send a test dailies-notification email")
+    nt.set_defaults(func=cmd_notify_test)
 
     sub.add_parser("init-project", parents=[common],
                    help="create top-level structure") \
