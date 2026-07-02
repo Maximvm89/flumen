@@ -1,6 +1,7 @@
 # --- secrets & machine-local config (NEVER commit) ---
 .env
 config.yaml
+pipeline_config/notifications.json
 
 # --- Python ---
 __pycache__/
