@@ -1412,7 +1412,9 @@ class MainWindow(QMainWindow):
         pubs = ([] if t.get("step") == "surface"
                 else [p for p in tasksmod.published_files(t)
                       if not p["name"].endswith("_anim.blend")])
-        act_open = menu.addAction("Open in Blender (latest)")
+        act_open = menu.addAction("Open latest publish")
+        act_open.setEnabled(bool(pubs))
+        act_work = menu.addAction("Open latest work")
         ver_menu = menu.addMenu("Open version")
         ver_actions = {}
         if pubs:
@@ -1431,6 +1433,8 @@ class MainWindow(QMainWindow):
         chosen = menu.exec(self.tasks_table.viewport().mapToGlobal(pos))
         if chosen == act_open:
             self._open_task_in_blender(t)
+        elif chosen == act_work:
+            self._open_task_in_blender(t, work_latest=True)
         elif chosen in ver_actions:
             self._open_task_in_blender(t, ver_actions[chosen])
         elif chosen == act_hist:
@@ -1511,7 +1515,8 @@ class MainWindow(QMainWindow):
             self, f"Publish history — {task.get('entity')} / {task.get('step')}",
             "\n\n".join(lines))
 
-    def _open_task_in_blender(self, task: dict, blend_rel: str | None = None):
+    def _open_task_in_blender(self, task: dict, blend_rel: str | None = None,
+                              work_latest: bool = False):
         if not self.cfg:
             return
         from flumen.launcher import launch
@@ -1519,6 +1524,21 @@ class MainWindow(QMainWindow):
         self.cfg.local_root = local_root  # launcher syncs into the GUI's folder
         remote_root = self.cfg.remote_root
         work_abs = os.path.join(local_root, *tasksmod.task_work_rel(task).split("/"))
+
+        # 'Open latest work': the newest .blend in the task's LOCAL work folder —
+        # never a publish. Missing (and not a fresh surface scene) -> warn, no launch.
+        if work_latest:
+            import glob as _glob
+            cands = (sorted(_glob.glob(os.path.join(work_abs, "*.blend")),
+                            reverse=True) if os.path.isdir(work_abs) else [])
+            if not cands and task.get("step") != "surface":
+                QMessageBox.warning(
+                    self, "No work file",
+                    f"No local work file for this task.\n\n{work_abs}\n\n"
+                    f"Open the latest publish (or start from scratch) and use "
+                    f"'Save to task' in Blender to create one.")
+                return
+            blend_rel = None                 # force the work-file path below
 
         # A surface publish is a materials-only LOOK library (no scene) — opening it
         # gives Blender's "Library file, loading empty scene", and worse, applying a
@@ -1529,7 +1549,7 @@ class MainWindow(QMainWindow):
             blend_rel = None
         # Open priority: chosen version > latest published > latest local work file.
         # Skip …_anim.blend (actions-only artifacts), never an openable workfile.
-        if blend_rel is None and task.get("step") != "surface":
+        if blend_rel is None and not work_latest and task.get("step") != "surface":
             pubs = [p for p in tasksmod.published_files(task)
                     if not p["name"].endswith("_anim.blend")]
             blend_rel = pubs[0]["rel"] if pubs else None
