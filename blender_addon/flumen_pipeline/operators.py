@@ -944,6 +944,8 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         is_env = (task or {}).get("entity", "").startswith("environments/")
         if task and task.get("step") == "model" and not is_env:
             col.prop(context.window_manager, "flumen_render_turntable")
+        if task and task.get("step") == "model":
+            col.prop(context.window_manager, "flumen_apply_modifiers")
         if task and task.get("step") == "surface":
             wm = context.window_manager
             col.prop(wm, "flumen_look_name", text="Look name")
@@ -994,6 +996,7 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         # versioned on its own track; other steps version by step.
         look_name = ""
         dressing_name = ""
+        post_cmd = None
         if task["step"] == "surface":
             look_name = look_mod.normalize_look_name(
                 context.window_manager.flumen_look_name)
@@ -1162,6 +1165,16 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             if _export_fbx(fbx_path, use_selection=use_sel):
                 files.append(fbx_path)
             kind = ".blend + FBX"
+            # Post-process the publish COPY headless: strip everything outside
+            # the wrapped collection (clean file, not just a clean link target)
+            # and optionally bake the modifier stack. Work file untouched.
+            post_script = os.path.join(os.path.dirname(__file__),
+                                       "blender_publish_post.py")
+            post_cmd = [bpy.app.binary_path, "-b", pub_path,
+                        "--python", post_script, "--", "--collection", name]
+            if context.window_manager.flumen_apply_modifiers:
+                post_cmd.append("--apply-modifiers")
+                kind += ", modifiers baked"
 
         pub_args = ["publish", "--local", *files, "--task", task["id"],
                     "--status", "review",
@@ -1186,6 +1199,7 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         _PENDING_UPLOAD.clear()
         _PENDING_UPLOAD.update({
             "cmd": pub_cmd, "cwd": td, "n_files": len(files),
+            "post_cmd": post_cmd,
             "success": (f"Published {base}_v{version:03d} ({kind}); "
                         f"task → Review.{suffix}"),
             # Turntables are asset-on-a-pedestal reviews — meaningless for a
@@ -1250,7 +1264,14 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         wm.progress_begin(0, 100)
         self._timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
-        # Phase 1: upload. (Phase 2, the render, starts when this finishes.)
+        # Phase 0 (optional): headless clean/bake of the publish copy. Then the
+        # upload; then the background render.
+        if self._data.get("post_cmd"):
+            if self._begin(context, self._data["post_cmd"], self._data["cwd"],
+                           "Preparing publish", "post"):
+                return {"RUNNING_MODAL"}
+            return self._teardown(context, cancelled=True,
+                                  msg="Could not start the publish post-process.")
         if not self._begin(context, self._data["cmd"], self._data["cwd"],
                            "Publishing", "upload"):
             return self._teardown(context, cancelled=True,
@@ -1319,6 +1340,18 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
 
     def _phase_done(self, context):
         rc = self._proc.poll()
+        if self._phase == "post":
+            if rc not in (0, None):
+                return self._teardown(
+                    context, cancelled=True,
+                    msg="Publish aborted — the clean/bake post-process failed "
+                        "(see blender.log). Retry, or without 'Apply modifiers'.")
+            context.window_manager.progress_update(0)
+            if self._begin(context, self._data["cmd"], self._data["cwd"],
+                           "Publishing", "upload"):
+                return {"PASS_THROUGH"}
+            return self._teardown(context, cancelled=True,
+                                  msg="Could not start upload.")
         if self._phase == "upload":
             if rc not in (0, None):
                 return self._teardown(

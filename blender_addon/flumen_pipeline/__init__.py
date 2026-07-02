@@ -78,6 +78,11 @@ def register():
     bpy.types.WindowManager.flumen_lookdev_hdri = bpy.props.EnumProperty(
         name="Review HDRI", items=_ops.lookdev_hdri_items,
         description="HDRI to light the look review turntable (from 05_library/hdri)")
+    bpy.types.WindowManager.flumen_apply_modifiers = bpy.props.BoolProperty(
+        name="Apply modifiers in publish", default=False,
+        description="Bake the modifier stack into the published copy (your work "
+                    "file keeps them live). Armature-deformed meshes are skipped. "
+                    "Recommended for heavy static environments")
     bpy.types.WindowManager.flumen_dressing_name = bpy.props.StringProperty(
         name="Dressing", default="default",
         description="Name of this set-dressing variant (e.g. night_market) — pick "
@@ -114,6 +119,7 @@ def unregister():
     del bpy.types.WindowManager.flumen_render_turntable
     del bpy.types.WindowManager.flumen_look_name
     del bpy.types.WindowManager.flumen_lookdev_hdri
+    del bpy.types.WindowManager.flumen_apply_modifiers
     del bpy.types.WindowManager.flumen_dressing_name
     del bpy.types.WindowManager.flumen_build_items
     del bpy.types.WindowManager.flumen_anim_items
