@@ -941,7 +941,8 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         col = self.layout.column()
         col.prop(context.window_manager, "flumen_publish_desc", text="Description")
         task = active_task()
-        if task and task.get("step") == "model":
+        is_env = (task or {}).get("entity", "").startswith("environments/")
+        if task and task.get("step") == "model" and not is_env:
             col.prop(context.window_manager, "flumen_render_turntable")
         if task and task.get("step") == "surface":
             wm = context.window_manager
@@ -1187,7 +1188,11 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             "cmd": pub_cmd, "cwd": td, "n_files": len(files),
             "success": (f"Published {base}_v{version:03d} ({kind}); "
                         f"task → Review.{suffix}"),
-            "render": bool(context.window_manager.flumen_render_turntable),
+            # Turntables are asset-on-a-pedestal reviews — meaningless for a
+            # whole environment, so env model publishes never render one.
+            "render": (bool(context.window_manager.flumen_render_turntable)
+                       and not (task["step"] == "model"
+                                and task["entity"].startswith("environments/"))),
             "step": task.get("step"), "ttype": task.get("type"),
             "task_id": task["id"], "pub_path": pub_path, "look_name": look_name,
         })
