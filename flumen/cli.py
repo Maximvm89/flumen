@@ -55,32 +55,56 @@ def cmd_test_connection(args) -> int:
 
 
 def cmd_notify_test(args) -> int:
-    """Validate the dailies-email config end-to-end: load notifications.json from
-    the server and send a test mail to every recipient."""
+    """Validate the dailies-notification config end-to-end: load
+    notifications.json from the server and send a test to every configured
+    channel (email and/or Discord)."""
     from . import notify
     cfg = ProjectConfig.load(args.config)
     creds = SFTPCredentials.from_env(args.env)
     with SFTPClient(creds) as client:
-        nc = (notify.load_notify_config(client, cfg.remote_root)
-              or {}).get("dailies_email") or {}
-    if not nc:
-        print(f"error: no dailies_email block in "
+        nc = notify.load_notify_config(client, cfg.remote_root) or {}
+    mail = nc.get("dailies_email") or {}
+    disc = nc.get("dailies_discord") or {}
+    if not (mail or disc):
+        print(f"error: no dailies_email/dailies_discord block in "
               f"{cfg.remote_root}/{notify.NOTIFY_FILE_REL}", file=sys.stderr)
         return 1
-    if not nc.get("recipients"):
-        print("error: dailies_email.recipients is empty.", file=sys.stderr)
+
+    results = []
+    if mail:
+        if not mail.get("recipients"):
+            print("email: SKIP (recipients empty)")
+        else:
+            if not mail.get("enabled"):
+                print("note: dailies_email.enabled is false — testing anyway.")
+            body = (f"This is a test from `flumen notify-test`.\n\n"
+                    f"Project root: {cfg.remote_root}\n"
+                    f"Recipients: {', '.join(mail['recipients'])}\n\n— Flumen")
+            ok = notify.send_email(mail.get("smtp") or {},
+                                   list(mail["recipients"]),
+                                   "[Flumen] Test notification", body)
+            print("email: OK" if ok else "email: FAILED — check smtp "
+                  "host/port/user/password in notifications.json.")
+            results.append(ok)
+    if disc:
+        if not disc.get("webhook"):
+            print("discord: SKIP (webhook empty)")
+        else:
+            if not disc.get("enabled"):
+                print("note: dailies_discord.enabled is false — testing anyway.")
+            ok = notify.send_discord(disc["webhook"], {
+                "username": "Flumen Dailies",
+                "embeds": [{"title": "Test notification",
+                            "description": "This is a test from "
+                                           "`flumen notify-test`.\n\n— Flumen",
+                            "color": 9109504}]})
+            print("discord: OK" if ok else "discord: FAILED — check the webhook "
+                  "URL in notifications.json.")
+            results.append(ok)
+    if not results:
+        print("error: nothing to test (no recipients / webhook).", file=sys.stderr)
         return 1
-    if not nc.get("enabled"):
-        print("note: dailies_email.enabled is false — sending the test anyway.")
-    subject = "[Flumen] Test notification"
-    body = (f"This is a test from `flumen notify-test`.\n\n"
-            f"Project root: {cfg.remote_root}\n"
-            f"Recipients: {', '.join(nc['recipients'])}\n\n— Flumen")
-    ok = notify.send_email(nc.get("smtp") or {}, list(nc["recipients"]),
-                           subject, body)
-    print("Test mail sent." if ok else "error: test mail FAILED — check smtp "
-          "host/port/user/password in notifications.json.")
-    return 0 if ok else 1
+    return 0 if all(results) else 1
 
 
 def cmd_init_project(args) -> int:

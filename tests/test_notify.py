@@ -70,6 +70,46 @@ def test_announce_gated_on_enabled_and_recipients(monkeypatch):
     assert sent == [["sup@studio.com"]]
 
 
+def test_discord_payload_mirrors_email_info():
+    task = {"id": "t1", "entity": "characters/panda", "step": "model",
+            "type": "asset", "status": "review"}
+    rec = {"files": ["x/publish/panda_model_v010.blend"]}
+    media = ["07_dailies/characters/panda/model/panda_model_v010_turntable.mp4"]
+    p = notify.dailies_discord_payload(task, rec, media, REMOTE, "leo")
+    embed = p["embeds"][0]
+    assert "panda_model_v010" in embed["title"] and "leo" in embed["title"]
+    assert REMOTE + "/" + media[0] in embed["description"]
+    assert "panda_model_v010.blend" in embed["description"]
+    assert len(embed["description"]) <= 4000       # Discord embed limit respected
+
+
+def test_announce_both_channels(monkeypatch):
+    srv = FakeSrv()
+    srv.write_text(REMOTE + "/02_pipeline/notifications.json", json.dumps({
+        "dailies_email": {"enabled": True, "recipients": ["a@b.c"],
+                          "smtp": {"host": "h"}},
+        "dailies_discord": {"enabled": True, "webhook": "https://hook"}}))
+    sent = {"mail": 0, "discord": 0}
+    monkeypatch.setattr(notify, "send_email",
+                        lambda *a, **k: sent.__setitem__("mail", sent["mail"] + 1) or True)
+    monkeypatch.setattr(notify, "send_discord",
+                        lambda *a, **k: sent.__setitem__("discord", sent["discord"] + 1) or True)
+    assert notify.announce_dailies(srv, REMOTE, {"entity": "e", "step": "s"},
+                                   {}, ["x.mp4"], "leo") is True
+    assert sent == {"mail": 1, "discord": 1}
+
+
+def test_announce_discord_only(monkeypatch):
+    srv = FakeSrv()
+    srv.write_text(REMOTE + "/02_pipeline/notifications.json", json.dumps({
+        "dailies_discord": {"enabled": True, "webhook": "https://hook"}}))
+    calls = []
+    monkeypatch.setattr(notify, "send_discord", lambda w, p: calls.append(w) or True)
+    assert notify.announce_dailies(srv, REMOTE, {"entity": "e", "step": "s"},
+                                   {}, ["x.mp4"], "leo") is True
+    assert calls == ["https://hook"]
+
+
 def test_record_turntable_announces(monkeypatch):
     srv = FakeSrv()
     _cfg(srv)

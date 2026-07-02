@@ -17,8 +17,16 @@ edits one file for the whole team:
           "starttls": true,
           "from": "Flumen <pipeline@studio.com>"
         }
+      },
+      "dailies_discord": {
+        "enabled": true,
+        "webhook": "https://discord.com/api/webhooks/…"
       }
     }
+
+Either block is optional — Discord needs no credentials at all (a channel
+webhook URL is enough), email wants an SMTP account whose password lives in
+this server-side file (no per-machine setup) or in .env via password_env.
 
 Sending is best-effort and never raises into the publish/render path: a broken
 mail server must not break a publish. Pure builders here are unit-testable; only
@@ -134,16 +142,56 @@ def send_email(smtp_cfg: dict, recipients: list[str], subject: str,
         return False
 
 
+def dailies_discord_payload(task: dict, rec: dict, media_rels: list[str],
+                            remote_root: str, actor: str) -> dict:
+    """A Discord webhook embed with the same info as the email."""
+    subject, body = dailies_email(task, rec, media_rels, remote_root, actor)
+    return {
+        "username": "Flumen Dailies",
+        "embeds": [{
+            "title": subject.replace("[Flumen] ", ""),
+            "description": body if len(body) <= 3900 else body[:3900] + "\n…",
+            "color": 9109504,
+        }],
+    }
+
+
+def send_discord(webhook: str, payload: dict, timeout: float = 15.0) -> bool:
+    """POST a webhook payload (stdlib only). Returns True on 2xx; never raises."""
+    import urllib.request
+    if not webhook:
+        return False
+    try:
+        req = urllib.request.Request(
+            webhook, data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "flumen-notify"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception as exc:  # noqa: BLE001 — notification must never break a publish
+        print(f"[Flumen] dailies Discord post failed: {exc}")
+        return False
+
+
 def announce_dailies(sftp, remote_root: str, task: dict, rec: dict,
                      media_rels: list[str], actor: str) -> bool:
-    """Load the team config and mail the dailies drop. Best-effort; never raises."""
+    """Load the team config and announce the dailies drop on every configured
+    channel (email and/or Discord). Best-effort; never raises. Returns True if
+    at least one channel accepted it."""
     try:
-        cfg = (load_notify_config(sftp, remote_root) or {}).get("dailies_email") or {}
-        if not (cfg.get("enabled") and cfg.get("recipients")):
-            return False
-        subject, body = dailies_email(task, rec, media_rels, remote_root, actor)
-        return send_email(cfg.get("smtp") or {}, list(cfg["recipients"]),
-                          subject, body)
+        cfg = load_notify_config(sftp, remote_root) or {}
+        sent = False
+        mail = cfg.get("dailies_email") or {}
+        if mail.get("enabled") and mail.get("recipients"):
+            subject, body = dailies_email(task, rec, media_rels, remote_root, actor)
+            sent |= send_email(mail.get("smtp") or {}, list(mail["recipients"]),
+                               subject, body)
+        disc = cfg.get("dailies_discord") or {}
+        if disc.get("enabled") and disc.get("webhook"):
+            sent |= send_discord(
+                disc["webhook"],
+                dailies_discord_payload(task, rec, media_rels, remote_root, actor))
+        return sent
     except Exception as exc:  # noqa: BLE001
         print(f"[Flumen] dailies notification failed: {exc}")
         return False
