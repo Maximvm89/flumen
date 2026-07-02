@@ -540,6 +540,12 @@ def test_review_still_uploads_and_notifies(monkeypatch, capsys, tmp_path):
                           "disco_model_review_20260702_140000.png"]]
     out = capsys.readouterr().out
     assert "review still ->" in out
+    # The still is recorded on the task so the Dailies tab lists it.
+    saved = tasks.get_task(srv, "/r", t["id"])
+    assert [s["file"] for s in saved["stills"]] == [
+        "07_dailies/environments/disco/model/"
+        "disco_model_review_20260702_140000.png"]
+    assert saved["stills"][0]["review_status"] == "to_review"
     # missing file / task -> clean errors
     assert cli.cmd_review_still(_args(task=t["id"], file="/nope.png")) == 1
     assert cli.cmd_review_still(_args(task="nope", file=str(img))) == 1

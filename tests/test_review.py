@@ -160,6 +160,63 @@ def test_delete_review_removes_media_and_clears_record():
     assert rec["files"] == ["…/frankenstein_surface_black_white_v004.blend"]
 
 
+def _still_task():
+    t = tasks.new_task("asset", "environments/disco", "model")
+    t["stills"] = [{"file": ("07_dailies/environments/disco/model/"
+                             "disco_model_review_20260702_162929.png"),
+                    "by": "marco", "time": 1751468969.0,
+                    "review_status": "to_review"}]
+    return t
+
+
+def test_review_items_include_stills():
+    t = _still_task()
+    items = R.review_items([t])
+    assert len(items) == 1
+    it = items[0]
+    assert it["kind"] == "still"
+    assert it["source"] == t["stills"][0]["file"]
+    assert it["clip"] == "disco_model_review_20260702_162929.png"
+    # redundant '<leaf>_<step>_' prefix trimmed from the label
+    assert it["version"] == "review_20260702_162929"
+    assert it["by"] == "marco"
+    assert it["status"] == "to_review"
+    # status filter applies to stills too
+    assert R.review_items([t], statuses={"reviewed"}) == []
+
+
+def test_set_status_on_still():
+    t = _still_task()
+    rel = t["stills"][0]["file"]
+    assert R.set_status_on_task(t, rel, "reviewed") is True
+    assert t["stills"][0]["review_status"] == "reviewed"
+    assert t["status"] != "done"
+    assert R.set_status_on_task(t, rel, "approved") is True
+    assert t["status"] == "done"
+
+
+def test_delete_review_removes_still_record():
+    s = FakeSrv()
+    t = _still_task()
+    rel = t["stills"][0]["file"]
+    tasks.save_task(s, "/r", t)
+    s.files["/r/" + rel] = "<png>"
+    item = R.review_items([t])[0]
+    assert R.delete_review(s, "/r", item) is True
+    assert "/r/" + rel not in s.files
+    reloaded = tasks.get_task(s, "/r", t["id"])
+    assert reloaded["stills"] == []
+    assert R.review_items([reloaded]) == []
+
+
+def test_index_html_embeds_still_as_image():
+    t = _still_task()
+    manifest = R.build_manifest(R.review_items([t]), "2026-07-02")
+    html = R.render_index_html(manifest)
+    assert '<img src="disco_model_review_20260702_162929.png"' in html
+    assert "<video" not in html
+
+
 def test_write_review_folder_holds_only_this_export(tmp_path):
     import os
     from test_tasks import FakeSrv

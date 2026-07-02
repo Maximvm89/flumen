@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 
 def _bundled_path(name: str) -> str:
@@ -63,6 +64,24 @@ def record_turntable(sftp, remote_root: str, task_id: str, rel: str,
     if task.get("publishes"):
         rec = task["publishes"][-1]
         rec["turntable"] = rel
+    tasks.save_task(sftp, remote_root, task, actor=username)
+    ledger.record_uploads(sftp, remote_root, username, [rel])
+    notify.announce_dailies(sftp, remote_root, task, rec, [rel], username)
+    return rel
+
+
+def record_still(sftp, remote_root: str, task_id: str, rel: str,
+                 username: str) -> str | None:
+    """Attach a review still to the task as its OWN review item (task['stills']),
+    independent of publish records — a still can be rendered at any point, not
+    just after a publish. Also ledger + dailies notification."""
+    from . import tasks, ledger, notify
+    task = tasks.get_task(sftp, remote_root, task_id)
+    if not task:
+        return None
+    rec = {"file": rel, "by": username, "time": time.time(),
+           "review_status": "to_review"}
+    task.setdefault("stills", []).append(rec)
     tasks.save_task(sftp, remote_root, task, actor=username)
     ledger.record_uploads(sftp, remote_root, username, [rel])
     notify.announce_dailies(sftp, remote_root, task, rec, [rel], username)

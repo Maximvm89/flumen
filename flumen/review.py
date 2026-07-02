@@ -74,10 +74,20 @@ def _review_kind(step: str) -> str:
     return "model"
 
 
+def _still_version(task: dict, rel: str) -> str:
+    """Short label for a review still: the filename minus the redundant
+    '<entity-leaf>_<step>_' prefix (e.g. 'review_20260702_162929')."""
+    name = os.path.splitext(os.path.basename(rel or ""))[0]
+    leaf = (task.get("entity", "") or "").split("/")[-1]
+    prefix = f"{leaf}_{task.get('step', '')}_"
+    return name[len(prefix):] if prefix != "_" and name.startswith(prefix) else name
+
+
 def review_items(task_list: list[dict],
                  statuses: list[str] | set[str] | None = None) -> list[dict]:
-    """Every publish carrying a turntable, across all tasks, as a review item.
-    Optionally filtered to `statuses`. Sorted newest date first, then entity."""
+    """Every publish carrying a turntable, plus every review still, across all
+    tasks, as review items. Optionally filtered to `statuses`. Sorted newest
+    date first, then entity."""
     out: list[dict] = []
     for task in task_list or []:
         for rec in task.get("publishes") or []:
@@ -95,6 +105,30 @@ def review_items(task_list: list[dict],
                 "source": rec.get("turntable", ""),
                 "sheet": rec.get("sheet", ""),       # texture/UV sheet (looks)
                 "kind": _review_kind(task.get("step", "")),
+                "by": rec.get("by", ""),
+                "description": rec.get("description", ""),
+                "time": rec.get("time"),
+                "date": item_date(rec),
+                "status": st,
+                "task_status": task.get("status", ""),
+            })
+        # Review stills (the Blender 'Render review still' tool) — task-level
+        # records, independent of publishes: a still can precede any publish.
+        for rec in task.get("stills") or []:
+            if not rec.get("file"):
+                continue
+            st = review_status(rec)
+            if statuses is not None and st not in statuses:
+                continue
+            out.append({
+                "task_id": task.get("id", ""),
+                "entity": task.get("entity", ""),
+                "step": task.get("step", ""),
+                "version": _still_version(task, rec["file"]),
+                "clip": os.path.basename(rec["file"]),
+                "source": rec["file"],
+                "sheet": "",
+                "kind": "still",
                 "by": rec.get("by", ""),
                 "description": rec.get("description", ""),
                 "time": rec.get("time"),
@@ -123,14 +157,19 @@ def matches_query(item: dict, query: str) -> bool:
 
 
 def set_status_on_task(task: dict, turntable_rel: str, status: str) -> bool:
-    """Set review_status on every publish record carrying `turntable_rel`. If the
-    status is 'approved', also complete the task (status -> done). Mutates `task`;
-    returns True if any record matched."""
+    """Set review_status on every publish record carrying `turntable_rel` (and
+    on review stills matching it). If the status is 'approved', also complete
+    the task (status -> done). Mutates `task`; returns True if any record
+    matched."""
     if status not in REVIEW_STATUSES:
         raise ValueError(f"unknown review status: {status}")
     hit = False
     for rec in task.get("publishes") or []:
         if rec.get("turntable") == turntable_rel:
+            rec["review_status"] = status
+            hit = True
+    for rec in task.get("stills") or []:
+        if rec.get("file") == turntable_rel:
             rec["review_status"] = status
             hit = True
     if hit and status == "approved":
@@ -171,6 +210,11 @@ def delete_review(sftp, remote_root: str, item: dict,
             rec.pop("turntable", None)
             rec.pop("sheet", None)
             hit = True
+    stills = task.get("stills") or []
+    kept = [rec for rec in stills if rec.get("file") != item.get("source")]
+    if len(kept) != len(stills):
+        task["stills"] = kept
+        hit = True
     if hit:
         tasks.save_task(sftp, remote_root, task)
     return hit
@@ -226,12 +270,19 @@ def render_index_html(manifest: dict) -> str:
         sheet_html = (f'\n    <br><img src="{_esc(c["sheet"])}" width="640" '
                       f'style="margin-top:8px;border-radius:6px">'
                       if c.get("sheet") else "")
+        clip = c.get("clip", "")
+        if c.get("kind") == "still" or clip.lower().endswith((".png", ".jpg",
+                                                              ".jpeg")):
+            media_html = (f'    <img src="{_esc(clip)}" width="640" '
+                          f'style="background:#000;border-radius:6px">')
+        else:
+            media_html = (f'    <video controls preload="metadata" width="640" '
+                          f'src="{_esc(clip)}"></video>')
         rows.append(
             f'  <figure>\n'
             f'    <figcaption><b>{_esc(title)}</b><br><small>{_esc(meta)}</small>'
             f'</figcaption>\n'
-            f'    <video controls preload="metadata" width="640" '
-            f'src="{_esc(c.get("clip",""))}"></video>{sheet_html}\n'
+            f'{media_html}{sheet_html}\n'
             f'  </figure>')
     body = "\n".join(rows) or "  <p>No clips in this review.</p>"
     return (

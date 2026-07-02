@@ -413,7 +413,7 @@ def cmd_review_still(args) -> int:
     the dailies notification. Used by the Blender 'Render review' tool."""
     cfg = ProjectConfig.load(args.config)
     creds = SFTPCredentials.from_env(args.env)
-    from . import tasks as T, ledger, notify
+    from . import tasks as T, turntable as TT
     if not os.path.isfile(args.file):
         print(f"error: file not found: {args.file}", file=sys.stderr)
         return 1
@@ -426,8 +426,9 @@ def cmd_review_still(args) -> int:
         rel = (f"07_dailies/{task['entity']}/{task['step']}/"
                f"{os.path.basename(args.file)}")
         client.upload(args.file, rr + "/" + rel)
-        ledger.record_uploads(client, rr, creds.user, [rel])
-        notify.announce_dailies(client, rr, task, {}, [rel], creds.user)
+        # Registers the still on the task so the Dailies tab lists it, plus
+        # ledger attribution + the email/Discord notification.
+        TT.record_still(client, rr, args.task, rel, creds.user)
     print(f"review still -> {rr}/{rel}")
     return 0
 
