@@ -1,0 +1,49 @@
+name: Announce
+
+# Manually (re-)announce a release on Discord — same embed the release workflow
+# posts. Useful to test the webhook wiring and to re-announce an existing tag:
+#   gh workflow run announce.yml -f tag=v0.3.0
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to announce (blank = latest release)"
+        required: false
+        default: ""
+
+jobs:
+  discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Announce on Discord
+        shell: bash
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK not set - nothing to do."
+            exit 1
+          fi
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          fi
+          echo "Announcing $TAG"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json body,url,name > release.json
+          jq -n --slurpfile r release.json --arg tag "$TAG" '
+            {
+              username: "Flumen Releases",
+              embeds: [{
+                title: $r[0].name,
+                url: $r[0].url,
+                description: ($r[0].body | if length > 3500
+                              then .[:3500] + "\n…(truncated)" else . end),
+                color: 9109504,
+                footer: {text: "Download: Flumen-Setup-\($tag | ltrimstr("v")).exe"}
+              }]
+            }' > payload.json
+          curl -sf -H "Content-Type: application/json" \
+               -d @payload.json "$DISCORD_WEBHOOK"
+          echo "Announced $TAG on Discord."
