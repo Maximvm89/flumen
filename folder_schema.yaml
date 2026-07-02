@@ -65,14 +65,15 @@ asset_template:
     work: {}
     publish: {}
 
-# Per-asset-type ADDITIONS overlaid on asset_template (same shape). Only the
-# listed types get the extra steps — e.g. environments gain a set-dressing
-# step (place published props over the environment, publish named layouts).
+# Per-asset-type overrides overlaid on asset_template (same shape). Only the
+# listed types differ: a step entry ADDS it, an explicit null REMOVES the
+# shared step for that type — e.g. environments gain set-dressing and drop rig.
 asset_templates:
   environments:
     dressing:              # set-dressing: prop placements over the environment
       work: {}
       publish: {}
+    rig: null              # environments aren't rigged — hide the shared step
 
 # ---------------------------------------------------------------------------
 # Per-shot department template.

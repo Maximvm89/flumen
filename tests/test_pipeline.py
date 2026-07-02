@@ -44,18 +44,27 @@ def test_asset_template_overlay_per_type():
     # environments gain the dressing step from asset_templates; others don't.
     env_tpl = S.asset_template_for(SCHEMA, "environments")
     assert "dressing" in env_tpl and "model" in env_tpl     # additive overlay
-    assert "dressing" not in S.asset_template_for(SCHEMA, "characters")
+    assert "rig" not in env_tpl                             # null -> removed
+    char_tpl = S.asset_template_for(SCHEMA, "characters")
+    assert "dressing" not in char_tpl and "rig" in char_tpl  # others keep rig
     # no asset_templates key at all -> shared template unchanged
     assert S.asset_template_for({"asset_template": {"model": {}}}, "environments") \
         == {"model": {}}
+    # explicit null removal in a minimal schema
+    assert S.asset_template_for(
+        {"asset_template": {"model": {}, "rig": {}},
+         "asset_templates": {"environments": {"rig": None}}},
+        "environments") == {"model": {}}
 
 
 def test_environment_asset_paths_include_dressing():
     paths = S.asset_paths(SCHEMA, ROOT, "environments", "market_square")
     assert f"{ROOT}/03_assets/environments/market_square/dressing/work" in paths
     assert f"{ROOT}/03_assets/environments/market_square/dressing/publish" in paths
+    assert not any("/rig/" in p for p in paths)             # rig removed for envs
     char = S.asset_paths(SCHEMA, ROOT, "characters", "hero")
     assert not any("/dressing/" in p for p in char)
+    assert any("/rig/" in p for p in char)                  # characters keep rig
 
 
 def test_shot_has_departments():

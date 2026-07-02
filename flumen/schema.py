@@ -37,11 +37,16 @@ def project_paths(schema: dict[str, Any], remote_root: str) -> list[str]:
 
 def asset_template_for(schema: dict[str, Any], asset_type: str) -> dict:
     """The effective per-asset template for a type: the shared asset_template
-    overlaid with any per-type ADDITIONS from asset_templates (e.g. environments
-    gain a dressing step). Absent overlay = today's shared behavior."""
+    overlaid with per-type overrides from asset_templates. A step entry ADDS it;
+    an explicit null REMOVES the shared step for that type (e.g. environments
+    gain dressing and drop rig). Absent overlay = the shared behavior."""
     base = dict(schema.get("asset_template") or {})
     overlay = (schema.get("asset_templates") or {}).get(asset_type) or {}
-    base.update(overlay)
+    for step, spec in overlay.items():
+        if spec is None:
+            base.pop(step, None)
+        else:
+            base[step] = spec
     return base
 
 
