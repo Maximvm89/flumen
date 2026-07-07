@@ -2457,13 +2457,28 @@ def _add_review_headlight(context, holder, cam):
     return True
 
 
+def _viewport_matrix(context):
+    """World matrix of the user's current 3D-viewport view, or None. Lets the
+    review camera spawn already framed on what the artist is looking at."""
+    try:
+        for area in context.window.screen.areas:
+            if area.type == "VIEW_3D":
+                r3d = area.spaces.active.region_3d
+                if r3d is not None:
+                    return r3d.view_matrix.inverted()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 class FLUMEN_OT_add_review_camera(bpy.types.Operator):
     bl_idname = "flumen.add_review_camera"
     bl_label = "Add review camera"
-    bl_description = ("Add a local Dolly camera rig for framing review renders "
-                      "(plus a camera headlight if the scene has no lights). "
-                      "Never published at any stage — position it, then use "
-                      "'Render review still'")
+    bl_description = ("Add a free camera for review renders, framed on your "
+                      "current view (plus a camera headlight if the scene has "
+                      "no lights). A plain camera — move it with G/R or lock it "
+                      "to the view (N ▸ View ▸ Camera to View). Never published "
+                      "at any stage; use 'Render review still' when framed")
 
     def execute(self, context):
         existing = bpy.data.collections.get(REVIEW_CAM_COLL)
@@ -2477,20 +2492,21 @@ class FLUMEN_OT_add_review_camera(bpy.types.Operator):
                 self.report({"INFO"}, "Review camera already in the scene.")
             return {"FINISHED"}
         holder = _named_holder(context, REVIEW_CAM_COLL)
-        rig, cam, err = _spawn_dolly_rig(context, holder, "REVIEW")
-        if err:
-            try:
-                context.scene.collection.children.unlink(holder)
-                bpy.data.collections.remove(holder)
-            except Exception:  # noqa: BLE001
-                pass
-            self.report({"ERROR"}, f"Could not build the review camera: {err}")
-            return {"CANCELLED"}
+        # A plain, unconstrained camera on purpose: a rigged camera fights
+        # 'Lock Camera to View' (constraints snap it back every update) and a
+        # review still needs no animatable rig.
+        data = bpy.data.cameras.new("REVIEW_Camera")
+        cam = bpy.data.objects.new("REVIEW_Camera", data)
+        holder.objects.link(cam)
+        view = _viewport_matrix(context)
+        if view is not None:
+            cam.matrix_world = view
+        context.scene.camera = cam
         lit = _add_review_headlight(context, holder, cam)
-        self.report({"INFO"}, "Review camera added (scene camera set"
+        self.report({"INFO"}, "Review camera added on your current view"
                               + (", headlight on — the scene has no lights"
                                  if lit else "")
-                              + ") — frame your view, then 'Render review still'.")
+                              + " — tweak framing, then 'Render review still'.")
         return {"FINISHED"}
 
 
