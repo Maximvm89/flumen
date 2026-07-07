@@ -803,7 +803,20 @@ def _wrap_publish_in_collection(context, coll_name, loc):
         return lambda: None
     objs = [loc, *_descendants(loc)]
     prior = {o: list(o.users_collection) for o in objs}   # restore exactly
+    # The wrap MUST get exactly `coll_name` — downstream linking and the clean
+    # post-process both find it by name. If the artist already has a collection
+    # with the asset's name (common: character in a 'panda' collection), the new
+    # one would silently become 'panda.001' and the publish would go out empty.
+    clash = bpy.data.collections.get(coll_name)
+    if clash is not None:
+        try:
+            clash.name = coll_name + ".work"
+        except Exception:  # noqa: BLE001 — library-linked: read-only name
+            clash = None
     coll = bpy.data.collections.new(coll_name)
+    if coll.name != coll_name:
+        print(f"[Flumen] publish wrap could not claim the name '{coll_name}' "
+              f"(got '{coll.name}') — a linked collection may own it.")
     context.scene.collection.children.link(coll)
     for o in objs:
         for c in prior[o]:
@@ -835,6 +848,11 @@ def _wrap_publish_in_collection(context, coll_name, loc):
             bpy.data.collections.remove(coll)
         except Exception:  # noqa: BLE001
             pass
+        if clash is not None:
+            try:
+                clash.name = coll_name
+            except Exception:  # noqa: BLE001
+                pass
 
     return restore
 

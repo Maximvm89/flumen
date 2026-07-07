@@ -90,6 +90,16 @@ def main():
         print(f"[Flumen] post: collection '{a['collection']}' not found "
               f"in the publish — aborting.")
         sys.exit(1)
+    if not coll.all_objects:
+        # Never ship an empty publish. Classic cause: another collection owned
+        # the asset's name, so the publish wrap got a '.001' suffix.
+        others = [c.name for c in bpy.data.collections
+                  if c is not coll and c.all_objects]
+        print(f"[Flumen] post: collection '{a['collection']}' is EMPTY — "
+              f"aborting instead of publishing nothing."
+              + (f" Non-empty collections here: {', '.join(others[:5])}"
+                 if others else ""))
+        sys.exit(1)
 
     _progress(10, "cleaning scene")
     keep_objs = set(coll.all_objects)
