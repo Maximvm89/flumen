@@ -1651,7 +1651,16 @@ class MainWindow(QMainWindow):
                       if not p["name"].endswith("_anim.blend")])
         act_open = menu.addAction("Open latest publish")
         act_open.setEnabled(bool(pubs))
-        act_work = menu.addAction("Open latest work")
+        # A task with no local work file yet still needs an entry point: offer a
+        # fresh scene in the task's context instead of a dead 'Open latest work'.
+        import glob as _glob
+        local_root = (self.ed_local.text().strip()
+                      or (self.cfg.resolved_local_root() if self.cfg else ""))
+        work_abs = os.path.join(local_root, *tasksmod.task_work_rel(t).split("/"))
+        has_work = bool(local_root and os.path.isdir(work_abs)
+                        and _glob.glob(os.path.join(work_abs, "*.blend")))
+        act_work = menu.addAction("Open latest work" if has_work
+                                  else "Start working (new scene)")
         ver_menu = menu.addMenu("Open version")
         ver_actions = {}
         if pubs:
@@ -1673,7 +1682,8 @@ class MainWindow(QMainWindow):
         if chosen == act_open:
             self._open_task_in_blender(t)
         elif chosen == act_work:
-            self._open_task_in_blender(t, work_latest=True)
+            self._open_task_in_blender(t, work_latest=has_work,
+                                       start_new=not has_work)
         elif chosen in ver_actions:
             self._open_task_in_blender(t, ver_actions[chosen])
         elif chosen == act_hist:
@@ -1755,7 +1765,8 @@ class MainWindow(QMainWindow):
             "\n\n".join(lines))
 
     def _open_task_in_blender(self, task: dict, blend_rel: str | None = None,
-                              work_latest: bool = False):
+                              work_latest: bool = False,
+                              start_new: bool = False):
         if not self.cfg:
             return
         from flumen.launcher import launch
@@ -1786,9 +1797,14 @@ class MainWindow(QMainWindow):
         # the work file or a fresh shading scene. Looks are consumed via 'Apply look…'.
         if task.get("step") == "surface":
             blend_rel = None
+        # 'Start working': a fresh scene in the task's context — no publish, no
+        # work file. Blender opens empty; 'Save to task' creates the work file.
+        if start_new:
+            blend_rel = None
         # Open priority: chosen version > latest published > latest local work file.
         # Skip …_anim.blend (actions-only artifacts), never an openable workfile.
-        if blend_rel is None and not work_latest and task.get("step") != "surface":
+        if (blend_rel is None and not work_latest and not start_new
+                and task.get("step") != "surface"):
             pubs = [p for p in tasksmod.published_files(task)
                     if not p["name"].endswith("_anim.blend")]
             blend_rel = pubs[0]["rel"] if pubs else None
