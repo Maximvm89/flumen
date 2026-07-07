@@ -34,6 +34,7 @@ from flumen import tasks as tasksmod
 from flumen import schema as schema_mod
 from flumen import review as reviewmod
 from flumen import users as usersmod
+from flumen import storage as storagemod
 from flumen import clipboard as clipboardmod
 from flumen import bugreport
 from flumen.version import get_version
@@ -228,7 +229,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_tasks_page(), "Tasks")
         self.tabs.addTab(self._build_dailies_page(), "Dailies")
         self.tabs.addTab(self._build_files_page(), "Files")
+        self.tabs.addTab(self._build_storage_page(), "Storage")
         self.tabs.setCurrentIndex(0)  # Tasks is the default view
+        # First visit to the Storage tab kicks off its scan automatically.
+        self.tabs.currentChanged.connect(self._maybe_scan_storage)
 
         self.status = self.statusBar()
         self.status.showMessage("Ready.")
@@ -298,6 +302,239 @@ class MainWindow(QMainWindow):
             transfer.addWidget(b)
         fl.addLayout(transfer)
         return page
+
+    # ---- storage / cleanup ---------------------------------------------------
+    _STORAGE_CARD_STYLE = {
+        storagemod.MIRRORED: (SYNC_BG, SYNC_FG),
+        storagemod.TEMP: (SYNC_BG, SYNC_FG),
+        storagemod.OLD_WORK: (SERVER_BG, SERVER_FG),
+        storagemod.ACTIVE_WORK: (LOCAL_BG, LOCAL_FG),
+        storagemod.LOCAL_ONLY: (DIFF_BG, DIFF_FG),
+    }
+
+    def _build_storage_page(self) -> QWidget:
+        page = QWidget()
+        self._storage_page = page
+        self._storage_records: list[dict] | None = None
+        sl = QVBoxLayout(page)
+
+        # The headline answers the actual question: how much can I free?
+        self.lb_reclaim = QLabel("Scanning finds out how much you can free…")
+        f = self.lb_reclaim.font()
+        f.setPointSize(f.pointSize() + 4)
+        f.setBold(True)
+        self.lb_reclaim.setFont(f)
+        sl.addWidget(self.lb_reclaim)
+
+        cards = QHBoxLayout()
+        self._storage_cards: dict[str, QLabel] = {}
+        for cat in storagemod.CATEGORIES:
+            bg, fg = self._STORAGE_CARD_STYLE[cat]
+            lb = QLabel("—")
+            lb.setStyleSheet(
+                f"QLabel {{ background:{bg.name()}; color:{fg.name()}; "
+                f"padding:6px 10px; border-radius:8px; }}")
+            lb.setToolTip(storagemod.LABELS[cat])
+            self._storage_cards[cat] = lb
+            cards.addWidget(lb)
+        cards.addStretch(1)
+        sl.addLayout(cards)
+
+        controls = QHBoxLayout()
+        self.ed_storage_search = QLineEdit()
+        self.ed_storage_search.setPlaceholderText("Search files…")
+        self.ed_storage_search.setClearButtonEnabled(True)
+        self.ed_storage_search.textChanged.connect(self._render_storage)
+        controls.addWidget(self.ed_storage_search, 1)
+        self.b_storage_scan = QPushButton("Rescan")
+        self.b_storage_scan.clicked.connect(self._scan_storage)
+        controls.addWidget(self.b_storage_scan)
+        sl.addLayout(controls)
+
+        self.storage_tree = QTreeWidget()
+        self.storage_tree.setColumnCount(3)
+        self.storage_tree.setHeaderLabels(["File", "Size", "Modified"])
+        self.storage_tree.setAlternatingRowColors(True)
+        self.storage_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.storage_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        sl.addWidget(self.storage_tree, 1)
+
+        ops = QHBoxLayout()
+        ops.addWidget(QLabel("Safe categories come pre-checked; superseded work "
+                             "versions are opt-in. Deleted files go to the Trash."))
+        ops.addStretch(1)
+        self.b_free_space = QPushButton("Free up space…")
+        self.b_free_space.clicked.connect(self._free_up_space)
+        ops.addWidget(self.b_free_space)
+        sl.addLayout(ops)
+        return page
+
+    def _maybe_scan_storage(self, index: int):
+        if (self.tabs.widget(index) is self._storage_page
+                and self._storage_records is None and self.cfg):
+            self._scan_storage()
+
+    def _scan_storage(self):
+        if not self.cfg:
+            self.status.showMessage("Sign in first — no project loaded.")
+            return
+        local_root = self.cfg.resolved_local_root()
+        if not local_root or not os.path.isdir(local_root):
+            self.status.showMessage("No local folder yet — nothing to scan.")
+            return
+        remote = self.cfg.remote_root.rstrip("/")
+        self.b_storage_scan.setEnabled(False)
+
+        def work():
+            files = storagemod.scan_local(local_root)
+            # One remote listing per local folder: enough to size-verify every
+            # local file, without walking server folders we don't mirror.
+            dirs = sorted({f["rel"].rsplit("/", 1)[0] if "/" in f["rel"] else ""
+                           for f in files if not storagemod.is_temp(f["rel"])})
+            sizes: dict[str, int] = {}
+
+            def index(c):
+                for d in dirs:
+                    try:
+                        entries = c.listdir(remote + ("/" + d if d else ""))
+                    except Exception:  # noqa: BLE001 — folder only exists locally
+                        continue
+                    for e in entries:
+                        if not e.get("is_dir"):
+                            sizes[(d + "/" if d else "") + e["name"]] = e.get("size")
+
+            self._conn_do(index)
+            return storagemod.classify(files, sizes)
+
+        def done(recs):
+            self.b_storage_scan.setEnabled(True)
+            self._storage_records = recs
+            self._render_storage()
+
+        self._spawn(work, done, busy_msg="Scanning local storage…")
+
+    def _render_storage(self):
+        recs = self._storage_records
+        if recs is None:
+            return
+        summary = storagemod.summarize(recs)
+        self.lb_reclaim.setText(
+            f"You can safely free {storagemod.human_size(summary['reclaimable'])}")
+        for cat in storagemod.CATEGORIES:
+            s = summary[cat]
+            self._storage_cards[cat].setText(
+                f"{storagemod.LABELS[cat].split(' — ')[0]}: "
+                f"{storagemod.human_size(s['size'])} ({s['count']})")
+
+        query = (self.ed_storage_search.text() or "").strip().lower()
+        tree = self.storage_tree
+        tree.clear()
+        for cat in storagemod.CATEGORIES:
+            in_cat = [r for r in recs if r["category"] == cat
+                      and (not query or query in r["rel"].lower())]
+            if not in_cat:
+                continue
+            deletable = cat in storagemod.DELETABLE
+            checked = cat in storagemod.SAFE
+            cat_size = sum(r["size"] for r in in_cat)
+            top = QTreeWidgetItem([f"{storagemod.LABELS[cat]}",
+                                   storagemod.human_size(cat_size), ""])
+            tf = top.font(0)
+            tf.setBold(True)
+            top.setFont(0, tf)
+            if deletable:
+                top.setFlags(top.flags() | Qt.ItemIsUserCheckable
+                             | Qt.ItemIsAutoTristate)
+                top.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+            tree.addTopLevelItem(top)
+
+            groups: dict[str, list[dict]] = {}
+            for r in in_cat:
+                groups.setdefault(storagemod.group_key(r["rel"]), []).append(r)
+            for gkey, grecs in sorted(groups.items(),
+                                      key=lambda kv: -sum(r["size"] for r in kv[1])):
+                gsize = sum(r["size"] for r in grecs)
+                gnode = QTreeWidgetItem([f"{gkey}  ({len(grecs)})",
+                                         storagemod.human_size(gsize), ""])
+                if deletable:
+                    gnode.setFlags(gnode.flags() | Qt.ItemIsUserCheckable
+                                   | Qt.ItemIsAutoTristate)
+                    gnode.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+                top.addChild(gnode)
+                for r in sorted(grecs, key=lambda x: -x["size"]):
+                    when = (_dt.datetime.fromtimestamp(r["mtime"])
+                            .strftime("%Y-%m-%d %H:%M") if r["mtime"] else "")
+                    node = QTreeWidgetItem([r["rel"],
+                                            storagemod.human_size(r["size"]), when])
+                    node.setData(0, Qt.UserRole, r)
+                    if deletable:
+                        node.setFlags(node.flags() | Qt.ItemIsUserCheckable)
+                        node.setCheckState(0, Qt.Checked if checked
+                                           else Qt.Unchecked)
+                    gnode.addChild(node)
+            top.setExpanded(bool(query) or (cat == storagemod.MIRRORED
+                                            and len(in_cat) <= 200))
+        self.status.showMessage(f"{len(recs)} local file(s) scanned.")
+
+    def _storage_checked(self) -> list[dict]:
+        out = []
+        tree = self.storage_tree
+        for i in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                gnode = top.child(j)
+                for k in range(gnode.childCount()):
+                    node = gnode.child(k)
+                    rec = node.data(0, Qt.UserRole)
+                    if rec and node.checkState(0) == Qt.Checked:
+                        out.append(rec)
+        return out
+
+    def _free_up_space(self):
+        from PySide6.QtCore import QFile
+        recs = self._storage_checked()
+        if not recs:
+            QMessageBox.information(self, "Nothing selected",
+                                    "Check the files to delete first (safe "
+                                    "categories come pre-checked after a scan).")
+            return
+        total = sum(r["size"] for r in recs)
+        n_old = sum(1 for r in recs if r["category"] == storagemod.OLD_WORK)
+        msg = (f"Move {len(recs)} file(s) — {storagemod.human_size(total)} — to "
+               f"the Trash?\n\nFiles on the server re-download on demand.")
+        if n_old:
+            msg += (f"\n\n⚠ {n_old} superseded work version(s) included — those "
+                    f"are NOT on the server; the Trash is their only copy.")
+        if QMessageBox.question(self, "Free up space", msg) != QMessageBox.Yes:
+            return
+        local_root = self.cfg.resolved_local_root()
+        sizes = {r["rel"]: r["size"] for r in recs}
+        paths = [(r["rel"], os.path.join(local_root, *r["rel"].split("/")))
+                 for r in recs]
+
+        def work():
+            gone, failed = [], 0
+            for rel, path in paths:
+                if not os.path.isfile(path) or QFile.moveToTrash(path):
+                    gone.append(rel)
+                else:
+                    failed += 1
+            return gone, failed
+
+        def done(res):
+            gone, failed = res
+            gone_set = set(gone)
+            freed = sum(sizes[rel] for rel in gone)
+            self._storage_records = [r for r in (self._storage_records or [])
+                                     if r["rel"] not in gone_set]
+            self._render_storage()
+            note = (f"Freed {storagemod.human_size(freed)} — {len(gone)} "
+                    f"file(s) moved to the Trash.")
+            if failed:
+                note += f" ({failed} could not be moved.)"
+            self.status.showMessage(note)
+
+        self._spawn(work, done, busy_msg="Moving files to the Trash…")
 
     def _build_tasks_page(self) -> QWidget:
         page = QWidget()
