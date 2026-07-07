@@ -2915,7 +2915,9 @@ def _anim_version_items(self, context):
         for v in [x for x in key.split(",") if x]:
             meta = _LOAD_ANIM.get(v, {})
             who = meta.get("by") or ""
-            desc = (meta.get("description") or "").splitlines()[0][:32]
+            # splitlines() on "" is [] — an empty description must not crash.
+            lines = (meta.get("description") or "").splitlines()
+            desc = lines[0][:32] if lines else ""
             label = v + (f"  ·  {who}" if who else "") + (f"  ·  {desc}" if desc else "")
             items.append((v, label, ""))
         _ANIM_ENUM_CACHE[key] = items or [("", "", "")]

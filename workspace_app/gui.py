@@ -1656,7 +1656,9 @@ class MainWindow(QMainWindow):
         ver_actions = {}
         if pubs:
             for p in pubs:
-                desc = (p.get("description") or "").splitlines()[0][:40]
+                # splitlines() on "" is [] — an empty description must not crash.
+                lines = (p.get("description") or "").splitlines()
+                desc = lines[0][:40] if lines else ""
                 a = ver_menu.addAction(f"{p['name']}   ·   {p.get('by','?')}"
                                        + (f"   ·   {desc}" if desc else ""))
                 ver_actions[a] = p["rel"]
