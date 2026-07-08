@@ -1,10 +1,39 @@
-"""Flumen menu in Blender's top menu bar (next to Help)."""
+"""Flumen menu in Blender's top menu bar (next to Help).
+
+WHAT shows WHERE lives in menu_spec.py (declarative, per-context), and each
+project can hide/re-gate actions via the "menu" block of project_settings.json
+— see menu_spec's docstring. This module only draws.
+"""
 
 import os
 
 import bpy
 
 from . import operators as _ops
+from . import menu_spec
+from . import settings_io
+
+# project_settings.json is read on every menu open — cache it by file mtime so
+# the menu stays instant and still picks up an edited config without restarting.
+_SETTINGS_CACHE = {"path": "", "mtime": None, "data": {}}
+
+
+def _menu_settings() -> dict:
+    root = settings_io.find_project_root()
+    if not root:
+        return {}
+    path = settings_io.settings_path(root)
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    if (_SETTINGS_CACHE["path"], _SETTINGS_CACHE["mtime"]) != (path, mtime):
+        try:
+            data = settings_io.load_settings(root)
+        except Exception:  # noqa: BLE001 — malformed config: fall back to defaults
+            data = {}
+        _SETTINGS_CACHE.update(path=path, mtime=mtime, data=data)
+    return _SETTINGS_CACHE["data"]
 
 
 class FLUMEN_MT_menu(bpy.types.Menu):
@@ -17,52 +46,21 @@ class FLUMEN_MT_menu(bpy.types.Menu):
         if task:
             layout.label(text=f"Task: {task['entity']}  ·  {task['step']}",
                          icon="OUTLINER_OB_ARMATURE")
-            # Surface/rig depend on the published model — pull it in to work on.
-            if task.get("step") in ("surface", "rig"):
-                layout.operator("flumen.load_model", icon="IMPORT")
-            # Set-dressing: link the environment, then place published props.
-            if task.get("step") == "dressing":
-                layout.operator("flumen.build_dressing", text="Load environment",
-                                icon="WORLD")
-                layout.operator("flumen.add_prop", text="Add prop…",
-                                icon="OUTLINER_OB_GROUP_INSTANCE")
-            # Re-apply a published look onto the character (rig and beyond).
-            if task.get("type") == "asset" and task.get("step") != "model":
-                layout.operator("flumen.apply_look", text="Apply look…",
-                                icon="MATERIAL")
-            # Shot layout: assemble the breakdown (link each element's rig, build
-            # the shot camera). Additive — safe to re-run to pull in new elements.
-            if task.get("type") == "shot" and task.get("step") == "layout":
-                layout.operator("flumen.build_shot", text="Build shot",
-                                icon="OUTLINER_OB_GROUP_INSTANCE")
-            # Load published animation onto the shot's elements (pick a version each).
-            if task.get("type") == "shot":
-                layout.operator("flumen.load_animation", text="Load animation…",
-                                icon="ANIM_DATA")
-            layout.operator("flumen.add_review_camera", icon="VIEW_CAMERA")
-            layout.operator("flumen.render_review", icon="RENDER_STILL")
-            layout.operator("flumen.save_to_task", icon="FILE_TICK")
-            layout.operator("flumen.run_checks", icon="CHECKMARK")
-            layout.operator("flumen.auto_fix", icon="TOOL_SETTINGS")
-            layout.operator("flumen.publish", text="Publish…", icon="EXPORT")
-            layout.separator()
         else:
             layout.label(text="No active task (open from Workspace app)",
                          icon="INFO")
-            layout.separator()
 
-        # Asset/modelling tools (publish locator + turntable preview) — these don't
-        # belong in a shot, so hide them when a shot task is open.
-        if not (task and task.get("type") == "shot"):
-            layout.operator("flumen.add_publish_locator", icon="EMPTY_AXIS")
-            layout.operator("flumen.preview_turntable", icon="CAMERA_DATA")
-            layout.separator()
-
-        layout.operator("flumen.apply_project_settings", icon="CHECKMARK")
-        layout.operator("flumen.verify_ocio", icon="COLOR")
-        layout.separator()
-        layout.operator("flumen.pull_settings", icon="IMPORT")
-        layout.operator("flumen.show_log", icon="TEXT")
+        entries = menu_spec.resolve_menu(menu_spec.task_ctx(task),
+                                         _menu_settings())
+        group = None
+        for e in entries:
+            if e["group"] != group:
+                layout.separator()
+                group = e["group"]
+            kwargs = {"icon": e["icon"]} if e.get("icon") else {}
+            if e.get("text"):
+                kwargs["text"] = e["text"]
+            layout.operator(e["op"], **kwargs)
 
         ocio = os.environ.get("BLENDER_OCIO")
         layout.separator()
