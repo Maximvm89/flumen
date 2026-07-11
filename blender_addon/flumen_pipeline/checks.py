@@ -172,9 +172,21 @@ def _descendants(objects, root):
     return out
 
 
-def check_publish_locator(objects, locator_name):
-    """The publish locator must exist and contain geometry — this is what tells
-    the pipeline exactly what to export/render."""
+def _find_publish_collection(collections, locator_name):
+    for c in collections or []:
+        name = getattr(c, "name", "")
+        if name == locator_name or name.split(".")[0] == locator_name:
+            return c
+    return None
+
+
+def check_publish_locator(objects, locator_name, collections=None):
+    """The publish root must exist and contain geometry — this is what tells
+    the pipeline exactly what to export/render. Two equivalent forms:
+    an EMPTY named '<locator>' with the asset parented under it (characters,
+    props), or a COLLECTION named '<locator>' holding the asset's collections
+    (environments — big sets are organized in collections, not parent chains).
+    The empty wins when both exist (back-compat)."""
     loc = None
     for o in objects:
         name = getattr(o, "name", "")
@@ -182,9 +194,20 @@ def check_publish_locator(objects, locator_name):
             loc = o
             break
     if loc is None:
-        return [(ERROR, f"No '{locator_name}' locator found. Add one "
-                        f"(Flumen menu ▸ Add Publish Locator) and parent your "
-                        f"asset geometry under it.")]
+        coll = _find_publish_collection(collections, locator_name)
+        if coll is not None:
+            meshes = [o for o in getattr(coll, "all_objects", []) or []
+                      if getattr(o, "type", "") == "MESH"]
+            if not meshes:
+                return [(ERROR, f"'{locator_name}' collection is empty — move "
+                                f"your asset's collections inside it before "
+                                f"publishing.")]
+            return []
+        return [(ERROR, f"No '{locator_name}' publish root found. Either add "
+                        f"the empty (Flumen menu ▸ Add Publish Locator) and "
+                        f"parent your geometry under it, or create a collection "
+                        f"named '{locator_name}' and put your asset's "
+                        f"collections inside it.")]
     meshes = [o for o in _descendants(objects, loc)
               if getattr(o, "type", "") == "MESH"]
     if not meshes:
@@ -257,11 +280,12 @@ def check_shot(scene, objects, frame_start_expected=1001):
 
 
 def run_checks(step, scene, objects, locator="PUBLISH", textures=None,
-               ttype=None, frame_start=1001, profile_stats=None, profiling=None):
-    """Dispatch by task type/step. Asset publishes need a populated publish locator;
-    a shot publish is checked for a camera + the right frame range instead. With
-    `profile_stats` (heavy steps like environments), the WARN-only profiler report
-    is appended."""
+               ttype=None, frame_start=1001, profile_stats=None, profiling=None,
+               collections=None):
+    """Dispatch by task type/step. Asset publishes need a populated publish root
+    (locator empty or collection); a shot publish is checked for a camera + the
+    right frame range instead. With `profile_stats` (heavy steps like
+    environments), the WARN-only profiler report is appended."""
     if ttype == "shot":
         return check_shot(scene, objects, frame_start)
     if step == "dressing":
@@ -271,14 +295,14 @@ def run_checks(step, scene, objects, locator="PUBLISH", textures=None,
         issues = check_units(scene)
     elif step == "model":
         issues = check_model(scene, objects)
-        issues += check_publish_locator(objects, locator)
+        issues += check_publish_locator(objects, locator, collections)
     elif step == "surface":
         issues = check_units(scene)
         issues += check_surface(objects, locator, textures)
-        issues += check_publish_locator(objects, locator)
+        issues += check_publish_locator(objects, locator, collections)
     else:
         issues = check_units(scene)
-        issues += check_publish_locator(objects, locator)
+        issues += check_publish_locator(objects, locator, collections)
     if profile_stats is not None:
         issues += check_profile(profile_stats, profiling)
     return issues

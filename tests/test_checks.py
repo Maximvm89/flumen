@@ -80,6 +80,50 @@ def test_populated_locator_ok():
     assert issues == []
 
 
+def _pub_coll(*objs, name="PUBLISH"):
+    return types.SimpleNamespace(name=name, all_objects=list(objs))
+
+
+def test_publish_collection_ok():
+    # Environments: a PUBLISH collection holding the set's collections works
+    # exactly like the empty — no locator object anywhere.
+    coll = _pub_coll(_mesh("Wall"), _mesh("Floor"))
+    issues = checks.check_publish_locator([_mesh("Wall"), _mesh("Floor")],
+                                          "PUBLISH", collections=[coll])
+    assert issues == []
+
+
+def test_publish_collection_empty_errors():
+    issues = checks.check_publish_locator([], "PUBLISH",
+                                          collections=[_pub_coll()])
+    assert checks.has_errors(issues)
+    assert "collection is empty" in issues[0][1]
+
+
+def test_neither_root_mentions_both_forms():
+    issues = checks.check_publish_locator([_mesh("Cube")], "PUBLISH",
+                                          collections=[_pub_coll(name="props")])
+    assert checks.has_errors(issues)
+    assert "locator" in issues[0][1].lower() or "empty" in issues[0][1].lower()
+    assert "collection" in issues[0][1]
+
+
+def test_locator_empty_wins_over_collection():
+    # Back-compat: when both exist, the empty is the root — an unpopulated
+    # empty is an error even if a populated PUBLISH collection also exists.
+    loc = _empty("PUBLISH")
+    coll = _pub_coll(_mesh("Wall"))
+    issues = checks.check_publish_locator([loc], "PUBLISH", collections=[coll])
+    assert checks.has_errors(issues)
+
+
+def test_run_checks_model_accepts_collection_root():
+    m = _mesh("Wall")
+    issues = checks.run_checks("model", _scene(), [m],
+                               collections=[_pub_coll(m)])
+    assert not checks.has_errors(issues)
+
+
 def test_run_checks_blocks_without_locator():
     # a clean model but NO locator must now fail
     issues = checks.run_checks("model", _scene(), [_mesh("Body")])

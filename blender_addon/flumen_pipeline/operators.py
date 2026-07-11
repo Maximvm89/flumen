@@ -540,7 +540,8 @@ def _run_task_checks(step, context, ttype=None, entity=""):
                 context, profiling.get("heavy_modifiers") or [])
     return checks.run_checks(step, context.scene, list(context.scene.objects),
                              publish_locator_name(), textures=extra, ttype=ttype,
-                             profile_stats=profile_stats, profiling=profiling)
+                             profile_stats=profile_stats, profiling=profiling,
+                             collections=list(bpy.data.collections))
 
 
 class FLUMEN_OT_turntable_framing(bpy.types.Operator):
@@ -871,6 +872,40 @@ def _wrap_publish_in_collection(context, coll_name, loc):
     return restore
 
 
+def _rename_publish_collection(coll, coll_name):
+    """The collection form of the publish root (environments): the artist keeps
+    a 'PUBLISH' COLLECTION holding the set's collections. For the saved copy we
+    just rename it to the asset name — the linkable unit downstream expects —
+    and rename it back after. No reparenting at all. Returns restore()."""
+    original = coll.name
+    clash = bpy.data.collections.get(coll_name)
+    if clash is not None and clash is not coll:
+        try:
+            clash.name = coll_name + ".work"
+        except Exception:  # noqa: BLE001 — library-linked: read-only name
+            clash = None
+    else:
+        clash = None
+    coll.name = coll_name
+    if coll.name != coll_name:
+        print(f"[Flumen] publish collection could not claim the name "
+              f"'{coll_name}' (got '{coll.name}') — a linked collection may "
+              f"own it.")
+
+    def restore():
+        try:
+            coll.name = original
+        except Exception:  # noqa: BLE001
+            pass
+        if clash is not None:
+            try:
+                clash.name = coll_name
+            except Exception:  # noqa: BLE001
+                pass
+
+    return restore
+
+
 # Stash between the shot publish dialog's invoke() and execute(): the current
 # per-element hashes + the newest published anim version label.
 _SHOT_PUBLISH = {}
@@ -1172,13 +1207,21 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 texture_files += [anim_path, anim_manifest_path]
                 kind += f" + anim ({len(actions)} action(s))"
         else:
-            # Wrap the PUBLISH subtree in a collection named after the asset so a
+            # Wrap the publish root in a collection named after the asset so a
             # downstream shot can LINK it as one unit (clean library overrides), and
             # relativize texture paths so a linked rig/model resolves its maps on any
             # machine (the same absolute-path bug fixed for look textures). We mutate
             # the live session only to write the copy, then restore it.
+            # Two root forms (checks accept both): the PUBLISH empty with the
+            # asset parented under it, or a PUBLISH collection holding the
+            # asset's collections (environments). Empty wins when both exist.
             loc = bpy.data.objects.get(publish_locator_name())
-            restore_pub = _wrap_publish_in_collection(context, name, loc)
+            pub_coll = (bpy.data.collections.get(publish_locator_name())
+                        if loc is None else None)
+            if pub_coll is not None:
+                restore_pub = _rename_publish_collection(pub_coll, name)
+            else:
+                restore_pub = _wrap_publish_in_collection(context, name, loc)
             try:
                 try:
                     bpy.ops.file.make_paths_relative()
@@ -1195,16 +1238,18 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             # consume the rig by LINKING the .blend anyway.
             if task["step"] != "rig":
                 fbx_path = pub_path[:-6] + ".fbx"   # .blend -> .fbx
-                # Export only the geometry under the publish locator, if present.
+                # Export only the geometry under the publish root, if present.
+                root_objs = ([loc, *_descendants(loc)] if loc
+                             else list(pub_coll.all_objects) if pub_coll
+                             else [])
                 use_sel = False
-                if loc:
+                if root_objs:
                     try:
                         bpy.ops.object.mode_set(mode="OBJECT")
                     except Exception:  # noqa: BLE001
                         pass
                     bpy.ops.object.select_all(action="DESELECT")
-                    loc.select_set(True)
-                    for d in _descendants(loc):
+                    for d in root_objs:
                         d.select_set(True)
                     use_sel = True
                 if _export_fbx(fbx_path, use_selection=use_sel):
