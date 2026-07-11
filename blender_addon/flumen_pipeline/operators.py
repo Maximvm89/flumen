@@ -624,7 +624,9 @@ class FLUMEN_OT_add_publish_collection(bpy.types.Operator):
     bl_label = "Add Publish Collection"
     bl_description = ("Create the PUBLISH collection that marks what gets "
                       "published — move your environment's collections inside "
-                      "it (the collection form of the publish root)")
+                      "it. A scene using the old PUBLISH locator empty is "
+                      "converted: its objects move into the collection and the "
+                      "empty is removed")
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -632,14 +634,36 @@ class FLUMEN_OT_add_publish_collection(bpy.types.Operator):
         if bpy.data.collections.get(name) is not None:
             self.report({"INFO"}, f"'{name}' collection already exists.")
             return {"FINISHED"}
-        if bpy.data.objects.get(name) is not None:
-            self.report({"WARNING"},
-                        f"A '{name}' locator empty already exists — while it's "
-                        f"in the scene, the empty stays the publish root. "
-                        f"Delete it to switch to the collection form.")
-            return {"CANCELLED"}
         coll = bpy.data.collections.new(name)
         context.scene.collection.children.link(coll)
+        loc = bpy.data.objects.get(name)
+        if loc is not None:
+            # Convert the locator form: the empty's subtree moves into the
+            # collection (world transforms preserved), the empty goes away.
+            subtree = _descendants(loc)
+            for o in subtree:
+                for c in list(o.users_collection):
+                    try:
+                        c.objects.unlink(o)
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    coll.objects.link(o)
+                except Exception:  # noqa: BLE001
+                    pass
+            for o in [c for c in subtree if c.parent is loc]:
+                w = o.matrix_world.copy()
+                o.parent = None
+                o.matrix_world = w
+            try:
+                bpy.data.objects.remove(loc, do_unlink=True)
+            except Exception:  # noqa: BLE001
+                pass
+            self.report({"INFO"},
+                        f"Converted the '{name}' locator into the '{name}' "
+                        f"collection ({len(subtree)} object(s) moved) — you can "
+                        f"now organize them into collections inside it.")
+            return {"FINISHED"}
         self.report({"INFO"}, f"Created the '{name}' collection — move the "
                               f"collections you want published inside it.")
         return {"FINISHED"}
