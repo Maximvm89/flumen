@@ -1761,6 +1761,26 @@ def lookdev_hdri_items(self, context):
     return _HDRI_ITEMS
 
 
+def scaffold_empty_scene():
+    """'Start working (new scene)': drop Blender's startup objects (Cube,
+    Camera, Light) so task work begins truly empty — a shot build or dressing
+    session should never carry the default scene into a publish."""
+    removed = 0
+    for o in list(bpy.context.scene.objects):
+        try:
+            bpy.data.objects.remove(o, do_unlink=True)
+            removed += 1
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=True,
+                               do_recursive=True)
+    except Exception:  # noqa: BLE001
+        pass
+    if removed:
+        print(f"[Flumen] new-scene start: removed {removed} startup object(s).")
+
+
 def scaffold_surface_scene():
     """Set up a fresh surface (look-dev) file: a clean scene (no default
     cube/camera/light) in the Shading workspace with material-preview viewports.

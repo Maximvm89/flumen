@@ -1870,6 +1870,10 @@ class MainWindow(QMainWindow):
         # shading-ready scene instead of Blender's default cube/camera/light.
         if task.get("step") == "surface" and not open_file:
             extra_env["FLUMEN_NEW_SURFACE"] = "1"
+        # 'Start working (new scene)' on any other step: truly empty scene —
+        # no default Cube/Camera/Light leaking into shot builds or dressings.
+        elif start_new and not open_file:
+            extra_env["FLUMEN_NEW_SCENE"] = "1"
         cfg = self.cfg
         creds = self._creds()
 

@@ -41,6 +41,16 @@ def _surface_startup():
     return None   # don't repeat
 
 
+def _empty_startup():
+    """One-shot: 'Start working (new scene)' begins with a truly empty scene
+    (no default Cube/Camera/Light)."""
+    try:
+        _ops.scaffold_empty_scene()
+    except Exception as exc:  # noqa: BLE001
+        print("[Flumen] empty scene setup skipped:", exc)
+    return None   # don't repeat
+
+
 def _color_startup():
     """One-shot: align the opened file's color management with the project OCIO."""
     try:
@@ -104,6 +114,9 @@ def register():
     # Fresh surface task: start from a clean, shading-ready scene.
     if os.environ.get("FLUMEN_NEW_SURFACE"):
         bpy.app.timers.register(_surface_startup, first_interval=0.1)
+    # 'Start working (new scene)': drop the default Cube/Camera/Light.
+    elif os.environ.get("FLUMEN_NEW_SCENE"):
+        bpy.app.timers.register(_empty_startup, first_interval=0.1)
     # Launched from the Workspace app: align color management with the project
     # OCIO so default-config files (sRGB/AgX) stop warning. Self-heals on save.
     if os.environ.get("FLUMEN_PROJECT_ROOT"):
