@@ -14,10 +14,13 @@ def test_playblast_settings_defaults_and_override():
     s = playblast.playblast_settings({})
     assert s["engine"] == "BLENDER_EEVEE_NEXT" and s["resolution_x"] == 1280
     assert s["color"] == "TEXTURE"
+    assert s["auto_light"] is True            # unlit shots get the camera rig
     s2 = playblast.playblast_settings({"playblast": {"engine": "BLENDER_WORKBENCH",
-                                                     "fps": 30, "color": "MATERIAL"}})
+                                                     "fps": 30, "color": "MATERIAL",
+                                                     "auto_light": False}})
     assert s2["engine"] == "BLENDER_WORKBENCH" and s2["fps"] == 30
     assert s2["color"] == "MATERIAL"
+    assert s2["auto_light"] is False
     assert s2["resolution_y"] == 720          # untouched default preserved
 
 

@@ -21,6 +21,9 @@ PB_DEFAULTS = {
     "resolution_y": 720,
     "fps": 24,
     "view_transform": "",            # blank = leave the file's view transform
+    # Shots with no lights get a camera-parented shadowless key+fill rig so
+    # closed sets read instead of rendering black. False = never add lights.
+    "auto_light": True,
 }
 
 
@@ -164,6 +167,7 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         "FLUMEN_PB_ENGINE": str(pb["engine"]),
         "FLUMEN_PB_COLOR": str(pb.get("color", "TEXTURE")),
         "FLUMEN_PB_VIEW": str(pb.get("view_transform", "")),
+        "FLUMEN_PB_AUTOLIGHT": "0" if pb.get("auto_light") is False else "1",
     })
     if len(formats) > 1 or formats[0]["name"]:
         env["FLUMEN_PB_FORMATS"] = formats_env(formats)

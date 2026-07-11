@@ -71,8 +71,17 @@ def _boost_shadows(scene):
 
 
 def _ensure_lighting(scene):
-    """If the shot carries no lights (typical in layout), add a soft key sun + a
-    little ambient world so the EEVEE playblast reads textured + shaded, not black."""
+    """Playblast light rig for shots that carry no lights (typical in layout):
+    two SHADOWLESS suns parented to the shot camera (key from the upper-left of
+    the view, softer fill from the lower-right) plus a touch of world ambient.
+    Shadowless suns pass through walls — a closed interior set reads like the
+    artist's studio-lit viewport instead of black — have no distance falloff to
+    tune per set scale, and are the cheapest light EEVEE can render. A previous
+    single fixed sun couldn't reach inside enclosed environments.
+    Shots with their own lights are left untouched; FLUMEN_PB_AUTOLIGHT=0
+    (playblast.auto_light in project settings) disables the rig entirely."""
+    if _env("FLUMEN_PB_AUTOLIGHT", "1") == "0":
+        return
     if any(getattr(o, "type", "") == "LIGHT" for o in scene.objects):
         return
     if scene.world is None:
@@ -81,15 +90,26 @@ def _ensure_lighting(scene):
         scene.world.use_nodes = True
         bg = scene.world.node_tree.nodes.get("Background")
         if bg is not None:
-            bg.inputs[0].default_value = (0.25, 0.25, 0.27, 1.0)   # ambient fill
+            bg.inputs[0].default_value = (0.12, 0.12, 0.13, 1.0)   # ambient floor
             bg.inputs[1].default_value = 1.0
     except Exception:  # noqa: BLE001
         pass
-    key = bpy.data.lights.new("PB_Key", type="SUN")
-    key.energy = 2.5
-    ob = bpy.data.objects.new("PB_Key", key)
-    ob.rotation_euler = (math.radians(55), 0.0, math.radians(35))
-    scene.collection.objects.link(ob)
+    for name, energy, rx, ry in (("PB_Key", 2.2, -25.0, 30.0),
+                                 ("PB_Fill", 0.7, 10.0, -40.0)):
+        lt = bpy.data.lights.new(name, type="SUN")
+        lt.energy = energy
+        try:
+            lt.use_shadow = False
+        except Exception:  # noqa: BLE001
+            pass
+        ob = bpy.data.objects.new(name, lt)
+        if scene.camera is not None:
+            ob.parent = scene.camera       # rig follows the animated camera
+            ob.rotation_euler = (math.radians(rx), math.radians(ry), 0.0)
+        else:
+            ob.rotation_euler = (math.radians(55 + rx), 0.0,
+                                 math.radians(35 + ry))
+        scene.collection.objects.link(ob)
 
 
 def main():
