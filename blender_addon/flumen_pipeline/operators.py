@@ -295,6 +295,20 @@ class FLUMEN_OT_save_to_task(bpy.types.Operator):
             self.report({"ERROR"}, "No active task. Open this scene from the "
                                    "Workspace app's 'Open in Blender'.")
             return {"CANCELLED"}
+        path = _save_work_version(task)
+        if not path:
+            self.report({"ERROR"}, "Could not save into the work folder — "
+                                   "see the pipeline log.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Saved {os.path.basename(path)}")
+        return {"FINISHED"}
+
+
+def _save_work_version(task) -> str | None:
+    """Save the current session AS-IS into the task's work/ folder with the
+    next version number. Returns the saved path, or None on failure. The
+    session's file path becomes the new work file."""
+    try:
         work_dir = task["work_dir"]
         os.makedirs(work_dir, exist_ok=True)
         base = f"{task['entity'].replace('/', '_')}_{task['step']}"
@@ -303,8 +317,10 @@ class FLUMEN_OT_save_to_task(bpy.types.Operator):
         version = len(existing) + 1
         path = os.path.join(work_dir, f"{base}_v{version:03d}.blend")
         bpy.ops.wm.save_as_mainfile(filepath=path)
-        self.report({"INFO"}, f"Saved {os.path.basename(path)}")
-        return {"FINISHED"}
+        return path
+    except Exception as exc:  # noqa: BLE001
+        print("[Flumen] work save failed:", exc)
+        return None
 
 
 def publish_locator_name():
@@ -1098,6 +1114,15 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             self.report({"ERROR"}, "No active task.")
             return {"CANCELLED"}
 
+        # FIRST, before any publish scripting touches the scene: snapshot the
+        # artist's session AS-IS into the work folder. Every publish then has
+        # a work file at least as new as itself — publishing can never be the
+        # only copy of two hours of work.
+        work_saved = _save_work_version(task)
+        if not work_saved:
+            self.report({"WARNING"}, "Could not save a work version first — "
+                                     "publishing anyway (see the pipeline log).")
+
         issues = _run_task_checks(task["step"], context, task.get("type"),
                                   task.get("entity", ""))
         if checks.has_errors(issues):
@@ -1347,7 +1372,9 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             "cmd": pub_cmd, "cwd": td, "n_files": len(files),
             "post_cmd": post_cmd,
             "success": (f"Published {base}_v{version:03d} ({kind}); "
-                        f"task → Review.{suffix}"),
+                        f"task → Review.{suffix}"
+                        + (f"  Work saved: {os.path.basename(work_saved)}."
+                           if work_saved else "")),
             # Turntables are asset-on-a-pedestal reviews — meaningless for a
             # whole environment, so env model publishes never render one.
             "render": (bool(context.window_manager.flumen_render_turntable)
