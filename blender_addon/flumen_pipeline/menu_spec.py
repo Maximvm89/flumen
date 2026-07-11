@@ -1,78 +1,97 @@
-"""Declarative spec for the Flumen menu: which action shows in which context.
+"""Declarative spec for the Flumen menu — context-first.
 
-No `bpy` — pure data + matching, unit-testable outside Blender. The menu in
+No `bpy` — pure data + resolution, unit-testable outside Blender. The menu in
 ui.py draws whatever resolve_menu() returns.
 
-Each entry: {op, group, when, [text], [icon]}. `when` is the context gate:
-  task      True -> only with an active task
-  type      / type_not      task type is/isn't in the list ("asset", "shot")
-  step      / step_not      task step is/isn't in the list
-  category  / category_not  asset category (top folder: "characters",
-                            "environments", …) is/isn't in the list
-Omitted keys don't constrain. Groups render with a separator between them.
-
-Projects can tune this WITHOUT a release via 02_pipeline/menu.json
-(source: pipeline_config/menu.json, applied with `flumen publish-config`):
+Every context (task type + step, optionally asset category) has an ORDERED
+list of actions; "---" draws a separator. Projects control the whole thing —
+content, order, separators — via 02_pipeline/menu.json (source:
+pipeline_config/menu.json, applied with `flumen publish-config`):
 
   {
-    "hide": ["flumen.preview_turntable"],
-    "when": {"flumen.add_review_camera": {"task": true, "step": ["model"]}}
+    "menus": {
+      "no_task":       ["flumen.add_publish_locator", "---", "flumen.show_log"],
+      "asset:model":   ["flumen.save_to_task", "flumen.publish", "---", ...],
+      "asset:model:environments": [...],     // category-specific variant
+      "shot:layout":   [...],
+      "shot:*":        [...]                 // any shot step without its own list
+    }
   }
 
-`hide` removes actions entirely; `when` replaces an action's default gate.
-Unknown operator names in the config are ignored (typos can't add actions —
-the action set itself stays in code, on purpose).
+Context keys, most specific wins:
+  "<type>:<step>:<category>"  e.g. "asset:model:environments"
+  "<type>:<step>"             e.g. "shot:layout"
+  "<type>:*"                  any step of that type
+  "no_task"                   Blender opened without a task
+
+A context key present in menu.json fully replaces the built-in list for that
+context; contexts not in the file fall back to the built-in defaults below.
+Only operators known to the add-on (the ACTIONS registry) are honored —
+unknown names are skipped, so a typo can never break the menu. Labels and
+icons live here, not in the config.
 """
 
-DEFAULT_MENU = [
-    # -- task tools (need an active task) -------------------------------------
-    {"op": "flumen.load_model", "icon": "IMPORT", "group": "task",
-     "when": {"task": True, "type": ["asset"], "step": ["surface", "rig"]}},
-    {"op": "flumen.build_dressing", "text": "Load environment", "icon": "WORLD",
-     "group": "task", "when": {"task": True, "step": ["dressing"]}},
-    {"op": "flumen.add_prop", "text": "Add prop…",
-     "icon": "OUTLINER_OB_GROUP_INSTANCE", "group": "task",
-     "when": {"task": True, "step": ["dressing"]}},
-    {"op": "flumen.apply_look", "text": "Apply look…", "icon": "MATERIAL",
-     "group": "task",
-     "when": {"task": True, "type": ["asset"], "step_not": ["model", "dressing"]}},
-    # Every shot step: the assembly resolves per step (layout/anim -> rigs,
-    # lighting -> cache when available, model fallback) via assembly.representations.
-    {"op": "flumen.build_shot", "text": "Build shot",
-     "icon": "OUTLINER_OB_GROUP_INSTANCE", "group": "task",
-     "when": {"task": True, "type": ["shot"]}},
-    {"op": "flumen.load_animation", "text": "Load animation…",
-     "icon": "ANIM_DATA", "group": "task",
-     "when": {"task": True, "type": ["shot"]}},
-    {"op": "flumen.add_review_camera", "icon": "VIEW_CAMERA", "group": "task",
-     "when": {"task": True}},
-    {"op": "flumen.render_review", "icon": "RENDER_STILL", "group": "task",
-     "when": {"task": True}},
-    {"op": "flumen.save_to_task", "icon": "FILE_TICK", "group": "task",
-     "when": {"task": True}},
-    {"op": "flumen.run_checks", "icon": "CHECKMARK", "group": "task",
-     "when": {"task": True}},
-    {"op": "flumen.auto_fix", "icon": "TOOL_SETTINGS", "group": "task",
-     "when": {"task": True}},
-    {"op": "flumen.publish", "text": "Publish…", "icon": "EXPORT",
-     "group": "task", "when": {"task": True}},
-    # -- asset/modelling tools (hidden in shots; dressing scenes are linked
-    # content with no PUBLISH locator; environments never render turntables) ----
-    {"op": "flumen.add_publish_locator", "icon": "EMPTY_AXIS", "group": "asset",
-     "when": {"type_not": ["shot"], "step_not": ["dressing"]}},
-    {"op": "flumen.preview_turntable", "icon": "CAMERA_DATA", "group": "asset",
-     "when": {"type_not": ["shot"], "step_not": ["dressing"],
-              "category_not": ["environments"]}},
-    # -- project settings -------------------------------------------------------
-    {"op": "flumen.apply_project_settings", "icon": "CHECKMARK",
-     "group": "project", "when": {}},
-    {"op": "flumen.verify_ocio", "icon": "COLOR", "group": "project",
-     "when": {}},
-    # -- sync / diagnostics ------------------------------------------------------
-    {"op": "flumen.pull_settings", "icon": "IMPORT", "group": "sync",
-     "when": {}},
-    {"op": "flumen.show_log", "icon": "TEXT", "group": "sync", "when": {}},
-]
+SEPARATOR = "---"
+
+# Every operator the menu may show: op -> {text (optional; default = the
+# operator's own label), icon}.
+ACTIONS = {
+    "flumen.load_model": {"icon": "IMPORT"},
+    "flumen.build_dressing": {"text": "Load environment", "icon": "WORLD"},
+    "flumen.add_prop": {"text": "Add prop…",
+                        "icon": "OUTLINER_OB_GROUP_INSTANCE"},
+    "flumen.apply_look": {"text": "Apply look…", "icon": "MATERIAL"},
+    "flumen.build_shot": {"text": "Build shot",
+                          "icon": "OUTLINER_OB_GROUP_INSTANCE"},
+    "flumen.load_animation": {"text": "Load animation…", "icon": "ANIM_DATA"},
+    "flumen.add_review_camera": {"icon": "VIEW_CAMERA"},
+    "flumen.render_review": {"icon": "RENDER_STILL"},
+    "flumen.save_to_task": {"icon": "FILE_TICK"},
+    "flumen.run_checks": {"icon": "CHECKMARK"},
+    "flumen.auto_fix": {"icon": "TOOL_SETTINGS"},
+    "flumen.publish": {"text": "Publish…", "icon": "EXPORT"},
+    "flumen.add_publish_locator": {"icon": "EMPTY_AXIS"},
+    "flumen.preview_turntable": {"icon": "CAMERA_DATA"},
+    "flumen.apply_project_settings": {"icon": "CHECKMARK"},
+    "flumen.verify_ocio": {"icon": "COLOR"},
+    "flumen.pull_settings": {"icon": "IMPORT"},
+    "flumen.show_log": {"icon": "TEXT"},
+}
+
+_TAIL = [SEPARATOR, "flumen.apply_project_settings", "flumen.verify_ocio",
+         SEPARATOR, "flumen.pull_settings", "flumen.show_log"]
+_TASK_CORE = ["flumen.add_review_camera", "flumen.render_review",
+              "flumen.save_to_task", "flumen.run_checks", "flumen.auto_fix",
+              "flumen.publish"]
+_ASSET_TOOLS = [SEPARATOR, "flumen.add_publish_locator",
+                "flumen.preview_turntable"]
+
+DEFAULT_MENUS = {
+    "no_task": (["flumen.add_publish_locator", "flumen.preview_turntable"]
+                + _TAIL),
+    # Assets. Environments variants: no turntable (envs never render one).
+    "asset:model": _TASK_CORE + _ASSET_TOOLS + _TAIL,
+    "asset:model:environments": (_TASK_CORE
+                                 + [SEPARATOR, "flumen.add_publish_locator"]
+                                 + _TAIL),
+    "asset:surface": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
+                      + _TASK_CORE + _ASSET_TOOLS + _TAIL),
+    "asset:surface:environments": (["flumen.load_model", "flumen.apply_look",
+                                    SEPARATOR] + _TASK_CORE
+                                   + [SEPARATOR, "flumen.add_publish_locator"]
+                                   + _TAIL),
+    "asset:rig": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
+                  + _TASK_CORE + _ASSET_TOOLS + _TAIL),
+    # Dressing scenes are linked content: no locator, no turntable, no looks.
+    "asset:dressing": (["flumen.build_dressing", "flumen.add_prop", SEPARATOR]
+                       + _TASK_CORE + _TAIL),
+    # Unlisted asset steps (a project may add its own): generic asset menu.
+    "asset:*": (["flumen.apply_look", SEPARATOR]
+                + _TASK_CORE + _ASSET_TOOLS + _TAIL),
+    # Shots: Build shot resolves per step (rigs now, caches when they land).
+    "shot:*": (["flumen.build_shot", "flumen.load_animation", SEPARATOR]
+               + _TASK_CORE + _TAIL),
+}
 
 
 def task_ctx(task: dict | None) -> dict:
@@ -88,7 +107,55 @@ def task_ctx(task: dict | None) -> dict:
     }
 
 
+def context_keys(ctx: dict) -> list[str]:
+    """Menu keys to try for `ctx`, most specific first."""
+    if not ctx.get("task"):
+        return ["no_task"]
+    ttype, step = ctx.get("type", ""), ctx.get("step", "")
+    keys = []
+    if ctx.get("category"):
+        keys.append(f"{ttype}:{step}:{ctx['category']}")
+    keys.append(f"{ttype}:{step}")
+    keys.append(f"{ttype}:*")
+    return keys
+
+
+def _menu_list(ctx: dict, menu_cfg: dict | None) -> list[str]:
+    keys = context_keys(ctx)
+    cfg_menus = (menu_cfg or {}).get("menus")
+    if isinstance(cfg_menus, dict):
+        for key in keys:
+            if isinstance(cfg_menus.get(key), list):
+                return cfg_menus[key]
+    for key in keys:
+        if key in DEFAULT_MENUS:
+            return DEFAULT_MENUS[key]
+    return []
+
+
+def resolve_menu(ctx: dict, menu_cfg: dict | None = None) -> list[dict]:
+    """The entries to draw for `ctx`, in order: {"op", "text", "icon"} for an
+    action, {"sep": True} for a separator. Unknown ops are skipped; leading,
+    trailing and doubled separators are collapsed."""
+    out = []
+    for item in _menu_list(ctx, menu_cfg):
+        if item == SEPARATOR:
+            if out and not out[-1].get("sep"):
+                out.append({"sep": True})
+            continue
+        spec = ACTIONS.get(item)
+        if spec is None:
+            continue    # unknown operator (typo / other version) — skip
+        out.append({"op": item, "text": spec.get("text", ""),
+                    "icon": spec.get("icon", "")})
+    while out and out[-1].get("sep"):
+        out.pop()
+    return out
+
+
 def matches(when: dict, ctx: dict) -> bool:
+    """Gate matcher (kept for panel polls): task/type/step/category with _not
+    variants, as in the previous gate-based config."""
     if when.get("task") and not ctx.get("task"):
         return False
     for key in ("type", "step", "category"):
@@ -99,19 +166,3 @@ def matches(when: dict, ctx: dict) -> bool:
         if blocked and ctx.get(key) in blocked:
             return False
     return True
-
-
-def resolve_menu(ctx: dict, menu_cfg: dict | None = None) -> list[dict]:
-    """The menu entries to draw for `ctx`, in order, after applying the
-    project's overrides (the 02_pipeline/menu.json dict)."""
-    cfg = menu_cfg or {}
-    hide = set(cfg.get("hide") or [])
-    when_over = cfg.get("when") or {}
-    out = []
-    for entry in DEFAULT_MENU:
-        if entry["op"] in hide:
-            continue
-        when = when_over.get(entry["op"], entry["when"])
-        if isinstance(when, dict) and matches(when, ctx):
-            out.append(entry)
-    return out

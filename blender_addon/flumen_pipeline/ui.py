@@ -49,11 +49,11 @@ class FLUMEN_MT_menu(bpy.types.Menu):
 
         entries = menu_spec.resolve_menu(menu_spec.task_ctx(task),
                                          _menu_config())
-        group = None
+        layout.separator()
         for e in entries:
-            if e["group"] != group:
+            if e.get("sep"):
                 layout.separator()
-                group = e["group"]
+                continue
             kwargs = {"icon": e["icon"]} if e.get("icon") else {}
             if e.get("text"):
                 kwargs["text"] = e["text"]

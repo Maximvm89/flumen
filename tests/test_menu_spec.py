@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -13,107 +14,111 @@ _spec.loader.exec_module(M)
 
 
 def _ops(entries):
-    return [e["op"] for e in entries]
+    return [e["op"] for e in entries if not e.get("sep")]
+
+
+def _shape(entries):
+    return [("|" if e.get("sep") else e["op"]) for e in entries]
 
 
 def _task(ttype="asset", step="model", entity="characters/panda"):
     return {"type": ttype, "step": step, "entity": entity}
 
 
-def test_ctx_from_task_and_no_task():
-    ctx = M.task_ctx(_task("asset", "dressing", "environments/disco"))
-    assert ctx == {"task": True, "type": "asset", "step": "dressing",
-                   "category": "environments"}
-    assert M.task_ctx(None) == {"task": False, "type": "", "step": "",
-                                "category": ""}
+def test_context_keys_most_specific_first():
+    assert M.context_keys(M.task_ctx(None)) == ["no_task"]
+    assert M.context_keys(M.task_ctx(_task("asset", "model",
+                                           "environments/disco"))) == \
+        ["asset:model:environments", "asset:model", "asset:*"]
+    assert M.context_keys(M.task_ctx(_task("shot", "layout", "sq010/sh010"))) == \
+        ["shot:layout", "shot:*"]
 
 
-def test_no_task_shows_only_general_tools():
+def test_no_task_menu():
     ops = _ops(M.resolve_menu(M.task_ctx(None)))
     assert "flumen.publish" not in ops
-    assert "flumen.save_to_task" not in ops
-    # asset tools show outside a shot (matches the old hardcoded menu)
     assert "flumen.add_publish_locator" in ops
-    assert "flumen.apply_project_settings" in ops
     assert "flumen.show_log" in ops
 
 
-def test_model_task_menu():
-    ops = _ops(M.resolve_menu(M.task_ctx(_task("asset", "model"))))
-    assert "flumen.publish" in ops and "flumen.run_checks" in ops
-    assert "flumen.apply_look" not in ops          # not on model
-    assert "flumen.load_model" not in ops          # surface/rig only
-    assert "flumen.build_dressing" not in ops
-    assert "flumen.add_publish_locator" in ops
+def test_order_and_separators_preserved():
+    cfg = {"menus": {"asset:model": [
+        "flumen.publish", "---", "flumen.show_log"]}}
+    shape = _shape(M.resolve_menu(M.task_ctx(_task()), cfg))
+    assert shape == ["flumen.publish", "|", "flumen.show_log"]
 
 
-def test_dressing_task_menu():
+def test_separators_collapsed_at_edges_and_doubles():
+    cfg = {"menus": {"asset:model": [
+        "---", "flumen.publish", "---", "---", "flumen.show_log", "---"]}}
+    shape = _shape(M.resolve_menu(M.task_ctx(_task()), cfg))
+    assert shape == ["flumen.publish", "|", "flumen.show_log"]
+
+
+def test_unknown_ops_skipped():
+    cfg = {"menus": {"asset:model": ["flumen.nope", "flumen.publish"]}}
+    assert _ops(M.resolve_menu(M.task_ctx(_task()), cfg)) == ["flumen.publish"]
+
+
+def test_category_variant_wins_over_step():
+    ctx_env = M.task_ctx(_task("asset", "model", "environments/disco"))
+    ctx_char = M.task_ctx(_task("asset", "model", "characters/panda"))
+    # defaults: environments model has no turntable preview, characters does
+    assert "flumen.preview_turntable" not in _ops(M.resolve_menu(ctx_env))
+    assert "flumen.preview_turntable" in _ops(M.resolve_menu(ctx_char))
+    # a config key for the category variant overrides only that variant
+    cfg = {"menus": {"asset:model:environments": ["flumen.publish"]}}
+    assert _ops(M.resolve_menu(ctx_env, cfg)) == ["flumen.publish"]
+    assert "flumen.run_checks" in _ops(M.resolve_menu(ctx_char, cfg))
+
+
+def test_wildcard_fallback_for_unlisted_steps():
+    ops = _ops(M.resolve_menu(M.task_ctx(_task("asset", "groom"))))
+    assert "flumen.publish" in ops                 # asset:* generic menu
+    ops_shot = _ops(M.resolve_menu(M.task_ctx(_task("shot", "lighting"))))
+    assert "flumen.build_shot" in ops_shot         # shot:* covers every step
+
+
+def test_dressing_menu():
     ops = _ops(M.resolve_menu(
         M.task_ctx(_task("asset", "dressing", "environments/disco"))))
-    assert "flumen.build_dressing" in ops and "flumen.add_prop" in ops
-    assert "flumen.apply_look" not in ops          # dressing is prop layout
-    assert "flumen.load_model" not in ops
-    # dressing scenes are linked content: no locator, no turntable
+    assert ops[0] == "flumen.build_dressing" and ops[1] == "flumen.add_prop"
+    assert "flumen.apply_look" not in ops
     assert "flumen.add_publish_locator" not in ops
     assert "flumen.preview_turntable" not in ops
 
 
-def test_environment_model_has_no_turntable_preview():
-    ops = _ops(M.resolve_menu(
-        M.task_ctx(_task("asset", "model", "environments/disco"))))
-    assert "flumen.preview_turntable" not in ops   # envs never render turntables
-    assert "flumen.add_publish_locator" in ops     # model still uses the locator
-
-
-def test_shot_menu_all_steps():
-    ops = _ops(M.resolve_menu(M.task_ctx(_task("shot", "layout", "sq010/sh010"))))
-    assert "flumen.build_shot" in ops and "flumen.load_animation" in ops
-    assert "flumen.add_publish_locator" not in ops
-    assert "flumen.preview_turntable" not in ops
-    # Build shot on every shot step — the assembly resolves per step.
-    for step in ("animation", "lighting", "comp"):
-        ops_s = _ops(M.resolve_menu(M.task_ctx(_task("shot", step))))
-        assert "flumen.build_shot" in ops_s, step
-        assert "flumen.load_animation" in ops_s, step
-
-
-def test_config_hide_removes_action():
-    cfg = {"hide": ["flumen.preview_turntable"]}
-    ops = _ops(M.resolve_menu(M.task_ctx(_task()), cfg))
-    assert "flumen.preview_turntable" not in ops
-    assert "flumen.add_publish_locator" in ops
-
-
-def test_config_when_overrides_gate():
-    # Re-gate the review camera to dressing tasks only.
-    cfg = {"when": {
-        "flumen.add_review_camera": {"task": True, "step": ["dressing"]}}}
-    on_model = _ops(M.resolve_menu(M.task_ctx(_task(step="model")), cfg))
-    on_dress = _ops(M.resolve_menu(M.task_ctx(_task(step="dressing")), cfg))
-    assert "flumen.add_review_camera" not in on_model
-    assert "flumen.add_review_camera" in on_dress
-
-
-def test_unknown_ops_in_config_are_ignored():
-    cfg = {"hide": ["flumen.nope"], "when": {"flumen.also_nope": {}}}
-    assert _ops(M.resolve_menu(M.task_ctx(_task()), cfg)) == \
-        _ops(M.resolve_menu(M.task_ctx(_task())))
+def test_every_action_in_registry_and_labels_stay_in_code():
+    for menu in M.DEFAULT_MENUS.values():
+        for item in menu:
+            assert item == M.SEPARATOR or item in M.ACTIONS, item
+    e = next(x for x in M.resolve_menu(M.task_ctx(_task("asset", "dressing",
+                                                        "environments/disco")))
+             if x.get("op") == "flumen.build_dressing")
+    assert e["text"] == "Load environment" and e["icon"] == "WORLD"
 
 
 def test_shipped_menu_json_reproduces_defaults():
-    # pipeline_config/menu.json spells out every default gate — publishing it
-    # unedited must not change the menu in any context.
-    import json
+    # pipeline_config/menu.json spells out every context explicitly — published
+    # unedited it must not change the menu anywhere (shape AND order).
     cfg = json.load(open(ROOT / "pipeline_config" / "menu.json"))
-    for task in (None, _task("asset", "model"), _task("asset", "surface"),
+    for task in (None,
+                 _task("asset", "model"), _task("asset", "surface"),
+                 _task("asset", "rig"),
+                 _task("asset", "model", "environments/disco"),
+                 _task("asset", "surface", "environments/disco"),
                  _task("asset", "dressing", "environments/disco"),
                  _task("shot", "layout", "sq010/sh010"),
-                 _task("shot", "animation", "sq010/sh010")):
+                 _task("shot", "animation", "sq010/sh010"),
+                 _task("shot", "lighting", "sq010/sh010"),
+                 _task("shot", "comp", "sq010/sh010")):
         ctx = M.task_ctx(task)
-        assert _ops(M.resolve_menu(ctx, cfg)) == _ops(M.resolve_menu(ctx)), ctx
+        assert _shape(M.resolve_menu(ctx, cfg)) == \
+            _shape(M.resolve_menu(ctx)), ctx
 
 
-def test_category_gate():
-    when = {"task": True, "category": ["environments"]}
-    assert M.matches(when, M.task_ctx(_task(entity="environments/disco")))
-    assert not M.matches(when, M.task_ctx(_task(entity="characters/panda")))
+def test_matches_kept_for_panel_polls():
+    gate = {"type_not": ["shot"], "category_not": ["environments"]}
+    assert M.matches(gate, M.task_ctx(_task()))
+    assert not M.matches(gate, M.task_ctx(_task("shot", "layout")))
+    assert not M.matches(gate, M.task_ctx(_task(entity="environments/disco")))
