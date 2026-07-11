@@ -1899,6 +1899,15 @@ class MainWindow(QMainWindow):
         local = core.local_path_for(local_root, rel)
         self._conn_do(lambda c: c.download(
             core.remote_path_for(remote_root, rel), local))
+        # Sidecar textures (model/env publishes reference //textures/<name>) —
+        # silent when the publish carries none.
+        pub_dir = rel.rsplit("/", 1)[0]
+        try:
+            self._conn_do(lambda c: c.download_dir(
+                core.remote_path_for(remote_root, pub_dir + "/textures"),
+                os.path.join(os.path.dirname(local), "textures")))
+        except Exception:  # noqa: BLE001
+            pass
         return local
 
     def _new_asset(self):

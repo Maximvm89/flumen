@@ -17,6 +17,7 @@ Emits FLUMEN_PROGRESS lines so the add-on's publish bar tracks this phase.
 Exits non-zero on a hard failure so the caller can abort the upload.
 """
 
+import os
 import sys
 
 import bpy
@@ -83,6 +84,54 @@ def _bake_modifiers(coll):
     return baked, skipped
 
 
+def _sidecar_textures():
+    """Normalize the publish's textures into a sidecar folder beside the file:
+    packed images are unpacked to //textures/, external images are copied there
+    and their paths remapped. The .blend stays lean (no 456 MB packed monsters)
+    and the toolkit uploads the folder once, skipping unchanged files on later
+    versions. Runs after the purge so only images actually used survive."""
+    import shutil
+    base = os.path.dirname(bpy.data.filepath)
+    tex_dir = os.path.join(base, "textures")
+    taken = {}          # sidecar filename -> source path (collision guard)
+    unpacked = copied = missing = 0
+    for img in bpy.data.images:
+        if img.source == "TILED":
+            print(f"[Flumen] post: UDIM image '{img.name}' left as-is "
+                  f"(tiled textures aren't sidecar'd yet).")
+            continue
+        if img.source not in ("FILE", "SEQUENCE"):
+            continue    # generated / render results carry no file
+        if img.packed_file:
+            try:
+                os.makedirs(tex_dir, exist_ok=True)
+                img.unpack(method="WRITE_LOCAL")   # writes //textures/<name>
+                unpacked += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Flumen] post: could not unpack '{img.name}': {exc}")
+            continue
+        src = bpy.path.abspath(img.filepath)
+        if not os.path.isfile(src):
+            missing += 1
+            print(f"[Flumen] post: texture missing on disk (left as-is): "
+                  f"{img.name} -> {img.filepath}")
+            continue
+        name = os.path.basename(src)
+        if taken.get(name, src) != src:            # same name, different file
+            name = f"{img.name}_{name}"
+        dst = os.path.join(tex_dir, name)
+        if os.path.abspath(dst) != os.path.abspath(src):
+            os.makedirs(tex_dir, exist_ok=True)
+            shutil.copy2(src, dst)
+        taken[name] = src
+        img.filepath = "//textures/" + name
+        copied += 1
+    if unpacked or copied or missing:
+        print(f"[Flumen] post: sidecar textures: {copied} linked, "
+              f"{unpacked} unpacked"
+              + (f", {missing} missing" if missing else "") + ".")
+
+
 def main():
     a = _args()
     coll = bpy.data.collections.get(a["collection"])
@@ -124,13 +173,16 @@ def main():
             print(f"[Flumen] post: {skipped} object(s) kept live modifiers "
                   f"(armature-deformed or failed).")
 
-    _progress(70, "purging orphan data")
+    _progress(60, "purging orphan data")
     try:
         for _ in range(3):     # recursive chains need a few passes
             bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=True,
                                    do_recursive=True)
     except Exception as exc:  # noqa: BLE001
         print("[Flumen] post: orphan purge failed:", exc)
+
+    _progress(75, "textures -> sidecar")
+    _sidecar_textures()
 
     _progress(85, "saving")
     bpy.ops.wm.save_mainfile(compress=True)

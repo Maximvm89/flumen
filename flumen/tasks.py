@@ -207,9 +207,16 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
             "Re-run publish to get the next version.")
     # Resolve every (local file -> publish rel) up front so we can report progress
     # against the grand total of bytes, across the .blend/FBX and any textures.
+    def _sz(p):
+        try:
+            return _os.path.getsize(p)
+        except OSError:
+            return 0
+
     jobs: list[tuple[str, str]] = []
     for f in local_files:
         jobs.append((f, task_dir_rel(task) + "/publish/" + _os.path.basename(f)))
+    tex_jobs: list[tuple[str, str]] = []
     for f in texture_files or []:
         # Preserve the texture's path under publish/ (e.g. a per-version subfolder
         # 'textures/<base>_vNNN/<tile>.png') so published looks stay immutable —
@@ -217,13 +224,29 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
         norm = f.replace("\\", "/")
         sub = (norm.split("/publish/", 1)[1] if "/publish/" in norm
                else "textures/" + _os.path.basename(f))
-        jobs.append((f, task_dir_rel(task) + "/publish/" + sub))
-
-    def _sz(p):
+        tex_jobs.append((f, sub))
+    if tex_jobs:
+        # The FLAT publish/textures/ pool (model/env sidecar) is shared across
+        # versions — skip files the server already has at the same size, so
+        # only new/changed textures cost upload time. Look textures live in
+        # per-version subfolders and always upload (immutability contract).
+        remote_sizes: dict = {}
         try:
-            return _os.path.getsize(p)
-        except OSError:
-            return 0
+            base = remote_root.rstrip("/") + "/" + task_dir_rel(task) + "/publish/textures"
+            for e in sftp.listdir(base):
+                if not e.get("is_dir"):
+                    remote_sizes[e["name"]] = e.get("size")
+        except Exception:  # noqa: BLE001 — no sidecar folder yet
+            pass
+        skipped = 0
+        for f, sub in tex_jobs:
+            leaf = sub[len("textures/"):] if sub.startswith("textures/") else ""
+            if leaf and "/" not in leaf and remote_sizes.get(leaf) == _sz(f):
+                skipped += 1
+                continue
+            jobs.append((f, task_dir_rel(task) + "/publish/" + sub))
+        if skipped:
+            print(f"{skipped} unchanged texture(s) already on the server — skipped.")
     total = sum(_sz(f) for f, _ in jobs) or 1
     done = [0]   # bytes fully uploaded before the current file (mutable for closure)
     rels = []

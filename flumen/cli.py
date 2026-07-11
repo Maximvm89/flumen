@@ -311,6 +311,13 @@ def cmd_publish(args) -> int:
     if missing:
         print(f"error: local file(s) not found: {', '.join(missing)}", file=sys.stderr)
         return 1
+    # Sidecar textures (model/env publishes): everything in the folder the
+    # post-process filled rides along; unchanged files are skipped server-side.
+    textures = list(args.texture or [])
+    tdir = getattr(args, "textures_dir", "") or ""
+    if tdir and os.path.isdir(tdir):
+        for root, _dirs, names in os.walk(tdir):
+            textures += [os.path.join(root, n) for n in names]
     if args.dry_run:
         print(f"(dry-run) would publish {len(args.local)} file(s) for task "
               f"{args.task} and set status '{args.status}'")
@@ -335,7 +342,7 @@ def cmd_publish(args) -> int:
         rels = T.publish_task(client, cfg.remote_root, creds.user,
                               args.local, args.task, args.status,
                               description=args.description,
-                              texture_files=args.texture, progress=_emit)
+                              texture_files=textures, progress=_emit)
     print(P.format_line(1, 1, _time.monotonic() - start, "done"), flush=True)
     if not rels:
         print(f"error: task not found: {args.task}", file=sys.stderr)
@@ -344,6 +351,23 @@ def cmd_publish(args) -> int:
         print(f"published -> {cfg.remote_root}/{rel}")
     print(f"task {args.task} -> {args.status}")
     return 0
+
+
+def _fetch_sidecar_textures(client, rr: str, blend_rel: str, into_dir: str,
+                            seen: set | None = None) -> None:
+    """Download a publish's sidecar textures/ folder (if any) beside the
+    fetched .blend — model/env publishes reference images as //textures/<name>.
+    Once per publish dir when `seen` is shared; silent when there is none."""
+    pub_dir = blend_rel.rsplit("/", 1)[0]
+    if seen is not None:
+        if pub_dir in seen:
+            return
+        seen.add(pub_dir)
+    try:
+        client.download_dir(rr + "/" + pub_dir + "/textures",
+                            os.path.join(into_dir, "textures"))
+    except Exception:  # noqa: BLE001 — publish carries no sidecar textures
+        pass
 
 
 def cmd_fetch_publish(args) -> int:
@@ -384,6 +408,7 @@ def cmd_fetch_publish(args) -> int:
         os.makedirs(into, exist_ok=True)
         local_path = os.path.join(into, os.path.basename(rel))
         client.download(cfg.remote_root.rstrip("/") + "/" + rel, local_path)
+        _fetch_sidecar_textures(client, cfg.remote_root.rstrip("/"), rel, into)
     print(local_path)
     return 0
 
@@ -828,6 +853,7 @@ def cmd_resolve_assembly(args) -> int:
                                        picks=picks)
         only = set(args.only or [])
         out = []
+        tex_seen: set = set()
         for r in resolved:
             if only and r["id"] not in only:         # --only: just these elements
                 continue
@@ -838,6 +864,8 @@ def cmd_resolve_assembly(args) -> int:
             if rel and not args.list:
                 local = os.path.join(local_root, *rel.split("/"))
                 client.download(rr + "/" + rel, local)
+                _fetch_sidecar_textures(client, rr, rel,
+                                        os.path.dirname(local), tex_seen)
             collection = "" if r["kind"] == "camera" else r["asset"].split("/")[-1]
             entry = {"id": r["id"], "label": r["label"], "kind": r["kind"],
                      "asset": r["asset"], "blend_local": local,
@@ -871,6 +899,8 @@ def cmd_resolve_assembly(args) -> int:
                         if brel not in fetched:
                             lp = os.path.join(local_root, *brel.split("/"))
                             client.download(rr + "/" + brel, lp)
+                            _fetch_sidecar_textures(client, rr, brel,
+                                                    os.path.dirname(lp), tex_seen)
                             fetched[brel] = lp
                         props.append({"id": p.get("id", ""),
                                       "asset": p.get("asset", ""),
@@ -1050,6 +1080,10 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--texture", action="append", default=[],
                     help="texture file to publish under publish/textures/ "
                          "(repeatable); for surface looks")
+    pb.add_argument("--textures-dir", default="",
+                    help="sidecar textures folder to publish under "
+                         "publish/textures/ (unchanged files are skipped); "
+                         "filled by the model publish post-process")
     pb.set_defaults(func=cmd_publish)
 
     fp = sub.add_parser("fetch-publish", parents=[common],

@@ -1321,6 +1321,12 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                     "--description", context.window_manager.flumen_publish_desc]
         for t in texture_files:
             pub_args += ["--texture", t]
+        if post_cmd:
+            # The post-process extracts the publish's textures into a sidecar
+            # folder (phase 0, before the upload phase reads it) — ship it,
+            # skipping files the server already has.
+            pub_args += ["--textures-dir",
+                         os.path.join(publish_dir, "textures")]
         pub_cmd, td = _toolkit_cmd(pub_args)
         if pub_cmd is None:
             self.report({"WARNING"},

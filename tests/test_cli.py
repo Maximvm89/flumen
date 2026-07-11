@@ -65,7 +65,7 @@ def test_fetch_publish_resolves_newest_via_step(monkeypatch, capsys, tmp_path):
     assert rc == 0
     out = capsys.readouterr().out.strip().splitlines()[-1]
     # downloaded the NEWEST model publish to the local mirror, and printed its path
-    remote, local = srv.downloads[-1]
+    remote, local = [d for d in srv.downloads if d[0].endswith(".blend")][-1]
     assert remote.endswith("hero_model_v002.blend")
     assert local == out and local.endswith("hero_model_v002.blend")
 
@@ -202,8 +202,10 @@ def test_resolve_assembly_downloads_and_prints_json(monkeypatch, capsys, tmp_pat
     assert el["id"] == "frankenstein" and el["source_step"] == "model"
     assert el["collection"] == "frankenstein"
     assert el["blend_local"].endswith("frankenstein_model_v001.blend")
-    # downloaded the resolved publish
-    assert srv.downloads[-1][0].endswith("frankenstein_model_v001.blend")
+    # downloaded the resolved publish + its sidecar textures folder
+    assert any(r.endswith("frankenstein_model_v001.blend")
+               for r, _ in srv.downloads)
+    assert any(r.endswith("/publish/textures/*") for r, _ in srv.downloads)
 
 
 def test_resolve_assembly_rejects_non_shot_task(monkeypatch, capsys, tmp_path):
@@ -269,7 +271,8 @@ def test_resolve_assembly_only_fetches_chosen(monkeypatch, capsys, tmp_path):
     assert rc == 0
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["elements"]
     assert [e["id"] for e in out] == ["box"]                        # filtered
-    assert len(srv.downloads) == 1
+    blends = [r for r, _ in srv.downloads if r.endswith(".blend")]
+    assert len(blends) == 1                                         # only box
     assert srv.downloads[0][0].endswith("box_model_v001.blend")     # only box fetched
 
 
@@ -549,3 +552,19 @@ def test_review_still_uploads_and_notifies(monkeypatch, capsys, tmp_path):
     # missing file / task -> clean errors
     assert cli.cmd_review_still(_args(task=t["id"], file="/nope.png")) == 1
     assert cli.cmd_review_still(_args(task="nope", file=str(img))) == 1
+
+
+def test_fetch_publish_pulls_sidecar_textures(monkeypatch, capsys, tmp_path):
+    srv = _DownloadSrv()
+    t = tasks.save_task(srv, "/r",
+                        tasks.new_task("asset", "environments/house", "model"))
+    rel = tasks.task_dir_rel(t) + "/publish/house_model_v002.blend"
+    t["publishes"] = [{"files": [rel], "time": 1, "by": "m"}]
+    tasks.save_task(srv, "/r", t)
+    _patch(monkeypatch, srv)
+    rc = cli.cmd_fetch_publish(_args(task=t["id"], step="", ext=".blend",
+                                     into=str(tmp_path)))
+    assert rc == 0
+    tex = [(r, l) for r, l in srv.downloads
+           if r.endswith("/publish/textures/*")]
+    assert tex and tex[0][1] == str(tmp_path / "textures")

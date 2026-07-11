@@ -381,3 +381,62 @@ def test_published_dressings_latest_per_name():
     assert nm["blend_rel"].endswith("_v002.blend")
     assert nm["manifest_rel"].endswith("_v002.manifest.json")
     assert nm["description"] == "more lanterns"
+
+
+def test_publish_task_skips_unchanged_sidecar_textures(tmp_path):
+    """Flat publish/textures/ pool: same-size files on the server are skipped,
+    new/changed ones upload. Look-style per-version subfolders always upload."""
+    class SizedSrv(FakeSrv):
+        def listdir(self, d):
+            out = super().listdir(d)
+            for e in out:
+                p = d.rstrip("/") + "/" + e["name"]
+                if p in self.files:
+                    e["size"] = len(self.files[p])
+            return out
+
+    s = SizedSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "environments/house", "model"))
+    blend = tmp_path / "house_model_v002.blend"
+    blend.write_bytes(b"B" * 10)
+    tdir = tmp_path / "textures"
+    tdir.mkdir()
+    same = tdir / "wood.png"
+    same.write_bytes(b"X" * 4)          # server copy has the same size -> skip
+    new = tdir / "brick.png"
+    new.write_bytes(b"Y" * 6)           # not on the server yet -> upload
+    pub = tasks.task_dir_rel(t) + "/publish"
+    s.files["/r/" + pub + "/textures/wood.png"] = "QQQQ"     # len 4
+
+    rels = tasks.publish_task(s, "/r", "marco", [str(blend)], t["id"],
+                        texture_files=[str(same), str(new)])
+    assert any(r.endswith("house_model_v002.blend") for r in rels)
+    assert "/r/" + pub + "/textures/brick.png" in s.files
+    # the unchanged texture was NOT re-uploaded (server content untouched)
+    assert s.files["/r/" + pub + "/textures/wood.png"] == "QQQQ"
+
+
+def test_publish_task_uploads_changed_sidecar_texture(tmp_path):
+    class SizedSrv(FakeSrv):
+        def listdir(self, d):
+            out = super().listdir(d)
+            for e in out:
+                p = d.rstrip("/") + "/" + e["name"]
+                if p in self.files:
+                    e["size"] = len(self.files[p])
+            return out
+
+    s = SizedSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "environments/house", "model"))
+    blend = tmp_path / "house_model_v003.blend"
+    blend.write_bytes(b"B")
+    tdir = tmp_path / "textures"
+    tdir.mkdir()
+    changed = tdir / "wood.png"
+    changed.write_bytes(b"X" * 9)       # size differs from the server's 4
+    pub = tasks.task_dir_rel(t) + "/publish"
+    s.files["/r/" + pub + "/textures/wood.png"] = "QQQQ"
+
+    tasks.publish_task(s, "/r", "marco", [str(blend)], t["id"],
+                 texture_files=[str(changed)])
+    assert s.files["/r/" + pub + "/textures/wood.png"] != "QQQQ"
