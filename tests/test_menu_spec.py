@@ -51,18 +51,30 @@ def test_dressing_task_menu():
     ops = _ops(M.resolve_menu(
         M.task_ctx(_task("asset", "dressing", "environments/disco"))))
     assert "flumen.build_dressing" in ops and "flumen.add_prop" in ops
-    assert "flumen.apply_look" in ops              # asset, not model
+    assert "flumen.apply_look" not in ops          # dressing is prop layout
     assert "flumen.load_model" not in ops
+    # dressing scenes are linked content: no locator, no turntable
+    assert "flumen.add_publish_locator" not in ops
+    assert "flumen.preview_turntable" not in ops
 
 
-def test_shot_layout_menu_hides_asset_tools():
+def test_environment_model_has_no_turntable_preview():
+    ops = _ops(M.resolve_menu(
+        M.task_ctx(_task("asset", "model", "environments/disco"))))
+    assert "flumen.preview_turntable" not in ops   # envs never render turntables
+    assert "flumen.add_publish_locator" in ops     # model still uses the locator
+
+
+def test_shot_menu_all_steps():
     ops = _ops(M.resolve_menu(M.task_ctx(_task("shot", "layout", "sq010/sh010"))))
     assert "flumen.build_shot" in ops and "flumen.load_animation" in ops
     assert "flumen.add_publish_locator" not in ops
     assert "flumen.preview_turntable" not in ops
-    ops_anim = _ops(M.resolve_menu(M.task_ctx(_task("shot", "animation"))))
-    assert "flumen.build_shot" not in ops_anim     # layout only
-    assert "flumen.load_animation" in ops_anim
+    # Build shot on every shot step — the assembly resolves per step.
+    for step in ("animation", "lighting", "comp"):
+        ops_s = _ops(M.resolve_menu(M.task_ctx(_task("shot", step))))
+        assert "flumen.build_shot" in ops_s, step
+        assert "flumen.load_animation" in ops_s, step
 
 
 def test_config_hide_removes_action():

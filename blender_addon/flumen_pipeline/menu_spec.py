@@ -35,10 +35,12 @@ DEFAULT_MENU = [
      "when": {"task": True, "step": ["dressing"]}},
     {"op": "flumen.apply_look", "text": "Apply look…", "icon": "MATERIAL",
      "group": "task",
-     "when": {"task": True, "type": ["asset"], "step_not": ["model"]}},
+     "when": {"task": True, "type": ["asset"], "step_not": ["model", "dressing"]}},
+    # Every shot step: the assembly resolves per step (layout/anim -> rigs,
+    # lighting -> cache when available, model fallback) via assembly.representations.
     {"op": "flumen.build_shot", "text": "Build shot",
      "icon": "OUTLINER_OB_GROUP_INSTANCE", "group": "task",
-     "when": {"task": True, "type": ["shot"], "step": ["layout"]}},
+     "when": {"task": True, "type": ["shot"]}},
     {"op": "flumen.load_animation", "text": "Load animation…",
      "icon": "ANIM_DATA", "group": "task",
      "when": {"task": True, "type": ["shot"]}},
@@ -54,11 +56,13 @@ DEFAULT_MENU = [
      "when": {"task": True}},
     {"op": "flumen.publish", "text": "Publish…", "icon": "EXPORT",
      "group": "task", "when": {"task": True}},
-    # -- asset/modelling tools (hidden in shots) -------------------------------
+    # -- asset/modelling tools (hidden in shots; dressing scenes are linked
+    # content with no PUBLISH locator; environments never render turntables) ----
     {"op": "flumen.add_publish_locator", "icon": "EMPTY_AXIS", "group": "asset",
-     "when": {"type_not": ["shot"]}},
+     "when": {"type_not": ["shot"], "step_not": ["dressing"]}},
     {"op": "flumen.preview_turntable", "icon": "CAMERA_DATA", "group": "asset",
-     "when": {"type_not": ["shot"]}},
+     "when": {"type_not": ["shot"], "step_not": ["dressing"],
+              "category_not": ["environments"]}},
     # -- project settings -------------------------------------------------------
     {"op": "flumen.apply_project_settings", "icon": "CHECKMARK",
      "group": "project", "when": {}},

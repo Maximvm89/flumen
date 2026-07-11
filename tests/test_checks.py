@@ -265,8 +265,11 @@ def test_fixable_scale_objects_triage():
     clean = mesh("done", scale=(1.0, 1.0, 1.0))               # nothing to fix
     empty = types.SimpleNamespace(type="EMPTY", name="PUBLISH",
                                   scale=(2.0, 2.0, 2.0), parent=None)  # not a mesh
-    fixable, shared, animated = checks.fixable_scale_objects(
-        [ok, inst, keyed, clean, empty])
+    lib = mesh("env_prop")
+    lib.override_library = object()                           # shot/dressing element
+    fixable, shared, animated, linked = checks.fixable_scale_objects(
+        [ok, inst, keyed, clean, empty, lib])
     assert [o.name for o in fixable] == ["plain"]
     assert [o.name for o in shared] == ["glass_instance"]
     assert [o.name for o in animated] == ["pulsing_light"]
+    assert [o.name for o in linked] == ["env_prop"]

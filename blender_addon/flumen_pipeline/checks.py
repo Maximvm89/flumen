@@ -131,23 +131,29 @@ def check_model(scene, objects, max_listed=5):
 
 def fixable_scale_objects(objects):
     """Triage unapplied-scale meshes for the auto-fixer (pure, duck-typed):
-    (fixable, shared, animated). Shared-mesh instances are NOT fixable — applying
-    scale bakes into the mesh data and would deform every other instance.
-    Keyframed objects are left alone — their scale may be intentional."""
-    fixable, shared, animated = [], [], []
+    (fixable, shared, animated, linked). Shared-mesh instances are NOT fixable —
+    applying scale bakes into the mesh data and would deform every other
+    instance. Keyframed objects are left alone — their scale may be intentional.
+    Linked/override objects (shot and dressing elements) can't be edited at all —
+    transform_apply on library data only errors."""
+    fixable, shared, animated, linked = [], [], [], []
     for o in objects:
         if getattr(o, "type", "") != "MESH":
             continue
         scale = tuple(round(float(v), 4) for v in getattr(o, "scale", (1, 1, 1)))
         if scale == (1.0, 1.0, 1.0):
             continue
-        if getattr(getattr(o, "data", None), "users", 1) > 1:
+        if (getattr(o, "library", None) is not None
+                or getattr(o, "override_library", None) is not None
+                or getattr(getattr(o, "data", None), "library", None) is not None):
+            linked.append(o)
+        elif getattr(getattr(o, "data", None), "users", 1) > 1:
             shared.append(o)
         elif getattr(o, "animation_data", None) is not None:
             animated.append(o)
         else:
             fixable.append(o)
-    return fixable, shared, animated
+    return fixable, shared, animated, linked
 
 
 def _descendants(objects, root):

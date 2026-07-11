@@ -734,20 +734,30 @@ class FLUMEN_OT_show_log(bpy.types.Operator):
 class FLUMEN_OT_auto_fix(bpy.types.Operator):
     bl_idname = "flumen.auto_fix"
     bl_label = "Auto-fix issues"
-    bl_description = ("Fix what can be fixed safely: set metric units and apply "
-                      "unapplied scales. Skips shared-mesh instances (fixing one "
-                      "would deform the others) and keyframed objects")
+    bl_description = ("Fix what the current step's checks actually flag: metric "
+                      "units everywhere; unapplied scales on model tasks. Skips "
+                      "shared-mesh instances (fixing one would deform the "
+                      "others), keyframed objects and linked/override elements")
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         did = []
-        # 1) Units — two values, zero risk.
+        # 1) Units — checked on every step, two values, zero risk.
         if not _units_ok(context.scene):
             context.scene.unit_settings.system = "METRIC"
             context.scene.unit_settings.scale_length = 1.0
             did.append("units -> metric/1.0")
-        # 2) Unapplied scales — only single-user, non-animated meshes.
-        fixable, shared, animated = checks.fixable_scale_objects(
+        # 2) Unapplied scales — only where the checks flag them: the model step
+        # (or a taskless session). Shot/dressing scenes are linked content the
+        # fixer can't (and shouldn't) touch; other asset steps don't check scale.
+        task = active_task()
+        if task and task.get("step") != "model":
+            msg = ("Fixed: " + "; ".join(did) if did
+                   else "Nothing to fix on this step (scale fixes apply on "
+                        "model tasks).")
+            self.report({"INFO"}, msg)
+            return {"FINISHED"}
+        fixable, shared, animated, linked = checks.fixable_scale_objects(
             context.scene.objects)
         applied = failed = 0
         if fixable:
@@ -784,6 +794,10 @@ class FLUMEN_OT_auto_fix(bpy.types.Operator):
             skipped.append(f"{len(animated)} keyframed")
             print("[Flumen] auto-fix skipped (keyframed): "
                   + ", ".join(o.name for o in animated))
+        if linked:
+            skipped.append(f"{len(linked)} linked")
+            print("[Flumen] auto-fix skipped (linked/override — fix in the "
+                  "source asset file): " + ", ".join(o.name for o in linked))
         if failed:
             skipped.append(f"{failed} failed")
         msg = ("Fixed: " + "; ".join(did) if did else "Nothing left to fix")

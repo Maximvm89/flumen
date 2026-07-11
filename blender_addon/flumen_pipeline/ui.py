@@ -79,9 +79,13 @@ class FLUMEN_PT_turntable(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # Turntable framing is per-asset — hide the panel in a shot context.
+        # Turntable framing is per-asset — hide the panel in a shot context,
+        # and for environments/dressing (they never render turntables).
         task = _ops.active_task()
-        return not (task and task.get("type") == "shot")
+        ctx = menu_spec.task_ctx(task)
+        return menu_spec.matches({"type_not": ["shot"],
+                                  "step_not": ["dressing"],
+                                  "category_not": ["environments"]}, ctx)
 
     def draw(self, context):
         layout = self.layout
