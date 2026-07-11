@@ -100,23 +100,21 @@ def test_every_action_in_registry_and_labels_stay_in_code():
     assert e["text"] == "Load environment" and e["icon"] == "WORLD"
 
 
-def test_shipped_menu_json_reproduces_defaults():
-    # pipeline_config/menu.json spells out every context explicitly — published
-    # unedited it must not change the menu anywhere (shape AND order).
+def test_shipped_menu_json_is_valid():
+    # pipeline_config/menu.json is the project's real menu — it may diverge
+    # from the built-in defaults, but every entry must resolve: known actions
+    # or separators only, under well-formed context keys.
     cfg = json.load(open(ROOT / "pipeline_config" / "menu.json"))
-    for task in (None,
-                 _task("asset", "model"), _task("asset", "surface"),
-                 _task("asset", "rig"),
-                 _task("asset", "model", "environments/disco"),
-                 _task("asset", "surface", "environments/disco"),
-                 _task("asset", "dressing", "environments/disco"),
-                 _task("shot", "layout", "sq010/sh010"),
-                 _task("shot", "animation", "sq010/sh010"),
-                 _task("shot", "lighting", "sq010/sh010"),
-                 _task("shot", "comp", "sq010/sh010")):
-        ctx = M.task_ctx(task)
-        assert _shape(M.resolve_menu(ctx, cfg)) == \
-            _shape(M.resolve_menu(ctx)), ctx
+    menus = cfg["menus"]
+    assert isinstance(menus, dict) and menus
+    for key, items in menus.items():
+        parts = key.split(":")
+        assert key == "no_task" or parts[0] in ("asset", "shot"), key
+        assert isinstance(items, list) and items, key
+        for it in items:
+            assert it == M.SEPARATOR or it in M.ACTIONS, f"{key}: {it}"
+        # each context must draw at least one real action
+        assert any(it in M.ACTIONS for it in items), key
 
 
 def test_matches_kept_for_panel_polls():
