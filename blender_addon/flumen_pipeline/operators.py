@@ -619,6 +619,32 @@ class FLUMEN_OT_add_locator(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class FLUMEN_OT_add_publish_collection(bpy.types.Operator):
+    bl_idname = "flumen.add_publish_collection"
+    bl_label = "Add Publish Collection"
+    bl_description = ("Create the PUBLISH collection that marks what gets "
+                      "published — move your environment's collections inside "
+                      "it (the collection form of the publish root)")
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        name = publish_locator_name()
+        if bpy.data.collections.get(name) is not None:
+            self.report({"INFO"}, f"'{name}' collection already exists.")
+            return {"FINISHED"}
+        if bpy.data.objects.get(name) is not None:
+            self.report({"WARNING"},
+                        f"A '{name}' locator empty already exists — while it's "
+                        f"in the scene, the empty stays the publish root. "
+                        f"Delete it to switch to the collection form.")
+            return {"CANCELLED"}
+        coll = bpy.data.collections.new(name)
+        context.scene.collection.children.link(coll)
+        self.report({"INFO"}, f"Created the '{name}' collection — move the "
+                              f"collections you want published inside it.")
+        return {"FINISHED"}
+
+
 def _server_next_version(task_id: str, base: str) -> int | None:
     """Authoritative next version from the task's server publish history (via the
     toolkit). None if the toolkit/server isn't reachable, so we fall back to local."""
@@ -3112,6 +3138,7 @@ CLASSES = (
     FLUMEN_OT_verify_ocio,
     FLUMEN_OT_pull_settings,
     FLUMEN_OT_add_locator,
+    FLUMEN_OT_add_publish_collection,
     FLUMEN_OT_save_to_task,
     FLUMEN_OT_check,
     FLUMEN_PublishItem,             # PropertyGroup — register before the operator

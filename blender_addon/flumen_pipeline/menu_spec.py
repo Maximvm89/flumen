@@ -51,6 +51,7 @@ ACTIONS = {
     "flumen.auto_fix": {"icon": "TOOL_SETTINGS"},
     "flumen.publish": {"text": "Publish…", "icon": "EXPORT"},
     "flumen.add_publish_locator": {"icon": "EMPTY_AXIS"},
+    "flumen.add_publish_collection": {"icon": "OUTLINER_COLLECTION"},
     "flumen.preview_turntable": {"icon": "CAMERA_DATA"},
     "flumen.apply_project_settings": {"icon": "CHECKMARK"},
     "flumen.verify_ocio": {"icon": "COLOR"},
@@ -74,13 +75,13 @@ DEFAULT_MENUS = {
     # Assets. Environments variants: no turntable (envs never render one).
     "asset:model": _TASK_CORE + _ASSET_TOOLS + _TAIL,
     "asset:model:environments": (_TASK_CORE
-                                 + [SEPARATOR, "flumen.add_publish_locator"]
+                                 + [SEPARATOR, "flumen.add_publish_collection"]
                                  + _TAIL),
     "asset:surface": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
                       + _TASK_CORE + _ASSET_TOOLS + _TAIL),
     "asset:surface:environments": (["flumen.load_model", "flumen.apply_look",
                                     SEPARATOR] + _TASK_CORE
-                                   + [SEPARATOR, "flumen.add_publish_locator"]
+                                   + [SEPARATOR, "flumen.add_publish_collection"]
                                    + _TAIL),
     "asset:rig": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
                   + _TASK_CORE + _ASSET_TOOLS + _TAIL),

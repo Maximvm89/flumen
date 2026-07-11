@@ -68,6 +68,11 @@ def test_category_variant_wins_over_step():
     # defaults: environments model has no turntable preview, characters does
     assert "flumen.preview_turntable" not in _ops(M.resolve_menu(ctx_env))
     assert "flumen.preview_turntable" in _ops(M.resolve_menu(ctx_char))
+    # environments create a publish COLLECTION; characters keep the empty
+    assert "flumen.add_publish_collection" in _ops(M.resolve_menu(ctx_env))
+    assert "flumen.add_publish_locator" not in _ops(M.resolve_menu(ctx_env))
+    assert "flumen.add_publish_locator" in _ops(M.resolve_menu(ctx_char))
+    assert "flumen.add_publish_collection" not in _ops(M.resolve_menu(ctx_char))
     # a config key for the category variant overrides only that variant
     cfg = {"menus": {"asset:model:environments": ["flumen.publish"]}}
     assert _ops(M.resolve_menu(ctx_env, cfg)) == ["flumen.publish"]
