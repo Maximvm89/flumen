@@ -391,6 +391,32 @@ def run_template_mode():
             obj.parent = ctrl
             obj.matrix_parent_inverse = ident
         bpy.context.view_layer.update()
+        # 1b) Face the camera. Studio convention: models are authored with
+        # their front along -Y (Blender's front view). Yaw the asset around
+        # the socket so that front meets THIS template's camera at the first
+        # frame — modelers never rotate a model to please a turntable again.
+        # (Same math as flumen.turntable.face_camera_yaw — inlined because
+        # this script runs inside Blender's python, not the toolkit's.)
+        if os.environ.get("FLUMEN_TT_FACE_CAMERA", "1") != "0" and scene.camera:
+            try:
+                scene.frame_set(scene.frame_start)
+            except Exception:  # noqa: BLE001
+                pass
+            to_cam = scene.camera.matrix_world.translation - target
+            fx, fy = 0.0, -1.0                      # asset front: -Y
+            yaw = math.atan2(fx * to_cam.y - fy * to_cam.x,
+                             fx * to_cam.x + fy * to_cam.y)
+            yaw += math.radians(
+                float(os.environ.get("FLUMEN_TT_FRONT_OFFSET", "0") or 0.0))
+            if abs(yaw) > 1e-4:
+                spin = (mathutils.Matrix.Translation(target)
+                        @ mathutils.Matrix.Rotation(yaw, 4, "Z")
+                        @ mathutils.Matrix.Translation(-target))
+                for obj in roots:
+                    obj.matrix_world = spin @ obj.matrix_world
+                bpy.context.view_layer.update()
+                print(f"[Flumen] faced asset to the camera "
+                      f"(yaw {math.degrees(yaw):.1f}°)")
         # Scale the asset to fit the reference volume (tightest axis fits inside),
         # then apply the zoom knob. Seating below re-measures and re-centers.
         mesh_now = [o for o in linked if o.type == "MESH" and not o.hide_render]

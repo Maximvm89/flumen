@@ -107,3 +107,29 @@ def test_record_review_media_matches_the_right_look_record():
     # no matching record -> False
     assert turntable.record_review_media(s, "/r", t["id"], "nope.blend", "marco",
                                          turntable=tt) is False
+
+
+def test_face_camera_yaw():
+    import math
+    front = (0.0, -1.0)                       # studio convention: front = -Y
+    # camera already in front -> no rotation
+    assert turntable.face_camera_yaw(front, (0.0, -5.0)) == 0.0
+    # camera behind -> half turn
+    assert abs(abs(turntable.face_camera_yaw(front, (0.0, 5.0)))
+               - math.pi) < 1e-9
+    # camera on -X -> quarter turn, sign must rotate front ONTO the camera dir
+    yaw = turntable.face_camera_yaw(front, (-5.0, 0.0))
+    fx, fy = front
+    rx = fx * math.cos(yaw) - fy * math.sin(yaw)
+    ry = fx * math.sin(yaw) + fy * math.cos(yaw)
+    assert abs(rx - -1.0) < 1e-9 and abs(ry) < 1e-9
+    # degenerate: camera straight above the socket -> leave the asset alone
+    assert turntable.face_camera_yaw(front, (0.0, 0.0)) == 0.0
+
+
+def test_face_camera_env_defaults():
+    s = turntable.turntable_settings({})
+    assert s["face_camera"] is True and s["front_offset_deg"] == 0.0
+    s2 = turntable.turntable_settings({"turntable": {"face_camera": False,
+                                                     "front_offset_deg": 90}})
+    assert s2["face_camera"] is False and s2["front_offset_deg"] == 90

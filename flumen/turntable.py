@@ -37,7 +37,23 @@ DEFAULTS = {
     "template_fit_scale": 1.0, # zoom knob: <1 = pull back/margin, >1 = fill more
     "template_fit_mode": "box",# box (whole bbox) | height (fill vertically) | width
     "stamp": True,             # burn the asset's real size + applied scale into the frames
+    # Orientation: models are authored facing -Y (Blender's front view); the
+    # template render yaws the asset so that front faces the camera at frame 1.
+    "face_camera": True,
+    "front_offset_deg": 0.0,   # extra yaw if a project's front convention differs
 }
+
+
+def face_camera_yaw(front_xy, to_cam_xy) -> float:
+    """Signed Z rotation (radians) turning the asset's horizontal front
+    direction onto the direction toward the camera. Zero when either vector is
+    degenerate (camera straight above, no front)."""
+    import math
+    fx, fy = front_xy
+    tx, ty = to_cam_xy
+    if (abs(fx) < 1e-9 and abs(fy) < 1e-9) or (abs(tx) < 1e-9 and abs(ty) < 1e-9):
+        return 0.0
+    return math.atan2(fx * ty - fy * tx, fx * tx + fy * ty)
 
 
 def turntable_settings(project_settings: dict) -> dict:
@@ -360,6 +376,9 @@ def run_turntable(cfg, creds, model_path: str, task_id: str,
         env["FLUMEN_TT_FIT"] = str(settings.get("template_fit", ""))
         env["FLUMEN_TT_FIT_SCALE"] = str(settings.get("template_fit_scale", 1.0))
         env["FLUMEN_TT_FIT_MODE"] = str(settings.get("template_fit_mode", "box"))
+        env["FLUMEN_TT_FACE_CAMERA"] = ("1" if settings.get("face_camera", True)
+                                        else "0")
+        env["FLUMEN_TT_FRONT_OFFSET"] = str(settings.get("front_offset_deg", 0.0))
         env["FLUMEN_TT_STAMP"] = "1" if settings.get("stamp", True) else "0"
         env["FLUMEN_TT_LOCATOR"] = locator
 
