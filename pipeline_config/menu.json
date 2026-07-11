@@ -5,7 +5,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "asset:model": [
@@ -22,7 +21,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "asset:model:environments": [
@@ -38,7 +36,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "asset:surface": [
@@ -58,7 +55,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "asset:surface:environments": [
@@ -77,7 +73,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "asset:rig": [
@@ -97,7 +92,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "asset:dressing": [
@@ -114,7 +108,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "shot:layout": [
@@ -131,7 +124,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "shot:animation": [
@@ -148,7 +140,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "shot:lighting": [
@@ -165,7 +156,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ],
     "shot:comp": [
@@ -182,7 +172,6 @@
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",
-      "flumen.pull_settings",
       "flumen.show_log"
     ]
   }
