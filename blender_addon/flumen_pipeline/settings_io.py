@@ -7,6 +7,7 @@ import json
 import os
 
 SETTINGS_REL = os.path.join("02_pipeline", "project_settings.json")
+MENU_REL = os.path.join("02_pipeline", "menu.json")
 OCIO_REL = os.path.join("02_pipeline", "ocio", "config.ocio")
 
 
@@ -32,6 +33,22 @@ def settings_path(root: str) -> str:
 
 def ocio_path(root: str) -> str:
     return os.path.join(root, OCIO_REL)
+
+
+def menu_path(root: str) -> str:
+    return os.path.join(root, MENU_REL)
+
+
+def load_menu(root: str) -> dict:
+    """The project's Flumen-menu config (02_pipeline/menu.json), or {} when the
+    project hasn't customized the menu — missing/invalid means built-in
+    defaults, never an error."""
+    try:
+        with open(menu_path(root), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def load_settings(root: str) -> dict:

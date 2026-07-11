@@ -65,28 +65,40 @@ def test_shot_layout_menu_hides_asset_tools():
     assert "flumen.load_animation" in ops_anim
 
 
-def test_settings_hide_removes_action():
-    settings = {"menu": {"hide": ["flumen.preview_turntable"]}}
-    ops = _ops(M.resolve_menu(M.task_ctx(_task()), settings))
+def test_config_hide_removes_action():
+    cfg = {"hide": ["flumen.preview_turntable"]}
+    ops = _ops(M.resolve_menu(M.task_ctx(_task()), cfg))
     assert "flumen.preview_turntable" not in ops
     assert "flumen.add_publish_locator" in ops
 
 
-def test_settings_when_overrides_gate():
+def test_config_when_overrides_gate():
     # Re-gate the review camera to dressing tasks only.
-    settings = {"menu": {"when": {
-        "flumen.add_review_camera": {"task": True, "step": ["dressing"]}}}}
-    on_model = _ops(M.resolve_menu(M.task_ctx(_task(step="model")), settings))
-    on_dress = _ops(M.resolve_menu(M.task_ctx(_task(step="dressing")), settings))
+    cfg = {"when": {
+        "flumen.add_review_camera": {"task": True, "step": ["dressing"]}}}
+    on_model = _ops(M.resolve_menu(M.task_ctx(_task(step="model")), cfg))
+    on_dress = _ops(M.resolve_menu(M.task_ctx(_task(step="dressing")), cfg))
     assert "flumen.add_review_camera" not in on_model
     assert "flumen.add_review_camera" in on_dress
 
 
 def test_unknown_ops_in_config_are_ignored():
-    settings = {"menu": {"hide": ["flumen.nope"],
-                         "when": {"flumen.also_nope": {}}}}
-    assert _ops(M.resolve_menu(M.task_ctx(_task()), settings)) == \
+    cfg = {"hide": ["flumen.nope"], "when": {"flumen.also_nope": {}}}
+    assert _ops(M.resolve_menu(M.task_ctx(_task()), cfg)) == \
         _ops(M.resolve_menu(M.task_ctx(_task())))
+
+
+def test_shipped_menu_json_reproduces_defaults():
+    # pipeline_config/menu.json spells out every default gate — publishing it
+    # unedited must not change the menu in any context.
+    import json
+    cfg = json.load(open(ROOT / "pipeline_config" / "menu.json"))
+    for task in (None, _task("asset", "model"), _task("asset", "surface"),
+                 _task("asset", "dressing", "environments/disco"),
+                 _task("shot", "layout", "sq010/sh010"),
+                 _task("shot", "animation", "sq010/sh010")):
+        ctx = M.task_ctx(task)
+        assert _ops(M.resolve_menu(ctx, cfg)) == _ops(M.resolve_menu(ctx)), ctx
 
 
 def test_category_gate():

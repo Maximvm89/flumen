@@ -210,10 +210,16 @@ def cmd_publish_config(args) -> int:
         yaml.safe_dump(raw, fh, sort_keys=False, default_flow_style=False)
 
     uploads = [(clean_cfg, base + "config.yaml")]
-    schema_local = os.path.join(os.path.dirname(os.path.abspath(args.config)),
-                                "folder_schema.yaml")
+    cfg_dir = os.path.dirname(os.path.abspath(args.config))
+    schema_local = os.path.join(cfg_dir, "folder_schema.yaml")
     if os.path.isfile(schema_local):
         uploads.append((schema_local, base + "folder_schema.yaml"))
+    # Studio policy files maintained beside the toolkit: project settings and
+    # the Blender menu config. Published together so one command syncs policy.
+    for name in ("project_settings.json", "menu.json"):
+        local = os.path.join(cfg_dir, "pipeline_config", name)
+        if os.path.isfile(local):
+            uploads.append((local, base + name))
 
     for local, remote in uploads:
         print(f"Upload: {os.path.basename(remote)}\n    -> {remote}")

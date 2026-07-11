@@ -1,0 +1,24 @@
+{
+  "_note": "Flumen menu in Blender: which action shows in which context. Each action has a gate: 'task': true needs an open task; 'type' / 'step' / 'category' must match one of the listed values; the *_not variants must NOT match. An empty gate {} = always shown. Delete an action's entry to fall back to the built-in default. Add an action's name to 'hide' to remove it from the menu everywhere. Unknown action names are ignored. Apply with: flumen publish-config",
+  "hide": [],
+  "when": {
+    "flumen.load_model": { "task": true, "type": ["asset"], "step": ["surface", "rig"] },
+    "flumen.build_dressing": { "task": true, "step": ["dressing"] },
+    "flumen.add_prop": { "task": true, "step": ["dressing"] },
+    "flumen.apply_look": { "task": true, "type": ["asset"], "step_not": ["model"] },
+    "flumen.build_shot": { "task": true, "type": ["shot"], "step": ["layout"] },
+    "flumen.load_animation": { "task": true, "type": ["shot"] },
+    "flumen.add_review_camera": { "task": true },
+    "flumen.render_review": { "task": true },
+    "flumen.save_to_task": { "task": true },
+    "flumen.run_checks": { "task": true },
+    "flumen.auto_fix": { "task": true },
+    "flumen.publish": { "task": true },
+    "flumen.add_publish_locator": { "type_not": ["shot"] },
+    "flumen.preview_turntable": { "type_not": ["shot"] },
+    "flumen.apply_project_settings": {},
+    "flumen.verify_ocio": {},
+    "flumen.pull_settings": {},
+    "flumen.show_log": {}
+  }
+}

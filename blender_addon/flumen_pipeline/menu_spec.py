@@ -11,9 +11,10 @@ Each entry: {op, group, when, [text], [icon]}. `when` is the context gate:
                             "environments", …) is/isn't in the list
 Omitted keys don't constrain. Groups render with a separator between them.
 
-Projects can tune this WITHOUT a release via project_settings.json:
+Projects can tune this WITHOUT a release via 02_pipeline/menu.json
+(source: pipeline_config/menu.json, applied with `flumen publish-config`):
 
-  "menu": {
+  {
     "hide": ["flumen.preview_turntable"],
     "when": {"flumen.add_review_camera": {"task": true, "step": ["model"]}}
   }
@@ -96,10 +97,10 @@ def matches(when: dict, ctx: dict) -> bool:
     return True
 
 
-def resolve_menu(ctx: dict, settings: dict | None = None) -> list[dict]:
+def resolve_menu(ctx: dict, menu_cfg: dict | None = None) -> list[dict]:
     """The menu entries to draw for `ctx`, in order, after applying the
-    project's overrides (project_settings.json "menu" block)."""
-    cfg = (settings or {}).get("menu") or {}
+    project's overrides (the 02_pipeline/menu.json dict)."""
+    cfg = menu_cfg or {}
     hide = set(cfg.get("hide") or [])
     when_over = cfg.get("when") or {}
     out = []

@@ -1,8 +1,8 @@
 """Flumen menu in Blender's top menu bar (next to Help).
 
 WHAT shows WHERE lives in menu_spec.py (declarative, per-context), and each
-project can hide/re-gate actions via the "menu" block of project_settings.json
-— see menu_spec's docstring. This module only draws.
+project can hide/re-gate actions via 02_pipeline/menu.json — see menu_spec's
+docstring. This module only draws.
 """
 
 import os
@@ -13,27 +13,24 @@ from . import operators as _ops
 from . import menu_spec
 from . import settings_io
 
-# project_settings.json is read on every menu open — cache it by file mtime so
-# the menu stays instant and still picks up an edited config without restarting.
-_SETTINGS_CACHE = {"path": "", "mtime": None, "data": {}}
+# menu.json is read on every menu open — cache it by file mtime so the menu
+# stays instant and still picks up an edited config without restarting.
+_MENU_CACHE = {"path": "", "mtime": None, "data": {}}
 
 
-def _menu_settings() -> dict:
+def _menu_config() -> dict:
     root = settings_io.find_project_root()
     if not root:
         return {}
-    path = settings_io.settings_path(root)
+    path = settings_io.menu_path(root)
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return {}
-    if (_SETTINGS_CACHE["path"], _SETTINGS_CACHE["mtime"]) != (path, mtime):
-        try:
-            data = settings_io.load_settings(root)
-        except Exception:  # noqa: BLE001 — malformed config: fall back to defaults
-            data = {}
-        _SETTINGS_CACHE.update(path=path, mtime=mtime, data=data)
-    return _SETTINGS_CACHE["data"]
+        return {}   # no menu.json — built-in defaults
+    if (_MENU_CACHE["path"], _MENU_CACHE["mtime"]) != (path, mtime):
+        _MENU_CACHE.update(path=path, mtime=mtime,
+                           data=settings_io.load_menu(root))
+    return _MENU_CACHE["data"]
 
 
 class FLUMEN_MT_menu(bpy.types.Menu):
@@ -51,7 +48,7 @@ class FLUMEN_MT_menu(bpy.types.Menu):
                          icon="INFO")
 
         entries = menu_spec.resolve_menu(menu_spec.task_ctx(task),
-                                         _menu_settings())
+                                         _menu_config())
         group = None
         for e in entries:
             if e["group"] != group:
