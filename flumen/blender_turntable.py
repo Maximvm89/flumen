@@ -395,25 +395,37 @@ def run_template_mode():
         # their front along -Y (Blender's front view). Yaw the asset around
         # the socket so that front meets THIS template's camera at the first
         # frame — modelers never rotate a model to please a turntable again.
-        # (Same math as flumen.turntable.face_camera_yaw — inlined because
-        # this script runs inside Blender's python, not the toolkit's.)
+        # Everything is measured on the EVALUATED depsgraph: right after
+        # parenting, the plain matrix_world can be stale (missing the socket's
+        # own rotation — this template's socket sits at -96°), which is exactly
+        # how the asset used to come out sideways. The result is written to
+        # matrix_basis in socket space, bypassing the world-setter entirely.
+        # (Yaw math = flumen.turntable.face_camera_yaw — inlined because this
+        # script runs inside Blender's python, not the toolkit's.)
         if os.environ.get("FLUMEN_TT_FACE_CAMERA", "1") != "0" and scene.camera:
             try:
                 scene.frame_set(scene.frame_start)
             except Exception:  # noqa: BLE001
                 pass
-            to_cam = scene.camera.matrix_world.translation - target
-            fx, fy = 0.0, -1.0                      # asset front: -Y
-            yaw = math.atan2(fx * to_cam.y - fy * to_cam.x,
-                             fx * to_cam.x + fy * to_cam.y)
+            deps = bpy.context.evaluated_depsgraph_get()
+            sock_world = ctrl.evaluated_get(deps).matrix_world.copy()
+            cam_pos = scene.camera.evaluated_get(deps).matrix_world.translation
+            # The authored front (-Y in the model file) as it now stands in the
+            # template world = the socket's rotation applied to -Y.
+            front = sock_world.to_3x3() @ mathutils.Vector((0.0, -1.0, 0.0))
+            to_cam = cam_pos - sock_world.translation
+            yaw = math.atan2(front.x * to_cam.y - front.y * to_cam.x,
+                             front.x * to_cam.x + front.y * to_cam.y)
             yaw += math.radians(
                 float(os.environ.get("FLUMEN_TT_FRONT_OFFSET", "0") or 0.0))
             if abs(yaw) > 1e-4:
-                spin = (mathutils.Matrix.Translation(target)
+                spin = (mathutils.Matrix.Translation(sock_world.translation)
                         @ mathutils.Matrix.Rotation(yaw, 4, "Z")
-                        @ mathutils.Matrix.Translation(-target))
+                        @ mathutils.Matrix.Translation(-sock_world.translation))
+                inv_sock = sock_world.inverted()
                 for obj in roots:
-                    obj.matrix_world = spin @ obj.matrix_world
+                    world = obj.evaluated_get(deps).matrix_world.copy()
+                    obj.matrix_basis = inv_sock @ (spin @ world)
                 bpy.context.view_layer.update()
                 print(f"[Flumen] faced asset to the camera "
                       f"(yaw {math.degrees(yaw):.1f}°)")
