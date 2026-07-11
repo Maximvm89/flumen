@@ -686,7 +686,7 @@ class MainWindow(QMainWindow):
         b_sheet.clicked.connect(self._open_review_sheet)
         ops.addWidget(b_sheet)
         ops.addStretch(1)
-        b_delete = QPushButton("Delete review…")
+        b_delete = self.b_delete_review = QPushButton("Delete review…")
         b_delete.setToolTip("Delete the selected review's turntable + texture sheet "
                             "from the server and locally (the published look is kept).")
         b_delete.clicked.connect(self._delete_review)
@@ -866,8 +866,20 @@ class MainWindow(QMainWindow):
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Fetching texture sheet…")
 
+    def _can_delete_remote(self) -> bool:
+        """Server-side deletions are supervisor-only. An empty roster (project
+        not yet initialized) allows — same bootstrap rule as roster editing."""
+        if not self._roster:
+            return True
+        return usersmod.is_supervisor(self._roster, self._creds_user_safe())
+
     def _delete_review(self):
         if not self.cfg:
+            return
+        if not self._can_delete_remote():
+            QMessageBox.warning(self, "Supervisors only",
+                                "Deleting review media from the server is "
+                                "restricted to supervisors.")
             return
         items = self._selected_review_items()
         if not items:
@@ -1440,6 +1452,12 @@ class MainWindow(QMainWindow):
             self._busy_buttons(False)
             self._tasks, self._roster = result
             self._render_tasks()
+            # Server-side deletion is supervisor-only — reflect it in the UI.
+            can = self._can_delete_remote()
+            self.b_delete_review.setEnabled(can)
+            if not can:
+                self.b_delete_review.setToolTip(
+                    "Deleting from the server is restricted to supervisors.")
             self.status.showMessage(f"{len(self._tasks)} task(s) loaded.")
 
         self._busy_buttons(True)
@@ -1697,6 +1715,9 @@ class MainWindow(QMainWindow):
         act_elements = menu.addAction("Elements…") if t.get("type") == "shot" else None
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
+        act_delete.setEnabled(self._can_delete_remote())
+        if not act_delete.isEnabled():
+            act_delete.setToolTip("Supervisors only.")
         chosen = menu.exec(self.tasks_table.viewport().mapToGlobal(pos))
         if chosen == act_open:
             self._open_task_in_blender(t)
@@ -1965,6 +1986,11 @@ class MainWindow(QMainWindow):
 
     def _delete_task(self, task: dict):
         if not self.cfg:
+            return
+        if not self._can_delete_remote():
+            QMessageBox.warning(self, "Supervisors only",
+                                "Deleting tasks from the server is restricted "
+                                "to supervisors.")
             return
         if QMessageBox.question(
                 self, "Delete task?",
