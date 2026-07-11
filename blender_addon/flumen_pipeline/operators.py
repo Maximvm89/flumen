@@ -2120,6 +2120,66 @@ def _element_holder(context, element_id):
     return holder
 
 
+def _missing_libraries():
+    """Libraries whose .blend no longer exists on disk (e.g. local publishes
+    cleaned away after Build shot linked them)."""
+    out = set()
+    for lib in bpy.data.libraries:
+        try:
+            if not os.path.isfile(bpy.path.abspath(lib.filepath)):
+                out.add(lib)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def _element_content_broken(holder, missing_libs=None):
+    """True when an element holder's content can't load: its publish file is
+    gone from disk (placeholder data) or the holder is simply empty."""
+    if len(holder.all_objects) == 0 and len(holder.children) == 0:
+        return True
+    libs = _missing_libraries() if missing_libs is None else missing_libs
+    if not libs:
+        return False
+
+    def _uses_missing(idblock):
+        if getattr(idblock, "library", None) in libs:
+            return True
+        ov = getattr(idblock, "override_library", None)
+        ref = getattr(ov, "reference", None) if ov else None
+        return ref is not None and ref.library in libs
+
+    return (any(_uses_missing(c) for c in holder.children_recursive)
+            or any(_uses_missing(o) for o in holder.all_objects))
+
+
+def _remove_collection_tree(coll):
+    """Delete a collection, its sub-collections and their objects."""
+    for sub in list(coll.children):
+        _remove_collection_tree(sub)
+    for o in list(coll.objects):
+        try:
+            bpy.data.objects.remove(o, do_unlink=True)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        bpy.data.collections.remove(coll)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _clear_element_holder(holder):
+    """Drop everything under an element holder (rebuild of broken content);
+    the holder itself stays so the loaders reuse it."""
+    for child in list(holder.children):
+        _remove_collection_tree(child)
+    for o in list(holder.objects):
+        try:
+            bpy.data.objects.remove(o, do_unlink=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _link_collection_override(context, blend_local, coll_name, holder):
     """LINK a named collection from a published .blend and make a fully-editable
     library override nested under `holder`. The core loader shared by shot
@@ -3018,6 +3078,7 @@ class FLUMEN_AssemblyItem(bpy.types.PropertyGroup):
     kind: bpy.props.StringProperty()
     detail: bpy.props.StringProperty()
     present: bpy.props.BoolProperty(default=False)
+    broken: bpy.props.BoolProperty(default=False)   # in scene but content missing
     steps_csv: bpy.props.StringProperty()    # available steps, comma-separated
     step: bpy.props.EnumProperty(name="Step", items=_step_enum_items,
                                  description="Which published step to bring in")
@@ -3064,7 +3125,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                              "app (right-click the shot ▸ Elements…).")
             return {"FINISHED"} if msg else {"CANCELLED"}
 
-        existing = {c.name for c in bpy.data.collections}
+        missing_libs = _missing_libraries()
         rows = context.window_manager.flumen_build_items
         rows.clear()
         for el in listed:
@@ -3072,8 +3133,14 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             it.payload = json.dumps(el)
             it.kind = el.get("kind", "asset")
             it.label = el.get("label") or el.get("id", "")
-            it.present = ELEMENT_HOLDER_PREFIX + str(el.get("id", "")) in existing
-            it.enabled = not it.present          # default: build the new ones
+            holder = bpy.data.collections.get(
+                ELEMENT_HOLDER_PREFIX + str(el.get("id", "")))
+            it.present = holder is not None
+            # In scene but its publish is gone from disk (e.g. local files
+            # cleaned): offer a rebuild, pre-checked.
+            it.broken = (holder is not None
+                         and _element_content_broken(holder, missing_libs))
+            it.enabled = (not it.present) or it.broken
             it.detail = _element_detail(el, it.present)
             steps = el.get("available_steps") or []
             it.steps_csv = ",".join(steps)
@@ -3089,14 +3156,19 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         for it in context.window_manager.flumen_build_items:
             row = box.row(align=True)
             cb = row.row()
-            cb.enabled = not it.present          # present ones can't be re-built here
+            # healthy present elements can't be re-built (protects animation);
+            # broken ones (publish gone from disk) can — that's the repair path.
+            cb.enabled = (not it.present) or it.broken
             cb.prop(it, "enabled", text="")
-            icon = ("CHECKMARK" if it.present
+            icon = ("ERROR" if it.broken
+                    else "CHECKMARK" if it.present
                     else "OUTLINER_OB_CAMERA" if it.kind == "camera"
                     else "OUTLINER_OB_ARMATURE")
             row.label(text=it.label, icon=icon)
-            if it.present:
+            if it.present and not it.broken:
                 row.label(text="already in scene")
+            elif it.broken:
+                row.label(text="missing on disk — rebuild")
             elif it.kind == "camera":
                 row.label(text=it.detail)
             else:
@@ -3109,13 +3181,16 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         task = active_task()
         if not task:
             return {"CANCELLED"}
-        chosen, picks, present_ct, deselected_ct = [], {}, 0, 0
+        chosen, picks, rebuild = [], {}, set()
+        present_ct, deselected_ct = 0, 0
         for it in context.window_manager.flumen_build_items:
-            if it.present:
+            if it.present and not (it.broken and it.enabled):
                 present_ct += 1
             elif it.enabled:
                 eid = json.loads(it.payload)["id"]
                 chosen.append(eid)
+                if it.present:                       # broken + ticked -> repair
+                    rebuild.add(eid)
                 if it.kind == "asset" and it.step:   # honour the chosen step
                     picks[eid] = it.step
             else:
@@ -3131,17 +3206,39 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             return {"FINISHED"}
 
         # downloads only the chosen, at their chosen steps
+        missing_before = _missing_libraries()
         data = self._resolve(task, only=chosen, picks=picks)
         elements = (data or {}).get("elements")
         if not elements:
             self.report({"ERROR"}, "Couldn't fetch the selected elements — check "
                                    "your connection and retry.")
             return {"CANCELLED"}
+        # Repair, gentlest first: the resolve just re-downloaded the publishes.
+        # If a previously-missing library file is back on disk, reloading it
+        # heals the existing links in place — animation and posing survive.
+        healed_libs = 0
+        for lib in missing_before:
+            try:
+                if os.path.isfile(bpy.path.abspath(lib.filepath)):
+                    lib.reload()
+                    healed_libs += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Flumen] library reload failed ({lib.filepath}): {exc}")
         # Per-element animation: each element resolves to its own newest version.
         anim_elements = ((data or {}).get("anim") or {}).get("elements") or {}
 
-        built, skipped, animated, dressed = [], [], 0, 0
+        built, skipped, repaired, animated, dressed = [], [], [], 0, 0
         for el in elements:
+            eid = str(el.get("id", ""))
+            if eid in rebuild:
+                holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
+                if holder is not None:
+                    if not _element_content_broken(holder):
+                        repaired.append(el)   # reload healed it — keep as-is
+                        continue
+                    # still broken (e.g. the linked version is gone from the
+                    # server): drop the dead content and relink fresh
+                    _clear_element_holder(holder)
             loader = _ELEMENT_LOADERS.get(el.get("kind"))
             if loader is None:
                 skipped.append((el, "unsupported kind"))
@@ -3187,6 +3284,9 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             pass
 
         parts = [f"Built {len(built)} element(s)"]
+        if repaired:
+            parts.append(f"repaired {len(repaired)} in place (files re-fetched, "
+                         f"animation kept)")
         if dressed:
             parts.append(f"placed {dressed} dressing prop(s)")
         if animated:
@@ -3200,7 +3300,8 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         if skipped:
             parts.append("skipped " + ", ".join(
                 f"{e.get('id', '?')} ({err})" for e, err in skipped))
-        self.report({"INFO"} if built else {"WARNING"}, "; ".join(parts))
+        self.report({"INFO"} if built or repaired else {"WARNING"},
+                    "; ".join(parts))
         return {"FINISHED"} if built else {"CANCELLED"}
 
     def _resolve(self, task, list_only=False, only=None, picks=None):

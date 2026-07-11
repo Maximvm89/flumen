@@ -127,6 +127,32 @@ def main():
         print("[playblast] no camera in the shot; nothing to render.")
         return
 
+    # A shot's geometry is all LINKED (only the camera is local). If the element
+    # publishes are missing on this machine (e.g. cleaned from disk after Build
+    # shot), Blender loads empty placeholders and the clip renders as an empty
+    # void — fail loudly instead of shipping that to dailies.
+    missing = [lib.filepath for lib in bpy.data.libraries
+               if not os.path.isfile(bpy.path.abspath(lib.filepath))]
+    empty = [c.name for c in bpy.data.collections
+             if c.name.startswith("element__") and len(c.all_objects) == 0]
+    if empty:
+        print("[playblast] ERROR: these shot elements are EMPTY — the playblast "
+              "would render a void:")
+        for name in empty:
+            print(f"    {name}")
+        if missing:
+            print("[playblast] missing linked libraries:")
+            for m in missing:
+                print(f"    {m}")
+        print("[playblast] Re-run 'Build shot' (or re-open the task from the "
+              "Workspace app) to re-fetch the publishes, then publish again.")
+        return
+    if missing:
+        print("[playblast] warning: missing linked libraries (render may lack "
+              "content):")
+        for m in missing:
+            print(f"    {m}")
+
     r = scene.render
     requested = _env("FLUMEN_PB_ENGINE", "BLENDER_EEVEE_NEXT")
     engine = _set_engine(r, requested if requested in _OK_ENGINES else "BLENDER_EEVEE_NEXT")
