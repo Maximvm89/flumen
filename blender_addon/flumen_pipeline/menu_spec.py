@@ -44,6 +44,8 @@ ACTIONS = {
     "flumen.build_shot": {"text": "Build shot",
                           "icon": "OUTLINER_OB_GROUP_INSTANCE"},
     "flumen.load_animation": {"text": "Load animation…", "icon": "ANIM_DATA"},
+    "flumen.cycle_format": {"text": "Preview format (16:9 ⇄ 9:16)",
+                            "icon": "ARROW_LEFTRIGHT"},
     "flumen.add_review_camera": {"icon": "VIEW_CAMERA"},
     "flumen.render_review": {"icon": "RENDER_STILL"},
     "flumen.save_to_task": {"icon": "FILE_TICK"},
@@ -88,7 +90,8 @@ DEFAULT_MENUS = {
     "asset:*": (["flumen.apply_look", SEPARATOR]
                 + _TASK_CORE + _ASSET_TOOLS + _TAIL),
     # Shots: Build shot resolves per step (rigs now, caches when they land).
-    "shot:*": (["flumen.build_shot", "flumen.load_animation", SEPARATOR]
+    "shot:*": (["flumen.build_shot", "flumen.load_animation",
+                "flumen.cycle_format", SEPARATOR]
                + _TASK_CORE + _TAIL),
 }
 

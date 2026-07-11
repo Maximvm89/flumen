@@ -90,6 +90,7 @@
       "---",
       "flumen.build_shot",
       "flumen.load_animation",
+      "flumen.cycle_format",
       "---",
       "flumen.run_checks",
       "flumen.auto_fix",
@@ -102,6 +103,7 @@
     "shot:animation": [
       "flumen.build_shot",
       "flumen.load_animation",
+      "flumen.cycle_format",
       "---",
       "flumen.add_review_camera",
       "flumen.render_review",
@@ -118,6 +120,7 @@
     "shot:lighting": [
       "flumen.build_shot",
       "flumen.load_animation",
+      "flumen.cycle_format",
       "---",
       "flumen.add_review_camera",
       "flumen.render_review",
@@ -134,6 +137,7 @@
     "shot:comp": [
       "flumen.build_shot",
       "flumen.load_animation",
+      "flumen.cycle_format",
       "---",
       "flumen.add_review_camera",
       "flumen.render_review",

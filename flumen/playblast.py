@@ -30,6 +30,25 @@ def playblast_settings(project_settings: dict) -> dict:
     return s
 
 
+def delivery_formats(project_settings: dict) -> list[dict]:
+    """The project's delivery formats (top-level "formats" block) — e.g. 16:9 +
+    9:16 for a dual horizontal/vertical delivery. Each: {name, resolution_x,
+    resolution_y}. Empty when the project renders a single format (legacy)."""
+    out = []
+    for f in (project_settings or {}).get("formats") or []:
+        name = str(f.get("name") or "").strip()
+        x, y = int(f.get("resolution_x") or 0), int(f.get("resolution_y") or 0)
+        if name and x > 0 and y > 0:
+            out.append({"name": name, "resolution_x": x, "resolution_y": y})
+    return out
+
+
+def formats_env(formats: list[dict]) -> str:
+    """Env encoding for the headless render: '16x9:1920x1080,9x16:1080x1920'."""
+    return ",".join(f"{f['name']}:{f['resolution_x']}x{f['resolution_y']}"
+                    for f in formats)
+
+
 def _overlay_element_info(frames_dir: str, task: dict, version_label: str) -> None:
     """Burn an element breakdown HUD into each playblast frame: every element, the
     step it was loaded from, and the published animation version playing. Reads the
@@ -78,10 +97,12 @@ def _overlay_element_info(frames_dir: str, task: dict, version_label: str) -> No
         img.save(fp)
 
 
-def playblast_rel(task: dict, version_label: str) -> str:
+def playblast_rel(task: dict, version_label: str, fmt: str = "") -> str:
     """Where the playblast lands (relative to remote_root / local_root):
-    07_dailies/<entity>/<step>/<version_label>_playblast.mp4"""
-    return f"07_dailies/{task['entity']}/{task['step']}/{version_label}_playblast.mp4"
+    07_dailies/<entity>/<step>/<version_label>_playblast[_<fmt>].mp4"""
+    suffix = f"_{fmt}" if fmt else ""
+    return (f"07_dailies/{task['entity']}/{task['step']}/"
+            f"{version_label}_playblast{suffix}.mp4")
 
 
 def run_playblast(cfg, creds, shot_blend: str, task_id: str,
@@ -106,13 +127,23 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
             print(f"error: task not found: {task_id}")
             return 1
 
-    pb = playblast_settings(_load_project_settings(local_root))
-    rel = playblast_rel(task or {"entity": "?", "step": "?"}, version_label)
+    settings = _load_project_settings(local_root)
+    pb = playblast_settings(settings)
+    # Dual-delivery projects render every format (e.g. 16:9 + 9:16). A single
+    # unnamed format keeps the legacy one-clip behavior/naming.
+    formats = delivery_formats(settings) or [
+        {"name": "", "resolution_x": pb["resolution_x"],
+         "resolution_y": pb["resolution_y"]}]
+    t = task or {"entity": "?", "step": "?"}
+    rel = playblast_rel(t, version_label, formats[0]["name"])
     out_local = os.path.join(local_root, *rel.split("/"))
 
     if dry_run:
-        print(f"(dry-run) would playblast {shot_blend}\n"
-              f"          -> {out_local}\n          publish -> {rel}")
+        for f in formats:
+            frel = playblast_rel(t, version_label, f["name"])
+            print(f"(dry-run) would playblast {shot_blend} "
+                  f"[{f['name'] or 'default'} {f['resolution_x']}x"
+                  f"{f['resolution_y']}]\n          publish -> {frel}")
         return 0
 
     blender = find_blender(cfg.blender_path)
@@ -128,33 +159,55 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         env["BLENDER_OCIO"] = ocio
     env.update({
         "FLUMEN_PB_FRAMES_DIR": frames_dir,
-        "FLUMEN_PB_RESX": str(pb["resolution_x"]),
-        "FLUMEN_PB_RESY": str(pb["resolution_y"]),
+        "FLUMEN_PB_RESX": str(formats[0]["resolution_x"]),
+        "FLUMEN_PB_RESY": str(formats[0]["resolution_y"]),
         "FLUMEN_PB_ENGINE": str(pb["engine"]),
         "FLUMEN_PB_COLOR": str(pb.get("color", "TEXTURE")),
         "FLUMEN_PB_VIEW": str(pb.get("view_transform", "")),
     })
+    if len(formats) > 1 or formats[0]["name"]:
+        env["FLUMEN_PB_FORMATS"] = formats_env(formats)
 
     script = _bundled_path("blender_playblast.py")
     print("Rendering playblast frames…")
     subprocess.run([blender, "--background", shot_blend, "--python", script],
                    env=env, check=True)
 
-    _overlay_element_info(frames_dir, task, version_label)
-
+    # One Blender session rendered every format; encode + upload each.
+    from . import ledger, syncsketch
+    outputs = []      # (fmt_name, rel, local_path)
     fps = _meta_fps(frames_dir, pb["fps"])
-    print(f"Encoding MP4 -> {out_local}")
-    ok = _encode_mp4(frames_dir, out_local, fps)
+    for f in formats:
+        fdir = (os.path.join(frames_dir, f["name"]) if f["name"] else frames_dir)
+        if not os.path.isdir(fdir):
+            print(f"error: no frames rendered for format "
+                  f"'{f['name'] or 'default'}'.")
+            continue
+        _overlay_element_info(fdir, task, version_label)
+        frel = playblast_rel(t, version_label, f["name"])
+        flocal = os.path.join(local_root, *frel.split("/"))
+        print(f"Encoding MP4 -> {flocal}")
+        if _encode_mp4(fdir, flocal, fps) and os.path.isfile(flocal):
+            outputs.append((f["name"], frel, flocal))
     _cleanup_dir(frames_dir)
-    if not ok or not os.path.isfile(out_local):
+    if not outputs:
         print("error: playblast encode produced no file.")
         return 1
 
     with SFTPClient(creds) as client:
-        client.upload(out_local, cfg.remote_root.rstrip("/") + "/" + rel)
-        record_turntable(client, cfg.remote_root, task_id, rel, creds.user)
-        from . import syncsketch
-        syncsketch.announce_media(client, cfg.remote_root, out_local,
-                                  os.path.basename(rel))
-    print(f"published playblast -> {cfg.remote_root}/{rel}")
+        rr = cfg.remote_root.rstrip("/")
+        for _name, frel, flocal in outputs:
+            client.upload(flocal, rr + "/" + frel)
+        # The first format is the review item (Dailies tab); the others ride
+        # along as ledgered dailies files + SyncSketch uploads.
+        record_turntable(client, cfg.remote_root, task_id, outputs[0][1],
+                         creds.user)
+        if len(outputs) > 1:
+            ledger.record_uploads(client, cfg.remote_root, creds.user,
+                                  [frel for _n, frel, _l in outputs[1:]])
+        for _name, frel, flocal in outputs:
+            syncsketch.announce_media(client, cfg.remote_root, flocal,
+                                      os.path.basename(frel))
+    for _name, frel, _local in outputs:
+        print(f"published playblast -> {cfg.remote_root}/{frel}")
     return 0

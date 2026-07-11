@@ -2873,6 +2873,39 @@ class FLUMEN_OT_render_review(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class FLUMEN_OT_cycle_format(bpy.types.Operator):
+    bl_idname = "flumen.cycle_format"
+    bl_label = "Preview format"
+    bl_description = ("Cycle the scene resolution through the project's "
+                      "delivery formats (e.g. 16:9 ⇄ 9:16) so you can compose "
+                      "the shot for every crop through the same camera")
+
+    def execute(self, context):
+        try:
+            root = settings_io.find_project_root(_pref_local_root())
+            settings = settings_io.load_settings(root) if root else {}
+        except Exception:  # noqa: BLE001
+            settings = {}
+        formats = [f for f in (settings.get("formats") or [])
+                   if f.get("name") and f.get("resolution_x")
+                   and f.get("resolution_y")]
+        if len(formats) < 2:
+            self.report({"INFO"}, "No delivery formats configured for this "
+                                  "project (project_settings 'formats').")
+            return {"CANCELLED"}
+        r = context.scene.render
+        idx = next((i for i, f in enumerate(formats)
+                    if (int(f["resolution_x"]), int(f["resolution_y"]))
+                    == (r.resolution_x, r.resolution_y)), -1)
+        nxt = formats[(idx + 1) % len(formats)]
+        r.resolution_x = int(nxt["resolution_x"])
+        r.resolution_y = int(nxt["resolution_y"])
+        self.report({"INFO"}, f"Previewing {nxt['name']} "
+                              f"({r.resolution_x}x{r.resolution_y}) — the "
+                              f"playblast renders every format regardless.")
+        return {"FINISHED"}
+
+
 def _load_camera_element(context, element):
     """The shot's own camera. If layout published one, APPEND it (editable shot
     data); otherwise build a fresh Dolly camera rig named after the shot."""
@@ -3326,6 +3359,7 @@ CLASSES = (
     FLUMEN_OT_show_log,
     FLUMEN_OT_add_review_camera,
     FLUMEN_OT_render_review,
+    FLUMEN_OT_cycle_format,
     FLUMEN_OT_publish_upload,
     FLUMEN_OT_load_model,
     FLUMEN_OT_apply_look,

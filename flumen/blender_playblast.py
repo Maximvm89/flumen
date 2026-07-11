@@ -110,12 +110,25 @@ def main():
     r = scene.render
     requested = _env("FLUMEN_PB_ENGINE", "BLENDER_EEVEE_NEXT")
     engine = _set_engine(r, requested if requested in _OK_ENGINES else "BLENDER_EEVEE_NEXT")
-    r.resolution_x = int(_env("FLUMEN_PB_RESX", "1280"))
-    r.resolution_y = int(_env("FLUMEN_PB_RESY", "720"))
+    # Delivery formats: "16x9:1920x1080,9x16:1080x1920" renders the shot once
+    # per format into <frames_dir>/<name>/. Absent -> single legacy render.
+    formats = []
+    for part in _env("FLUMEN_PB_FORMATS", "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        try:
+            name, res = part.split(":", 1)
+            x, y = res.lower().split("x", 1)
+            formats.append((name.strip(), int(x), int(y)))
+        except ValueError:
+            print(f"[playblast] bad format spec ignored: {part!r}")
+    if not formats:
+        formats = [("", int(_env("FLUMEN_PB_RESX", "1280")),
+                    int(_env("FLUMEN_PB_RESY", "720")))]
     r.resolution_percentage = 100
     r.film_transparent = False
     r.image_settings.file_format = "PNG"
-    r.filepath = os.path.join(frames_dir, "frame_")
 
     # Burn frame number + camera into the corner so reviewers can call timings.
     r.use_stamp = True
@@ -172,13 +185,21 @@ def main():
                              "step": c.get("flumen_step", "") or c.get("legami_step", ""),
                              "anim": c.get("flumen_anim", "") or c.get("legami_anim", "")})
     elements.sort(key=lambda e: e["id"])
-    with open(os.path.join(frames_dir, "_pb_info.json"), "w", encoding="utf-8") as fh:
-        json.dump({"elements": elements}, fh)
 
-    print(f"[playblast] {engine} {r.resolution_x}x{r.resolution_y} "
-          f"frames {scene.frame_start}-{scene.frame_end} cam={scene.camera.name}")
     _install_render_progress(scene)
-    bpy.ops.render.render(animation=True)
+    for name, x, y in formats:
+        fdir = os.path.join(frames_dir, name) if name else frames_dir
+        os.makedirs(fdir, exist_ok=True)
+        r.resolution_x, r.resolution_y = x, y
+        r.filepath = os.path.join(fdir, "frame_")
+        with open(os.path.join(fdir, "_pb_info.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"elements": elements}, fh)
+        print(f"[playblast] {engine} {x}x{y}"
+              + (f" [{name}]" if name else "")
+              + f" frames {scene.frame_start}-{scene.frame_end} "
+                f"cam={scene.camera.name}")
+        bpy.ops.render.render(animation=True)
 
 
 main()

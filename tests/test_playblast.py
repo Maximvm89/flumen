@@ -36,3 +36,27 @@ def test_run_playblast_dry_run(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "SH0010_layout_v001_playblast.mp4" in out
+
+
+def test_delivery_formats_parse_and_env():
+    settings = {"formats": [
+        {"name": "16x9", "resolution_x": 1920, "resolution_y": 1080},
+        {"name": "9x16", "resolution_x": 1080, "resolution_y": 1920},
+        {"name": "", "resolution_x": 10, "resolution_y": 10},      # no name
+        {"name": "bad", "resolution_x": 0, "resolution_y": 100},   # bad res
+    ]}
+    fmts = playblast.delivery_formats(settings)
+    assert [f["name"] for f in fmts] == ["16x9", "9x16"]
+    assert playblast.formats_env(fmts) == "16x9:1920x1080,9x16:1080x1920"
+    assert playblast.delivery_formats({}) == []       # single-format project
+
+
+def test_playblast_rel_per_format():
+    t = {"entity": "SEQ010/SH0010", "step": "layout"}
+    assert playblast.playblast_rel(t, "shot_v003", "16x9") == \
+        "07_dailies/SEQ010/SH0010/layout/shot_v003_playblast_16x9.mp4"
+    assert playblast.playblast_rel(t, "shot_v003", "9x16").endswith(
+        "_playblast_9x16.mp4")
+    # legacy single-format naming unchanged
+    assert playblast.playblast_rel(t, "shot_v003") == \
+        "07_dailies/SEQ010/SH0010/layout/shot_v003_playblast.mp4"

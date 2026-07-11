@@ -71,7 +71,12 @@
   "publish": {
     "locator": "PUBLISH"
   },
-  "_playblast_note": "Shot playblast (layout/anim): a render of the shot's frame range through the shot camera, pushed to 07_dailies on publish. engine BLENDER_EEVEE_NEXT renders full materials+textures+lighting (matches the shaded viewport; a soft key light is added if the shot has none). BLENDER_WORKBENCH is a fast flat/shadeless pass; for it, color=TEXTURE shows the texture maps. resolution/fps for the preview.",
+  "_formats_note": "Delivery formats: every shot playblast renders ONCE PER FORMAT through the same camera (…_playblast_16x9.mp4 + …_playblast_9x16.mp4). The first is the review item in the Dailies tab; all upload to dailies + SyncSketch. In Blender, 'Preview format' cycles the scene resolution through these so layout can compose for every crop. Remove the block for single-format projects.",
+  "formats": [
+    { "name": "16x9", "resolution_x": 1920, "resolution_y": 1080 },
+    { "name": "9x16", "resolution_x": 1080, "resolution_y": 1920 }
+  ],
+  "_playblast_note": "Shot playblast (layout/anim): a render of the shot's frame range through the shot camera, pushed to 07_dailies on publish. engine BLENDER_EEVEE_NEXT renders full materials+textures+lighting (matches the shaded viewport; a soft key light is added if the shot has none). BLENDER_WORKBENCH is a fast flat/shadeless pass; for it, color=TEXTURE shows the texture maps. resolution/fps used when no 'formats' block is set.",
   "playblast": {
     "engine": "BLENDER_EEVEE_NEXT",
     "color": "TEXTURE",
