@@ -1067,6 +1067,7 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             _EXISTING_DRESSINGS = _fetch_existing_dressings(task["id"])
         if task.get("type") == "shot":
             _prepare_shot_publish_anim(context, task)
+            context.window_manager.flumen_force_publish = False
         return context.window_manager.invoke_props_dialog(
             self, width=480, title="Publish", confirm_text="Publish")
 
@@ -1098,6 +1099,7 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                     tag = (f"unchanged (= {it.ref})" if it.status == "unchanged"
                            else it.status)
                     row.label(text=tag)
+                col.prop(context.window_manager, "flumen_force_publish")
             col.prop(context.window_manager, "flumen_render_turntable",
                      text="Render playblast")
         col.separator()
@@ -1259,14 +1261,17 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         elif task.get("type") == "shot":
             # Publish only the elements the artist checked in the dialog (changed/new
             # are pre-checked). If there are animated elements but none are selected
-            # (nothing changed) -> block: no new version, no duplicate data.
+            # (nothing changed) -> block: no new version, no duplicate data. "Force
+            # publish" overrides — camera/layout tweaks and playblast re-renders
+            # deserve a new version even with identical animation.
             rows = context.window_manager.flumen_publish_items
             chosen = {it.element_id for it in rows if it.enabled}
-            if len(rows) and not chosen:
+            if len(rows) and not chosen \
+                    and not context.window_manager.flumen_force_publish:
                 last = _SHOT_PUBLISH.get("last_label", "")
                 self.report({"ERROR"}, "No animation changes"
                             + (f" since {last}" if last else "")
-                            + " — nothing to publish.")
+                            + " — nothing to publish (or tick Force publish).")
                 return {"CANCELLED"}
             # Stamp every element holder for the playblast HUD: its step (rig/model/
             # camera) and the anim version playing — the newest published version, or
