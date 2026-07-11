@@ -67,8 +67,8 @@ _ASSET_TOOLS = [SEPARATOR, "flumen.add_publish_locator",
                 "flumen.preview_turntable"]
 
 DEFAULT_MENUS = {
-    "no_task": (["flumen.add_publish_locator", "flumen.preview_turntable"]
-                + _TAIL),
+    # No task: only the general project tools (asset tools live on asset steps).
+    "no_task": _TAIL[1:],
     # Assets. Environments variants: no turntable (envs never render one).
     "asset:model": _TASK_CORE + _ASSET_TOOLS + _TAIL,
     "asset:model:environments": (_TASK_CORE

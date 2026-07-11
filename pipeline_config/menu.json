@@ -2,9 +2,6 @@
   "_note": "Flumen menu in Blender, one list per context. Key = '<type>:<step>' ('asset:model', 'shot:layout'), '<type>:<step>:<category>' for an asset-category variant ('asset:model:environments'), '<type>:*' for any step of that type without its own list, 'no_task' when Blender is opened without a task. Most specific key wins. Each list is drawn top to bottom in this exact order; '---' is a separator. A key listed here fully replaces the built-in menu for that context; delete a key to fall back to the built-in default. Unknown action names are skipped (typos can't break the menu). Apply with: flumen publish-config",
   "menus": {
     "no_task": [
-      "flumen.add_publish_locator",
-      "flumen.preview_turntable",
-      "---",
       "flumen.apply_project_settings",
       "flumen.verify_ocio",
       "---",

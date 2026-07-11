@@ -34,10 +34,12 @@ def test_context_keys_most_specific_first():
         ["shot:layout", "shot:*"]
 
 
-def test_no_task_menu():
+def test_no_task_menu_is_general_tools_only():
     ops = _ops(M.resolve_menu(M.task_ctx(None)))
     assert "flumen.publish" not in ops
-    assert "flumen.add_publish_locator" in ops
+    assert "flumen.add_publish_locator" not in ops   # asset tools need a task
+    assert "flumen.preview_turntable" not in ops
+    assert ops[0] == "flumen.apply_project_settings"
     assert "flumen.show_log" in ops
 
 
