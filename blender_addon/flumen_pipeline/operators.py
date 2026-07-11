@@ -2122,18 +2122,46 @@ def _link_collection_override(context, blend_local, coll_name, holder):
     Returns (override_collection, error)."""
     if not blend_local or not os.path.isfile(blend_local):
         return None, "publish not found locally"
-    # Link the named collection (fall back to the file's first collection for
-    # pre-collection publishes).
-    with bpy.data.libraries.load(blend_local, link=True, relative=True) as (src, dst):
-        if coll_name and coll_name in src.collections:
-            dst.collections = [coll_name]
-        elif src.collections:
-            dst.collections = [src.collections[0]]
-        else:
-            dst.collections = []
-    linked = next((c for c in dst.collections if c is not None), None)
-    if linked is None:
+    # Candidate collections, best first: the exact name, then its dotted
+    # variants (newest suffix first). Old publishes made before the name-clash
+    # fix carry an EMPTY exact-named collection with the real content in
+    # 'name.005' — the fallback below walks candidates until one has objects.
+    with bpy.data.libraries.load(blend_local, link=False, assets_only=False) as (src, _):
+        available = list(src.collections)
+    candidates = []
+    if coll_name:
+        dotted = sorted((n for n in available
+                         if n != coll_name and n.split(".")[0] == coll_name),
+                        reverse=True)
+        candidates = ([coll_name] if coll_name in available else []) + dotted
+    if not candidates and available:
+        candidates = [available[0]]     # pre-collection publishes: first one
+    if not candidates:
         return None, "no linkable collection (republish the rig/model)"
+
+    linked = None
+    for cand in candidates:
+        with bpy.data.libraries.load(blend_local, link=True,
+                                     relative=True) as (src, dst):
+            dst.collections = [cand]
+        got = next((c for c in dst.collections if c is not None), None)
+        if got is None:
+            continue
+        if len(got.all_objects) > 0:
+            if cand != coll_name:
+                print(f"[Flumen] '{coll_name}' is empty in this publish — "
+                      f"linked '{cand}' instead (old name-clash publish; "
+                      f"republish to clean it up).")
+            linked = got
+            break
+        # empty candidate: unlink it again and try the next
+        try:
+            bpy.data.collections.remove(got)
+        except Exception:  # noqa: BLE001
+            pass
+    if linked is None:
+        return None, (f"collection '{coll_name}' has no content in this "
+                      f"publish — republish the asset")
 
     # Build a full, editable override hierarchy so the content is poseable/movable.
     try:
@@ -2892,6 +2920,22 @@ def _apply_build_frame_range(context):
     sc.frame_start, sc.frame_end = int(fs), int(fe)
     if not (int(fs) <= sc.frame_current <= int(fe)):
         sc.frame_current = int(fs)
+    # Setting the range doesn't scroll the timeline — the artist would still be
+    # LOOKING at the old 0-250 span. Frame every timeline/dope-sheet view.
+    try:
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type != "DOPESHEET_EDITOR":
+                    continue
+                region = next((r for r in area.regions if r.type == "WINDOW"),
+                              None)
+                if region is None:
+                    continue
+                with context.temp_override(window=window, area=area,
+                                           region=region):
+                    bpy.ops.action.view_all()
+    except Exception as exc:  # noqa: BLE001
+        print("[Flumen] timeline view framing skipped:", exc)
     return f"timeline {int(fs)}-{int(fe)}"
 
 
