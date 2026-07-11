@@ -1187,8 +1187,10 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                    f"{len(written)} texture file(s)"
         elif task["step"] == "dressing":
             # A dressing = the instance manifest (env + prop placements referencing
-            # published assets) + the working scene for reference. Light: everything
-            # in the scene is linked.
+            # published assets) + the working scene. Anything the artist modeled
+            # LOCALLY in the scene (quick props, kitbash, shaded inline) becomes
+            # the dressing's "extras": gathered into a collection inside the
+            # published .blend so Build shot can link it — no pre-publish needed.
             env = dressing_mod.collect_environment(bpy.data.collections)
             if not env or not env.get("asset"):
                 self.report({"ERROR"}, "No environment loaded — run 'Load "
@@ -1202,8 +1204,22 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                             f"{len(unmanaged)} prop holder(s) without a prop_root "
                             f"empty won't be in the manifest (use Add prop): "
                             + ", ".join(unmanaged[:3]))
+            extras = dressing_mod.collect_local_extras(bpy.data.objects)
+            extras_coll_name = f"{base}_extras" if extras else ""
             restore_review = _unlink_review_camera(context)
+            extras_coll = None
             try:
+                if extras:
+                    # Collections may hold an object many times over — an ADD
+                    # link is enough; the artist's layout is untouched and the
+                    # temp collection is removed after the copy is written.
+                    extras_coll = bpy.data.collections.new(extras_coll_name)
+                    context.scene.collection.children.link(extras_coll)
+                    for o in extras:
+                        try:
+                            extras_coll.objects.link(o)
+                        except Exception:  # noqa: BLE001
+                            pass
                 try:
                     bpy.ops.file.make_paths_relative()
                 except Exception:  # noqa: BLE001
@@ -1211,17 +1227,35 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
             finally:
                 restore_review()
+                if extras_coll is not None:
+                    try:
+                        context.scene.collection.children.unlink(extras_coll)
+                        bpy.data.collections.remove(extras_coll)
+                    except Exception:  # noqa: BLE001
+                        pass
             workfile_rel = _project_rel(pub_path)
             manifest = {
                 "dressing": dressing_name, "version": version,
                 "environment": env, "workfile_rel": workfile_rel,
                 "props": props,
             }
+            if extras:
+                manifest["extras"] = {"collection": extras_coll_name,
+                                      "count": len(extras)}
+                kind_extras = f" + {len(extras)} local extra(s)"
+            else:
+                kind_extras = ""
+            # Local extras may carry inline shading — normalize their textures
+            # into the sidecar folder (headless pass, no scene stripping).
+            post_script = os.path.join(os.path.dirname(__file__),
+                                       "blender_publish_post.py")
+            post_cmd = [bpy.app.binary_path, "-b", pub_path,
+                        "--python", post_script, "--", "--textures-only"]
             manifest_path = pub_path[:-6] + ".manifest.json"
             with open(manifest_path, "w") as fh:
                 json.dump(manifest, fh, indent=2)
             files = [pub_path, manifest_path]
-            kind = f"dressing '{dressing_name}': {len(props)} prop(s)"
+            kind = f"dressing '{dressing_name}': {len(props)} prop(s){kind_extras}"
         elif task.get("type") == "shot":
             # Publish only the elements the artist checked in the dialog (changed/new
             # are pre-checked). If there are animated elements but none are selected
@@ -2224,6 +2258,28 @@ def _apply_dressing_props(context, element_holder, element):
             if o.parent is None and o is not root:
                 o.parent = root
         built += 1
+    # Local extras — geometry the dresser modeled directly in the dressing
+    # scene, linked as one collection from the dressing publish. Transforms are
+    # already world-space in that file, so no placement empty is needed.
+    ex = payload.get("extras") or {}
+    if ex.get("blend_local") and ex.get("collection"):
+        sub_name = f"extras__{element.get('id', 'el')}"
+        if bpy.data.collections.get(sub_name) is not None:
+            skipped += 1                       # additive rebuild
+        else:
+            sub = bpy.data.collections.new(sub_name)
+            element_holder.children.link(sub)
+            _override, err = _link_collection_override(
+                context, ex["blend_local"], ex["collection"], sub)
+            if err:
+                print(f"[Flumen] dressing extras failed: {err}")
+                try:
+                    element_holder.children.unlink(sub)
+                    bpy.data.collections.remove(sub)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                built += 1
     return built, skipped
 
 

@@ -88,6 +88,34 @@ def collect_environment(collections) -> dict | None:
     return None
 
 
+# Renderable object types collected as local dressing extras. Lights, cameras
+# and bare empties stay personal to the artist's scene (empties that parent
+# extras geometry ride along via the parent chain at link time).
+EXTRAS_TYPES = frozenset({"MESH", "CURVE", "SURFACE", "META", "FONT",
+                          "CURVES", "POINTCLOUD", "VOLUME", "GPENCIL"})
+
+
+def collect_local_extras(objects) -> list:
+    """Objects the artist modeled DIRECTLY in the dressing scene — local
+    renderable geometry (not linked, not overrides, not managed empties).
+    These become part of the dressing: the publisher gathers them into an
+    extras collection inside the published .blend and Build shot links it.
+    Duck-typed: .type, .name, .library, .override_library, .data."""
+    out = []
+    for o in objects:
+        if getattr(o, "type", "") not in EXTRAS_TYPES:
+            continue
+        if (getattr(o, "library", None) is not None
+                or getattr(o, "override_library", None) is not None
+                or getattr(getattr(o, "data", None), "library", None) is not None):
+            continue    # linked environment / prop content
+        if getattr(o, "name", "").startswith(PROP_ROOT_PREFIX):
+            continue
+        out.append(o)
+    out.sort(key=lambda o: getattr(o, "name", ""))
+    return out
+
+
 def unmanaged_prop_holders(collections, objects) -> list[str]:
     """prop__* holder names that have NO matching prop_root__* empty — typically a
     hand-duplicated override the manifest cannot capture. Publisher WARNs on these."""

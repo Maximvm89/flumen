@@ -449,7 +449,10 @@ def _seed_env_with_dressing(srv):
                                   "lantern_model_v002.blend",
                      "collection": "lantern", "object": "prop_root__lantern_2",
                      "matrix_world": [[1, 0, 0, -2.5], [0, 1, 0, 0],
-                                      [0, 0, 1, 0], [0, 0, 0, 1]]}]}
+                                      [0, 0, 1, 0], [0, 0, 0, 1]]}],
+                "extras": {
+                    "collection": "market_square_dressing_night_market_extras",
+                    "count": 3}}
     srv.write_text("/r/" + pub + "market_square_dressing_night_market_v002.manifest.json",
                    _json.dumps(manifest))
     return env
@@ -482,6 +485,14 @@ def test_resolve_assembly_inlines_dressing_props(monkeypatch, capsys, tmp_path):
     lantern_dls = [r for r, _ in srv.downloads
                    if r.endswith("lantern_model_v002.blend")]
     assert len(lantern_dls) == 1
+    # local extras: the dressing .blend itself is fetched and the collection
+    # named, so Build shot can link the in-scene modeled geometry
+    ex = d["extras"]
+    assert ex["collection"] == "market_square_dressing_night_market_extras"
+    assert ex["blend_local"].endswith(
+        "market_square_dressing_night_market_v002.blend")
+    assert any(r.endswith("market_square_dressing_night_market_v002.blend")
+               for r, _ in srv.downloads)
 
     # --list embeds only name+version, no prop downloads
     srv.downloads.clear()

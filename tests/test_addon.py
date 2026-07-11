@@ -185,3 +185,26 @@ def test_dressing_naming_parity_with_toolkit():
     from flumen import dressing as TD
     for raw in ("Night Market!", "", "  a--b  "):
         assert AD.normalize_dressing_name(raw) == TD.normalize_dressing_name(raw)
+
+
+def test_dressing_collect_local_extras():
+    from types import SimpleNamespace as NS
+    from flumen_pipeline import dressing as D
+
+    def obj(name, otype="MESH", lib=None, override=None, data_lib=None):
+        return NS(name=name, type=otype, library=lib, override_library=override,
+                  data=NS(library=data_lib))
+
+    local_mesh = obj("crate_quick")                       # modeled in-scene
+    local_curve = obj("cable", otype="CURVE")
+    linked_env = obj("wall", lib=object())                # linked environment
+    override_prop = obj("lantern", override=object())     # overridden prop
+    linked_data = obj("glass", data_lib=object())         # override w/ linked mesh
+    prop_root = obj("prop_root__lantern", otype="EMPTY")
+    light = obj("key_light", otype="LIGHT")
+    cam = obj("REVIEW_Camera", otype="CAMERA")
+
+    out = D.collect_local_extras([local_mesh, local_curve, linked_env,
+                                  override_prop, linked_data, prop_root,
+                                  light, cam])
+    assert [o.name for o in out] == ["cable", "crate_quick"]

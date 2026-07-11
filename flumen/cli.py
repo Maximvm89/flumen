@@ -908,8 +908,22 @@ def cmd_resolve_assembly(args) -> int:
                                       "collection": p.get("collection", ""),
                                       "object": p.get("object", ""),
                                       "matrix_world": p.get("matrix_world")})
-                    entry["dressing"] = {"name": r["dressing"],
-                                         "version": d["version"], "props": props}
+                    payload = {"name": r["dressing"],
+                               "version": d["version"], "props": props}
+                    # Local extras (geometry modeled directly in the dressing
+                    # scene) live in the dressing .blend itself — fetch it and
+                    # point Build shot at the extras collection.
+                    ex = manifest.get("extras") or {}
+                    if ex.get("collection"):
+                        drel = d["blend_rel"]
+                        dlocal = os.path.join(local_root, *drel.split("/"))
+                        client.download(rr + "/" + drel, dlocal)
+                        _fetch_sidecar_textures(client, rr, drel,
+                                                os.path.dirname(dlocal),
+                                                tex_seen)
+                        payload["extras"] = {"blend_local": dlocal,
+                                             "collection": ex["collection"]}
+                    entry["dressing"] = payload
             out.append(entry)
 
         # The shot's published animation (Actions) — Build shot re-applies it onto the

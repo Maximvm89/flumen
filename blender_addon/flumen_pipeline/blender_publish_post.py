@@ -26,7 +26,7 @@ import bpy
 def _args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
-    out = {"collection": "", "apply": False}
+    out = {"collection": "", "apply": False, "textures_only": False}
     i = 0
     while i < len(argv):
         if argv[i] == "--collection" and i + 1 < len(argv):
@@ -34,6 +34,9 @@ def _args():
             i += 2
         elif argv[i] == "--apply-modifiers":
             out["apply"] = True
+            i += 1
+        elif argv[i] == "--textures-only":
+            out["textures_only"] = True
             i += 1
         else:
             i += 1
@@ -96,6 +99,8 @@ def _sidecar_textures():
     taken = {}          # sidecar filename -> source path (collision guard)
     unpacked = copied = missing = 0
     for img in bpy.data.images:
+        if img.library is not None:
+            continue    # linked from another publish — its sidecar, not ours
         if img.source == "TILED":
             print(f"[Flumen] post: UDIM image '{img.name}' left as-is "
                   f"(tiled textures aren't sidecar'd yet).")
@@ -134,6 +139,17 @@ def _sidecar_textures():
 
 def main():
     a = _args()
+    if a["textures_only"]:
+        # Dressing publishes: no scene stripping (the scene IS the product) —
+        # just normalize local-extras shading into the sidecar folder.
+        _progress(40, "textures -> sidecar")
+        _sidecar_textures()
+        _progress(85, "saving")
+        bpy.ops.wm.save_mainfile(compress=True)
+        _progress(100, "done")
+        print("[Flumen] post: textures-only pass complete.")
+        return
+
     coll = bpy.data.collections.get(a["collection"])
     if coll is None:
         print(f"[Flumen] post: collection '{a['collection']}' not found "
