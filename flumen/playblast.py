@@ -153,5 +153,8 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     with SFTPClient(creds) as client:
         client.upload(out_local, cfg.remote_root.rstrip("/") + "/" + rel)
         record_turntable(client, cfg.remote_root, task_id, rel, creds.user)
+        from . import syncsketch
+        syncsketch.announce_media(client, cfg.remote_root, out_local,
+                                  os.path.basename(rel))
     print(f"published playblast -> {cfg.remote_root}/{rel}")
     return 0

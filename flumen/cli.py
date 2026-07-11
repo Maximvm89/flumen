@@ -435,6 +435,9 @@ def cmd_review_still(args) -> int:
         # Registers the still on the task so the Dailies tab lists it, plus
         # ledger attribution + the email/Discord notification.
         TT.record_still(client, rr, args.task, rel, creds.user)
+        from . import syncsketch
+        syncsketch.announce_media(client, rr, args.file,
+                                  os.path.basename(rel))
     print(f"review still -> {rr}/{rel}")
     return 0
 

@@ -412,5 +412,8 @@ def run_turntable(cfg, creds, model_path: str, task_id: str,
                                 creds.user, turntable=rel)
         else:
             record_turntable(client, cfg.remote_root, task_id, rel, creds.user)
+        from . import syncsketch
+        syncsketch.announce_media(client, cfg.remote_root, out_local,
+                                  os.path.basename(rel))
     print(f"published turntable -> {cfg.remote_root}/{rel}")
     return 0

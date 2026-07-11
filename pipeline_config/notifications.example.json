@@ -9,16 +9,20 @@
     "on the channel (Edit channel -> Integrations -> Webhooks) and paste its URL.",
     "Email wants an SMTP account; the password lives here (this file is on the",
     "team-private server, machines sync it automatically) or per-machine in .env",
-    "via password_env."
+    "via password_env. NEVER put real credentials in THIS example file — it is",
+    "tracked in git; only notifications.json (gitignored) holds real values.",
+    "The syncsketch block auto-uploads every reviewable (turntable, look review,",
+    "playblast, review still) into a per-day review 'Dailies YYYY-MM-DD' of the",
+    "named SyncSketch project."
   ],
   "dailies_email": {
     "enabled": false,
-    "recipients": ["marco.parisi89@gmail.com", "michele@fantastificio.com", "milossi.leonardo@gmail.com"],
+    "recipients": ["you@studio.com", "supe@studio.com"],
     "smtp": {
       "host": "smtp.studio.com",
       "port": 587,
       "user": "pipeline@studio.com",
-      "password": "vyqc xqkz ittl qsxa",
+      "password": "PASTE-APP-PASSWORD-HERE",
       "starttls": true,
       "from": "Flumen <pipeline@studio.com>"
     }
@@ -26,5 +30,11 @@
   "dailies_discord": {
     "enabled": true,
     "webhook": "https://discord.com/api/webhooks/PASTE-YOURS-HERE"
+  },
+  "syncsketch": {
+    "enabled": false,
+    "username": "you@studio.com",
+    "api_key": "PASTE-SYNCSKETCH-API-KEY-HERE",
+    "project": "YourSyncSketchProject"
   }
 }
