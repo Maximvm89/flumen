@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QMessageBox, QAbstractItemView, QGroupBox, QTabWidget,
     QComboBox, QTableWidget, QTableWidgetItem, QDialog, QFormLayout,
     QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox, QSpinBox,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QProgressBar,
 )
 
 from flumen.config import (ProjectConfig, SFTPCredentials, CACHED_CONFIG,
@@ -223,6 +223,16 @@ class MainWindow(QMainWindow):
         b_local.clicked.connect(self._pick_local)
         grid.addWidget(b_local, 1, 3)
         outer.addWidget(box)
+
+        # Global activity indicator: a thin indeterminate bar above the tabs,
+        # visible whenever ANY background job (FTP, scans) is running — the
+        # status-bar text alone was too easy to miss.
+        self.busy_bar = QProgressBar()
+        self.busy_bar.setRange(0, 0)          # indeterminate ("working…")
+        self.busy_bar.setTextVisible(False)
+        self.busy_bar.setFixedHeight(5)
+        self.busy_bar.hide()
+        outer.addWidget(self.busy_bar)
 
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs, 1)
@@ -1090,12 +1100,21 @@ class MainWindow(QMainWindow):
         return SFTPCredentials.from_env(".env")
 
     # ---- job runners --------------------------------------------------------
+    def _update_busy(self):
+        """Show the top activity bar while any background job is in flight."""
+        self.busy_bar.setVisible(bool(self._jobs))
+
     def _spawn(self, fn, on_done, busy_msg="Working…"):
         self.status.showMessage(busy_msg)
         job = Job(fn)
         self._jobs.append(job)
-        job.done.connect(lambda r, j=job: (self._jobs.remove(j) if j in self._jobs else None, on_done(r)))
-        job.failed.connect(lambda m, j=job: (self._jobs.remove(j) if j in self._jobs else None, self._on_error(m)))
+        self._update_busy()
+        job.done.connect(lambda r, j=job: (
+            self._jobs.remove(j) if j in self._jobs else None,
+            self._update_busy(), on_done(r)))
+        job.failed.connect(lambda m, j=job: (
+            self._jobs.remove(j) if j in self._jobs else None,
+            self._update_busy(), self._on_error(m)))
         job.start()
 
     def _busy_buttons(self, on):
