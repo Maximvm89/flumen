@@ -65,8 +65,9 @@ def cmd_notify_test(args) -> int:
         nc = notify.load_notify_config(client, cfg.remote_root) or {}
     mail = nc.get("dailies_email") or {}
     disc = nc.get("dailies_discord") or {}
-    if not (mail or disc):
-        print(f"error: no dailies_email/dailies_discord block in "
+    ss = nc.get("syncsketch") or {}
+    if not (mail or disc or ss):
+        print(f"error: no dailies_email/dailies_discord/syncsketch block in "
               f"{cfg.remote_root}/{notify.NOTIFY_FILE_REL}", file=sys.stderr)
         return 1
 
@@ -101,8 +102,37 @@ def cmd_notify_test(args) -> int:
             print("discord: OK" if ok else "discord: FAILED — check the webhook "
                   "URL in notifications.json.")
             results.append(ok)
+    if ss:
+        if not (ss.get("username") and ss.get("api_key") and ss.get("project")):
+            print("syncsketch: SKIP (needs username, api_key and project)")
+        else:
+            if not ss.get("enabled"):
+                print("note: syncsketch.enabled is false — testing anyway.")
+            # Connect + verify the project exists; no media is uploaded.
+            try:
+                from syncsketch import SyncSketchAPI
+                from . import syncsketch as ssmod
+                api = SyncSketchAPI(ss["username"], ss["api_key"])
+                if not api.is_connected():
+                    print("syncsketch: FAILED — could not authenticate; check "
+                          "username/api_key in notifications.json.")
+                    results.append(False)
+                elif ssmod._find_project_id(api, str(ss["project"])) is None:
+                    names = [p.get("name") for p in
+                             (api.get_projects() or {}).get("objects") or []]
+                    print(f"syncsketch: FAILED — project '{ss['project']}' not "
+                          f"found. Visible projects: {names}")
+                    results.append(False)
+                else:
+                    print(f"syncsketch: OK (project '{ss['project']}'; uploads "
+                          f"land in '{ssmod.day_review_name()}')")
+                    results.append(True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"syncsketch: FAILED — {exc}")
+                results.append(False)
     if not results:
-        print("error: nothing to test (no recipients / webhook).", file=sys.stderr)
+        print("error: nothing to test (no recipients / webhook / api key).",
+              file=sys.stderr)
         return 1
     return 0 if all(results) else 1
 
