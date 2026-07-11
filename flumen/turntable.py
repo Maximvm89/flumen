@@ -69,20 +69,26 @@ def dailies_rel(task: dict, version_label: str) -> str:
 
 
 def record_turntable(sftp, remote_root: str, task_id: str, rel: str,
-                     username: str) -> str | None:
+                     username: str,
+                     extra_rels: list[str] | None = None) -> str | None:
     """Attach the turntable to the task's most recent publish entry + ledger,
-    and mail the dailies notification (if the team configured one)."""
+    and mail the dailies notification (if the team configured one). extra_rels:
+    further clips of the same publish (dual-delivery playblast formats) — each
+    becomes its own review item, sharing the record's review status."""
     from . import tasks, ledger, notify
     task = tasks.get_task(sftp, remote_root, task_id)
     if not task:
         return None
+    rels = [rel] + [r for r in (extra_rels or []) if r]
     rec = {}
     if task.get("publishes"):
         rec = task["publishes"][-1]
         rec["turntable"] = rel
+        if len(rels) > 1:
+            rec["turntables"] = rels
     tasks.save_task(sftp, remote_root, task, actor=username)
-    ledger.record_uploads(sftp, remote_root, username, [rel])
-    notify.announce_dailies(sftp, remote_root, task, rec, [rel], username)
+    ledger.record_uploads(sftp, remote_root, username, rels)
+    notify.announce_dailies(sftp, remote_root, task, rec, rels, username)
     return rel
 
 

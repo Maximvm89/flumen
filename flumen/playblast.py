@@ -24,6 +24,11 @@ PB_DEFAULTS = {
     # Shots with no lights get a camera-parented shadowless key+fill rig so
     # closed sets read instead of rendering black. False = never add lights.
     "auto_light": True,
+    # Playblasts are previews: few EEVEE samples and no raytracing (huge
+    # speed-up vs the render default of 64), optionally rendered at a fraction
+    # of the delivery resolution (50 = half size, ~4x fewer pixels).
+    "samples": 16,
+    "resolution_percentage": 100,
 }
 
 
@@ -168,6 +173,8 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         "FLUMEN_PB_COLOR": str(pb.get("color", "TEXTURE")),
         "FLUMEN_PB_VIEW": str(pb.get("view_transform", "")),
         "FLUMEN_PB_AUTOLIGHT": "0" if pb.get("auto_light") is False else "1",
+        "FLUMEN_PB_SAMPLES": str(pb.get("samples", 16)),
+        "FLUMEN_PB_RESPCT": str(pb.get("resolution_percentage", 100)),
     })
     if len(formats) > 1 or formats[0]["name"]:
         env["FLUMEN_PB_FORMATS"] = formats_env(formats)
@@ -178,7 +185,7 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                    env=env, check=True)
 
     # One Blender session rendered every format; encode + upload each.
-    from . import ledger, syncsketch
+    from . import syncsketch
     outputs = []      # (fmt_name, rel, local_path)
     fps = _meta_fps(frames_dir, pb["fps"])
     for f in formats:
@@ -202,13 +209,11 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         rr = cfg.remote_root.rstrip("/")
         for _name, frel, flocal in outputs:
             client.upload(flocal, rr + "/" + frel)
-        # The first format is the review item (Dailies tab); the others ride
-        # along as ledgered dailies files + SyncSketch uploads.
+        # Every format is its own Dailies review item (16:9 + 9:16 both show);
+        # they share one review status — approving the shot approves both.
         record_turntable(client, cfg.remote_root, task_id, outputs[0][1],
-                         creds.user)
-        if len(outputs) > 1:
-            ledger.record_uploads(client, cfg.remote_root, creds.user,
-                                  [frel for _n, frel, _l in outputs[1:]])
+                         creds.user,
+                         extra_rels=[frel for _n, frel, _l in outputs[1:]])
         for _name, frel, flocal in outputs:
             syncsketch.announce_media(client, cfg.remote_root, flocal,
                                       os.path.basename(frel))

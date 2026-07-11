@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 
 REVIEWS_BASE = "07_dailies/_reviews"
 
@@ -33,17 +34,27 @@ def review_dir_rel(date_str: str) -> str:
 
 def version_from_turntable(turntable_rel: str) -> str:
     """'…/frankenstein_model_v003_turntable.mp4' -> 'frankenstein_model_v003'.
-    Also strips the '_playblast' suffix used for shot playblasts."""
+    Also strips the '_playblast' suffix used for shot playblasts; a delivery
+    format rides along as a tag: '…_playblast_9x16.mp4' -> '… · 9x16'."""
     base = os.path.splitext(os.path.basename(turntable_rel or ""))[0]
-    for suf in ("_turntable", "_playblast"):
-        if base.endswith(suf):
-            return base[: -len(suf)]
+    m = re.match(r"^(.*)_(?:turntable|playblast)(?:_([0-9A-Za-z]+))?$", base)
+    if m:
+        return m.group(1) + (f" · {m.group(2)}" if m.group(2) else "")
     return base
 
 
 def clip_name(rec: dict) -> str:
     """The turntable's own basename (unique, e.g. 'frankenstein_model_v003_turntable.mp4')."""
     return os.path.basename(rec.get("turntable", ""))
+
+
+def rec_turntables(rec: dict) -> list[str]:
+    """All review clips on a publish record: the multi-format list when present
+    (dual-delivery playblasts), else the single legacy 'turntable'."""
+    rels = rec.get("turntables")
+    if isinstance(rels, list) and rels:
+        return [r for r in rels if r]
+    return [rec["turntable"]] if rec.get("turntable") else []
 
 
 def review_status(rec: dict) -> str:
@@ -91,27 +102,32 @@ def review_items(task_list: list[dict],
     out: list[dict] = []
     for task in task_list or []:
         for rec in task.get("publishes") or []:
-            if not rec.get("turntable"):
+            rels = rec_turntables(rec)
+            if not rels:
                 continue
             st = review_status(rec)
             if statuses is not None and st not in statuses:
                 continue
-            out.append({
-                "task_id": task.get("id", ""),
-                "entity": task.get("entity", ""),
-                "step": task.get("step", ""),
-                "version": version_from_turntable(rec.get("turntable", "")),
-                "clip": clip_name(rec),
-                "source": rec.get("turntable", ""),
-                "sheet": rec.get("sheet", ""),       # texture/UV sheet (looks)
-                "kind": _review_kind(task.get("step", "")),
-                "by": rec.get("by", ""),
-                "description": rec.get("description", ""),
-                "time": rec.get("time"),
-                "date": item_date(rec),
-                "status": st,
-                "task_status": task.get("status", ""),
-            })
+            # One item per clip: a dual-delivery playblast (16:9 + 9:16) shows
+            # every format in Dailies. They share the record's review status.
+            for i, rel in enumerate(rels):
+                out.append({
+                    "task_id": task.get("id", ""),
+                    "entity": task.get("entity", ""),
+                    "step": task.get("step", ""),
+                    "version": version_from_turntable(rel),
+                    "clip": os.path.basename(rel),
+                    "source": rel,
+                    # texture/UV sheet (looks) — on the first item only
+                    "sheet": rec.get("sheet", "") if i == 0 else "",
+                    "kind": _review_kind(task.get("step", "")),
+                    "by": rec.get("by", ""),
+                    "description": rec.get("description", ""),
+                    "time": rec.get("time"),
+                    "date": item_date(rec),
+                    "status": st,
+                    "task_status": task.get("status", ""),
+                })
         # Review stills (the Blender 'Render review still' tool) — task-level
         # records, independent of publishes: a still can precede any publish.
         for rec in task.get("stills") or []:
@@ -165,7 +181,8 @@ def set_status_on_task(task: dict, turntable_rel: str, status: str) -> bool:
         raise ValueError(f"unknown review status: {status}")
     hit = False
     for rec in task.get("publishes") or []:
-        if rec.get("turntable") == turntable_rel:
+        # any format of a dual-delivery playblast sets the record's status
+        if turntable_rel in rec_turntables(rec):
             rec["review_status"] = status
             hit = True
     for rec in task.get("stills") or []:
@@ -206,9 +223,20 @@ def delete_review(sftp, remote_root: str, item: dict,
         return False
     hit = False
     for rec in task.get("publishes") or []:
-        if rec.get("turntable") == item.get("source"):
-            rec.pop("turntable", None)
-            rec.pop("sheet", None)
+        rels = rec_turntables(rec)
+        if item.get("source") in rels:
+            # drop just this clip; other formats of the same publish stay
+            rels = [r for r in rels if r != item.get("source")]
+            if rels:
+                rec["turntable"] = rels[0]
+                if len(rels) > 1:
+                    rec["turntables"] = rels
+                else:
+                    rec.pop("turntables", None)
+            else:
+                rec.pop("turntable", None)
+                rec.pop("turntables", None)
+                rec.pop("sheet", None)
             hit = True
     stills = task.get("stills") or []
     kept = [rec for rec in stills if rec.get("file") != item.get("source")]

@@ -172,7 +172,12 @@ def main():
     if not formats:
         formats = [("", int(_env("FLUMEN_PB_RESX", "1280")),
                     int(_env("FLUMEN_PB_RESY", "720")))]
-    r.resolution_percentage = 100
+    # Preview scale: 50 renders at half the delivery size (~4x fewer pixels).
+    try:
+        r.resolution_percentage = max(1, min(100, int(_env("FLUMEN_PB_RESPCT",
+                                                           "100"))))
+    except ValueError:
+        r.resolution_percentage = 100
     r.film_transparent = False
     r.image_settings.file_format = "PNG"
 
@@ -190,6 +195,21 @@ def main():
     if engine in _EEVEE:
         _ensure_lighting(scene)
         _boost_shadows(scene)
+        # Preview quality: a few samples read fine in motion, and raytraced
+        # GI/reflections are wasted on a playblast — together this is most of
+        # the difference between a "playblast" and a full render.
+        ee = getattr(scene, "eevee", None)
+        if ee is not None:
+            try:
+                ee.taa_render_samples = max(1, int(_env("FLUMEN_PB_SAMPLES",
+                                                        "16")))
+            except Exception:  # noqa: BLE001
+                pass
+            for attr in ("use_raytracing",):
+                try:
+                    setattr(ee, attr, False)
+                except Exception:  # noqa: BLE001
+                    pass
     # Workbench: fast solid shading. TEXTURE colour shows the texture maps but is
     # flat/shadeless; MATERIAL shows flat base colours. Opt in via playblast.engine.
     elif engine == "BLENDER_WORKBENCH":

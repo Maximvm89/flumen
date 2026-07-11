@@ -267,3 +267,54 @@ def test_playblast_version_and_shot_kind():
     items = R.review_items([shot])
     assert len(items) == 1
     assert items[0]["kind"] == "shot" and items[0]["version"] == "SH0010_layout_v002"
+
+
+def _pb(entity, version, fmt):
+    return f"07_dailies/{entity}/layout/{version}_playblast_{fmt}.mp4"
+
+
+def test_multi_format_playblast_review_items():
+    """Dual-delivery playblasts: every format is its own Dailies item, sharing
+    one review status; version labels carry the format tag."""
+    t = tasks.new_task("shot", "SEQ010/SH0010", "layout")
+    r16 = _pb("SEQ010/SH0010", "SH0010_layout_v016", "16x9")
+    r9 = _pb("SEQ010/SH0010", "SH0010_layout_v016", "9x16")
+    t["publishes"] = [{"turntable": r16, "turntables": [r16, r9], "time": 100}]
+    items = R.review_items([t])
+    assert {i["source"] for i in items} == {r16, r9}
+    assert {i["version"] for i in items} == {
+        "SH0010_layout_v016 · 16x9", "SH0010_layout_v016 · 9x16"}
+    # setting status via EITHER format stamps the shared record
+    assert R.set_status_on_task(t, r9, "approved") is True
+    assert t["publishes"][0]["review_status"] == "approved"
+    assert R.review_items([t], statuses=["approved"]) and \
+        all(i["status"] == "approved" for i in R.review_items([t]))
+
+
+def test_delete_one_format_keeps_the_other():
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("shot", "SEQ010/SH0010", "layout"))
+    r16 = _pb("SEQ010/SH0010", "SH0010_layout_v016", "16x9")
+    r9 = _pb("SEQ010/SH0010", "SH0010_layout_v016", "9x16")
+    tasks.publish_task(s, "/r", "marco", ["/tmp/SH0010_layout_v016.blend"], t["id"])
+    from flumen import turntable
+    turntable.record_turntable(s, "/r", t["id"], r16, "marco", extra_rels=[r9])
+    loaded = tasks.get_task(s, "/r", t["id"])
+    assert loaded["publishes"][-1]["turntables"] == [r16, r9]
+    # delete the 9x16 item -> 16x9 remains a review item
+    assert R.delete_review(s, "/r", {"task_id": t["id"], "source": r9}) is True
+    loaded = tasks.get_task(s, "/r", t["id"])
+    rec = loaded["publishes"][-1]
+    assert rec["turntable"] == r16 and "turntables" not in rec
+    # delete the last one -> record stops being a review item
+    assert R.delete_review(s, "/r", {"task_id": t["id"], "source": r16}) is True
+    loaded = tasks.get_task(s, "/r", t["id"])
+    assert "turntable" not in loaded["publishes"][-1]
+
+
+def test_version_from_turntable_format_suffix():
+    assert R.version_from_turntable("a/SH0010_layout_v016_playblast_9x16.mp4") \
+        == "SH0010_layout_v016 · 9x16"
+    assert R.version_from_turntable("a/SH0010_layout_v016_playblast.mp4") \
+        == "SH0010_layout_v016"
+    assert R.version_from_turntable("a/x_model_v003_turntable.mp4") == "x_model_v003"
