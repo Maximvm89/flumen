@@ -1189,22 +1189,27 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             finally:
                 restore_pub()
             files = [pub_path]
-            fbx_path = pub_path[:-6] + ".fbx"   # .blend -> .fbx
-            # Export only the geometry under the publish locator, if present.
-            use_sel = False
-            if loc:
-                try:
-                    bpy.ops.object.mode_set(mode="OBJECT")
-                except Exception:  # noqa: BLE001
-                    pass
-                bpy.ops.object.select_all(action="DESELECT")
-                loc.select_set(True)
-                for d in _descendants(loc):
-                    d.select_set(True)
-                use_sel = True
-            if _export_fbx(fbx_path, use_selection=use_sel):
-                files.append(fbx_path)
-            kind = ".blend + FBX"
+            kind = ".blend"
+            # FBX rides along for interchange — except rigs: Blender rigs
+            # (bone shapes, drivers, constraints) don't survive FBX, and shots
+            # consume the rig by LINKING the .blend anyway.
+            if task["step"] != "rig":
+                fbx_path = pub_path[:-6] + ".fbx"   # .blend -> .fbx
+                # Export only the geometry under the publish locator, if present.
+                use_sel = False
+                if loc:
+                    try:
+                        bpy.ops.object.mode_set(mode="OBJECT")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    bpy.ops.object.select_all(action="DESELECT")
+                    loc.select_set(True)
+                    for d in _descendants(loc):
+                        d.select_set(True)
+                    use_sel = True
+                if _export_fbx(fbx_path, use_selection=use_sel):
+                    files.append(fbx_path)
+                kind = ".blend + FBX"
             # Post-process the publish COPY headless: strip everything outside
             # the wrapped collection (clean file, not just a clean link target)
             # and optionally bake the modifier stack. Work file untouched.
