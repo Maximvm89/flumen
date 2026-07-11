@@ -58,6 +58,22 @@ def _keep_collections(root):
     return keep
 
 
+def _bone_widgets(objs):
+    """Objects used as bone custom shapes by any armature in `objs` — e.g.
+    Rigify's WGTS_* control shapes. They live OUTSIDE the publish root by
+    design (Rigify keeps them in their own collection), but deleting them
+    strips every control of its shape and leaves the rig unusable."""
+    out = set()
+    for o in objs:
+        if getattr(o, "type", "") != "ARMATURE" or not getattr(o, "pose", None):
+            continue
+        for pb in o.pose.bones:
+            cs = getattr(pb, "custom_shape", None)
+            if cs is not None:
+                out.add(cs)
+    return out
+
+
 def _bake_modifiers(coll):
     """Bake each mesh's modifier stack into its data. Armature-deformed meshes
     are skipped (a rigged publish must keep deform live). Objects sharing mesh
@@ -168,6 +184,13 @@ def main():
 
     _progress(10, "cleaning scene")
     keep_objs = set(coll.all_objects)
+    # A rig's bone widgets are part of the rig even though they sit outside
+    # the PUBLISH root. Keep the datablocks but unlink them from every
+    # collection: invisible in the publish, still saved (the custom_shape
+    # reference keeps them alive through the orphan purge), and a downstream
+    # LINK of the collection pulls them in as indirect dependencies.
+    widgets = _bone_widgets(keep_objs)
+    keep_objs |= widgets
     removed = 0
     for o in list(bpy.data.objects):
         if o not in keep_objs:
@@ -180,6 +203,20 @@ def main():
     scene = bpy.context.scene
     if coll.name not in scene.collection.children:
         scene.collection.children.link(coll)
+    for w in widgets:
+        for c in list(w.users_collection):
+            try:
+                c.objects.unlink(w)
+            except Exception:  # noqa: BLE001
+                pass
+    if widgets:
+        print(f"[Flumen] post: kept {len(widgets)} bone-widget object(s) "
+              f"(rig control shapes).")
+    # Keep script texts (Rigify's rig_ui.py — the Rig Main Properties panel)
+    # from the orphan purge when the publish carries a rig.
+    if any(getattr(o, "type", "") == "ARMATURE" for o in coll.all_objects):
+        for t in bpy.data.texts:
+            t.use_fake_user = True
 
     baked = 0
     if a["apply"]:
