@@ -74,6 +74,8 @@ asset_templates:
       work: {}
       publish: {}
     rig: null              # environments aren't rigged — hide the shared step
+    surface: null          # env shading lives in the model step (materials +
+                           # sidecar textures travel with the model publish)
 
 # ---------------------------------------------------------------------------
 # Per-shot department template.

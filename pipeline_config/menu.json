@@ -51,22 +51,6 @@
       "---",
       "flumen.show_log"
     ],
-    "asset:surface:environments": [
-      "flumen.save_to_task",
-      "flumen.run_checks",
-      "flumen.auto_fix",
-      "---",
-      "flumen.add_review_camera",
-      "flumen.render_review",
-      "---",
-      "flumen.add_publish_collection",
-      "flumen.publish",
-      "---",
-      "flumen.apply_project_settings",
-      "flumen.verify_ocio",
-      "---",
-      "flumen.show_log"
-    ],
     "asset:rig": [
       "flumen.save_to_task",
       "---",

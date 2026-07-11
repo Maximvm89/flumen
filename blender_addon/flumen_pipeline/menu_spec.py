@@ -79,10 +79,6 @@ DEFAULT_MENUS = {
                                  + _TAIL),
     "asset:surface": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
                       + _TASK_CORE + _ASSET_TOOLS + _TAIL),
-    "asset:surface:environments": (["flumen.load_model", "flumen.apply_look",
-                                    SEPARATOR] + _TASK_CORE
-                                   + [SEPARATOR, "flumen.add_publish_collection"]
-                                   + _TAIL),
     "asset:rig": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
                   + _TASK_CORE + _ASSET_TOOLS + _TAIL),
     # Dressing scenes are linked content: no locator, no turntable, no looks.

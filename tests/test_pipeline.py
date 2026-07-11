@@ -45,8 +45,10 @@ def test_asset_template_overlay_per_type():
     env_tpl = S.asset_template_for(SCHEMA, "environments")
     assert "dressing" in env_tpl and "model" in env_tpl     # additive overlay
     assert "rig" not in env_tpl                             # null -> removed
+    assert "surface" not in env_tpl    # env shading lives in the model step
     char_tpl = S.asset_template_for(SCHEMA, "characters")
     assert "dressing" not in char_tpl and "rig" in char_tpl  # others keep rig
+    assert "surface" in char_tpl
     # no asset_templates key at all -> shared template unchanged
     assert S.asset_template_for({"asset_template": {"model": {}}}, "environments") \
         == {"model": {}}
@@ -62,6 +64,7 @@ def test_environment_asset_paths_include_dressing():
     assert f"{ROOT}/03_assets/environments/market_square/dressing/work" in paths
     assert f"{ROOT}/03_assets/environments/market_square/dressing/publish" in paths
     assert not any("/rig/" in p for p in paths)             # rig removed for envs
+    assert not any("/surface/" in p for p in paths)         # surface too
     char = S.asset_paths(SCHEMA, ROOT, "characters", "hero")
     assert not any("/dressing/" in p for p in char)
     assert any("/rig/" in p for p in char)                  # characters keep rig
