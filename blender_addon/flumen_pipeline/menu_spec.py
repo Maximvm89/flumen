@@ -77,7 +77,7 @@ DEFAULT_MENUS = {
     # No task: only the general project tools (asset tools live on asset steps).
     "no_task": _TAIL[1:],
     # Assets. Environments variants: no turntable (envs never render one).
-    "asset:model": _TASK_CORE + _ASSET_TOOLS + _TAIL,
+    "asset:model": ["flumen.apply_look"] + _TASK_CORE + _ASSET_TOOLS + _TAIL,
     "asset:model:environments": (_TASK_CORE
                                  + [SEPARATOR, "flumen.add_publish_collection"]
                                  + _TAIL),

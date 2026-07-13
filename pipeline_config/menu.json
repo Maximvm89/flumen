@@ -9,6 +9,7 @@
     ],
     "asset:model": [
       "flumen.save_to_task",
+      "flumen.apply_look",
       "flumen.run_checks",
       "flumen.auto_fix",
       "---",
