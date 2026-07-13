@@ -100,3 +100,57 @@ def test_availability_scales_pace():
     proposal, _ = P.propose_schedule(tasks, MON, cfg)
     # 2 days of work at half pace -> 4 workdays out
     assert proposal["x-model"] == P.add_workdays(MON, 4).isoformat()
+
+
+def test_dependencies_cross_artist():
+    """A surface by artist b waits for the model by artist a, even when b is idle."""
+    tasks = [_t("model", assignees=["a"], est=4),
+             {"id": "x-surface", "type": "asset", "entity": "characters/frank",
+              "step": "surface", "status": "todo", "assignees": ["b"],
+              "estimate_days": 2}]
+    proposal, _ = P.propose_schedule(tasks, MON, CFG)
+    d_model = datetime.date.fromisoformat(proposal["x-model"])
+    d_surface = datetime.date.fromisoformat(proposal["x-surface"])
+    assert d_model == P.add_workdays(MON, 4)
+    assert d_surface == P.add_workdays(MON, 6)      # starts AFTER the model
+
+
+def test_dependencies_shot_chain_with_elements():
+    def shot(step, tid):
+        return {"id": tid, "type": "shot", "entity": "SEQ010/SH0010",
+                "step": step, "status": "todo", "assignees": ["anim"],
+                "estimate_days": 1}
+    rig = {"id": "rig-frank", "type": "asset", "entity": "characters/frank",
+           "step": "rig", "status": "todo", "assignees": ["rigger"],
+           "estimate_days": 5}
+    model = {"id": "model-frank", "type": "asset", "entity": "characters/frank",
+             "step": "model", "status": "done", "assignees": ["rigger"]}
+    tasks = [model, rig, shot("layout", "s-layout"),
+             shot("animation", "s-anim"), shot("lighting", "s-light")]
+    elements = {"SEQ010/SH0010": ["characters/frank"]}
+    proposal, warns = P.propose_schedule(tasks, MON, CFG, shot_elements=elements)
+    d_rig = datetime.date.fromisoformat(proposal["rig-frank"])
+    d_layout = datetime.date.fromisoformat(proposal["s-layout"])
+    d_anim = datetime.date.fromisoformat(proposal["s-anim"])
+    d_light = datetime.date.fromisoformat(proposal["s-light"])
+    assert d_rig <= d_layout < d_anim < d_light      # rig gates the whole chain
+    assert d_layout == P.add_workdays(MON, 6)        # rig 5d, then layout 1d
+    assert not warns                                 # done model doesn't warn
+
+
+def test_done_prerequisite_does_not_block():
+    tasks = [_t("model", status="done", assignees=["a"]),
+             _t("surface", assignees=["a"], est=2)]
+    proposal, warns = P.propose_schedule(tasks, MON, CFG)
+    assert "x-model" not in proposal
+    assert proposal["x-surface"] == P.add_workdays(MON, 2).isoformat()
+    assert not warns
+
+
+def test_unscheduled_prerequisite_warns():
+    tasks = [_t("model", est=3),                     # unassigned
+             _t("surface", assignees=["a"], est=2)]
+    proposal, warns = P.propose_schedule(tasks, MON, CFG)
+    assert "x-surface" in proposal
+    assert any("unassigned (not scheduled)" in w for w in warns)
+    assert any("unreliable" in w for w in warns)

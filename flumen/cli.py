@@ -619,7 +619,9 @@ def cmd_plan(args) -> int:
         today = _dt.date.today()
 
         if args.propose or args.apply:
-            proposal, warns = planmod.propose_schedule(task_list, today, pcfg)
+            shot_elements = planmod.load_shot_elements(client, rr, task_list)
+            proposal, warns = planmod.propose_schedule(
+                task_list, today, pcfg, shot_elements=shot_elements)
             by_id = {t["id"]: t for t in task_list}
             for tid, due in sorted(proposal.items(), key=lambda kv: kv[1]):
                 t = by_id[tid]

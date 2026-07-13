@@ -172,39 +172,135 @@ def plan_summary(tasks: list[dict], roster: list[dict],
     }
 
 
-def propose_schedule(tasks: list[dict], today: datetime.date,
-                     cfg: dict) -> tuple[dict[str, str], list[str]]:
-    """Hybrid auto-plan: per artist, queue their not-done tasks in pipeline
-    order (model before surface/rig before dressing; layout -> animation ->
-    lighting), walk the queue accumulating estimates over their available
-    workdays, and propose a due date per task. Returns ({task_id: date},
-    warnings). Tasks with no assignee are not scheduled (warned instead);
-    a queue running past the deadline warns too."""
-    deadline = parse_date(cfg.get("deadline", ""))
-    queues: dict[str, list[dict]] = {}
-    warnings: list[str] = []
+def load_shot_elements(sftp, remote_root: str,
+                       tasks: list[dict]) -> dict[str, list[str]]:
+    """{shot_entity: [asset entities in its element list]} for every shot task,
+    from the shots' assembly.json files (read concurrently when supported).
+    Feeds the rig->layout dependency in propose_schedule."""
+    import json as _json
+    from . import elements as elements_mod
+    ents = sorted({t.get("entity") for t in tasks or []
+                   if t.get("type") == "shot" and t.get("entity")})
+    rr = remote_root.rstrip("/")
+    paths = {e: rr + "/" + elements_mod.assembly_rel(e) for e in ents}
+    reader = getattr(sftp, "read_many", None)
+    if callable(reader):
+        texts = reader(list(paths.values()))
+    else:
+        texts = {p: sftp.read_text(p) for p in paths.values()}
+    out: dict[str, list[str]] = {}
+    for ent, p in paths.items():
+        try:
+            doc = _json.loads(texts.get(p) or "{}")
+        except ValueError:
+            doc = {}
+        out[ent] = [el.get("asset") for el in (doc.get("elements") or [])
+                    if el.get("kind") == "asset" and el.get("asset")
+                    and el.get("enabled", True)]
+    return out
+
+
+# Pipeline depth for dependency-safe scheduling order: every task's
+# prerequisites always have a strictly smaller depth.
+STEP_DEPTH = {
+    ("asset", "model"): 0,
+    ("asset", "surface"): 1, ("asset", "rig"): 1,
+    ("asset", "dressing"): 2,
+    ("shot", "layout"): 3, ("shot", "animation"): 4, ("shot", "lighting"): 5,
+}
+
+
+def task_dependencies(tasks: list[dict],
+                      shot_elements: dict[str, list[str]] | None = None
+                      ) -> dict[str, list[str]]:
+    """{task_id: [prerequisite task_ids]} across the whole production:
+    surface/rig/dressing wait for their asset's model; a shot's layout waits
+    for the rigs of every asset in its element list (model when the asset has
+    no rig task); animation waits for the shot's layout (+ the rigs);
+    lighting waits for animation (the alembic caches)."""
+    by_key = {(t.get("type"), t.get("entity"), t.get("step")): t["id"]
+              for t in tasks or [] if t.get("id")}
+    deps: dict[str, list[str]] = {}
     for t in tasks or []:
-        if t.get("status") in INACTIVE_STATUSES:
-            continue
+        ttype, ent, step = t.get("type"), t.get("entity"), t.get("step")
+        found: list[str] = []
+
+        def _dep(tt, e, s):
+            tid = by_key.get((tt, e, s))
+            if tid and tid != t.get("id"):
+                found.append(tid)
+
+        if ttype == "asset" and step in ("surface", "rig", "dressing"):
+            _dep("asset", ent, "model")
+        elif ttype == "shot":
+            elements = (shot_elements or {}).get(ent, [])
+            if step == "layout":
+                for a in elements:
+                    if ("asset", a, "rig") in by_key:
+                        _dep("asset", a, "rig")
+                    else:
+                        _dep("asset", a, "model")
+            elif step == "animation":
+                _dep("shot", ent, "layout")
+                for a in elements:
+                    _dep("asset", a, "rig")
+            elif step == "lighting":
+                _dep("shot", ent, "animation")
+        if found:
+            deps[t["id"]] = found
+    return deps
+
+
+def propose_schedule(tasks: list[dict], today: datetime.date, cfg: dict,
+                     shot_elements: dict[str, list[str]] | None = None
+                     ) -> tuple[dict[str, str], list[str]]:
+    """Hybrid auto-plan, dependency-aware: tasks are scheduled in pipeline
+    depth order; each starts no earlier than BOTH its artist's previous task
+    and every prerequisite's finish — so a surface never lands before its
+    model, layout waits for the element rigs, animation for layout, lighting
+    for animation. Done/omitted prerequisites don't block. Returns
+    ({task_id: due date}, warnings): unassigned tasks aren't scheduled (and
+    block their dependents' accuracy — warned), overflow past the deadline
+    warns too."""
+    deadline = parse_date(cfg.get("deadline", ""))
+    deps = task_dependencies(tasks, shot_elements)
+    by_id = {t["id"]: t for t in tasks or [] if t.get("id")}
+    warnings: list[str] = []
+
+    todo = [t for t in tasks or []
+            if t.get("status") not in INACTIVE_STATUSES and t.get("id")]
+    todo.sort(key=lambda t: (
+        STEP_DEPTH.get((t.get("type"), t.get("step")), 9),
+        t.get("entity", ""), t.get("step", "")))
+
+    finish: dict[str, float] = {}      # task_id -> workdays from today
+    cursor: dict[str, float] = {}      # artist -> end of their queue so far
+    proposal: dict[str, str] = {}
+    for t in todo:
+        label = f"{t.get('entity')} · {t.get('step')}"
         names = t.get("assignees") or []
         if not names:
-            warnings.append(f"unassigned (not scheduled): "
-                            f"{t.get('entity')} · {t.get('step')}")
+            warnings.append(f"unassigned (not scheduled): {label}")
             continue
-        # the first assignee owns the schedule slot
-        queues.setdefault(names[0], []).append(t)
-
-    proposal: dict[str, str] = {}
-    for user, queue in sorted(queues.items()):
-        queue.sort(key=lambda t: (step_rank(t), t.get("type", ""),
-                                  t.get("entity", ""), t.get("step", "")))
+        user = names[0]                # the first assignee owns the slot
+        start = cursor.get(user, 0.0)
+        for d in deps.get(t["id"], []):
+            dt = by_id.get(d)
+            if dt is None or dt.get("status") in INACTIVE_STATUSES:
+                continue               # finished/cut prerequisites don't block
+            if d in finish:
+                start = max(start, finish[d])
+            else:
+                warnings.append(f"{label}: prerequisite "
+                                f"{dt.get('entity')} · {dt.get('step')} is "
+                                f"unscheduled (unassigned?) — date unreliable")
         pace = availability_of(user, cfg) / 5.0
-        cursor = 0.0                       # workdays of queued work so far
-        for t in queue:
-            cursor += estimate_of(t, cfg)
-            due = add_workdays(today, cursor / pace if pace else cursor)
-            proposal[t["id"]] = due.isoformat()
-            if deadline and due > deadline:
-                warnings.append(f"{user}: {t.get('entity')} · {t.get('step')} "
-                                f"lands {due.isoformat()} — past the deadline")
+        end = start + estimate_of(t, cfg) / (pace or 1.0)
+        finish[t["id"]] = end
+        cursor[user] = end
+        due = add_workdays(today, end)
+        proposal[t["id"]] = due.isoformat()
+        if deadline and due > deadline:
+            warnings.append(f"{user}: {label} lands {due.isoformat()} — "
+                            f"past the deadline")
     return proposal, warnings

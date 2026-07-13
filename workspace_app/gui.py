@@ -872,7 +872,8 @@ class MainWindow(QMainWindow):
             return
         tasks = getattr(self, "_tasks", None) or []
         proposal, warns = planmod.propose_schedule(
-            tasks, _dt.date.today(), cfg)
+            tasks, _dt.date.today(), cfg,
+            shot_elements=getattr(self, "_shot_elements", None))
         if not proposal:
             QMessageBox.information(self, "Nothing to plan",
                                     "No assigned, unfinished tasks to "
@@ -1744,11 +1745,14 @@ class MainWindow(QMainWindow):
                     or "{}")
             except Exception:  # noqa: BLE001
                 settings = {}
-            return tasks, roster, settings
+            elements = self._conn_do(
+                lambda c: planmod.load_shot_elements(c, remote, tasks))
+            return tasks, roster, settings, elements
 
         def done(result):
             self._busy_buttons(False)
-            self._tasks, self._roster, self._project_settings = result
+            (self._tasks, self._roster, self._project_settings,
+             self._shot_elements) = result
             self._render_tasks()
             self._render_plan()
             # Server-side deletion is supervisor-only — reflect it in the UI.
