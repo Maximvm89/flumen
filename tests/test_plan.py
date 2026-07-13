@@ -154,3 +154,8 @@ def test_unscheduled_prerequisite_warns():
     assert "x-surface" in proposal
     assert any("unassigned (not scheduled)" in w for w in warns)
     assert any("unreliable" in w for w in warns)
+
+
+def test_sub_workdays_inverse_of_add():
+    for n in (1, 3, 7, 10):
+        assert P.sub_workdays(P.add_workdays(MON, n), n) == MON

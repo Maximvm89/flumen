@@ -88,6 +88,18 @@ def add_workdays(start: datetime.date, n: float) -> datetime.date:
     return d
 
 
+def sub_workdays(end: datetime.date, n: float) -> datetime.date:
+    """The date `n` workdays before `end` (inverse of add_workdays) — e.g. the
+    START of a task bar given its due date and estimate."""
+    left = math.ceil(n)
+    d = end
+    while left > 0:
+        d -= datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            left -= 1
+    return d
+
+
 def estimate_of(task: dict, cfg: dict) -> float:
     est = task.get("estimate_days")
     try:

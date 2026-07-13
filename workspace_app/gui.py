@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QMessageBox, QAbstractItemView, QGroupBox, QTabWidget,
     QComboBox, QTableWidget, QTableWidgetItem, QDialog, QFormLayout,
     QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox, QSpinBox,
-    QListWidget, QListWidgetItem, QProgressBar,
+    QListWidget, QListWidgetItem, QProgressBar, QScrollArea,
 )
 
 from flumen.config import (ProjectConfig, SFTPCredentials, CACHED_CONFIG,
@@ -631,6 +631,13 @@ class MainWindow(QMainWindow):
         return page
 
     # ---- production plan ------------------------------------------------------
+    _STEP_COLORS = {
+        "model": QColor(96, 145, 220), "surface": QColor(72, 170, 160),
+        "rig": QColor(150, 120, 210), "dressing": QColor(150, 160, 90),
+        "layout": QColor(220, 150, 70), "animation": QColor(105, 185, 100),
+        "lighting": QColor(210, 180, 80),
+    }
+
     _HEALTH_COLORS = {
         planmod.HEALTH_LATE: QColor("#e05555"),
         planmod.HEALTH_DUE_SOON: QColor("#e0a030"),
@@ -676,6 +683,12 @@ class MainWindow(QMainWindow):
             "if you apply.")
         self.b_autoplan.clicked.connect(self._auto_plan)
         controls.addWidget(self.b_autoplan)
+        b_gantt = QPushButton("Gantt…")
+        b_gantt.setToolTip("Plot the current plan as a timeline: per-artist "
+                           "lanes, one bar per task from start (due minus "
+                           "estimate) to due date, deadline marked")
+        b_gantt.clicked.connect(self._show_gantt)
+        controls.addWidget(b_gantt)
         b_reload = QPushButton("Refresh")
         b_reload.clicked.connect(self._load_tasks)
         controls.addWidget(b_reload)
@@ -911,6 +924,25 @@ class MainWindow(QMainWindow):
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Applying plan…")
+
+    def _show_gantt(self):
+        cfg = self._planning_cfg()
+        artist = self.cb_plan_artist.currentData()
+        tasks = [t for t in (getattr(self, "_tasks", None) or [])
+                 if t.get("status") not in ("done", "omitted")
+                 and (not artist or artist in (t.get("assignees") or []))]
+        planned = [t for t in tasks if planmod.parse_date(t.get("due", ""))]
+        if not planned:
+            QMessageBox.information(
+                self, "Nothing to plot",
+                "No tasks with due dates yet — run Auto-plan (or set due "
+                "dates) first.")
+            return
+        unplanned = len(tasks) - len(planned)
+        dlg = GanttDialog(planned, cfg, self._roster,
+                          self._HEALTH_COLORS, self._STEP_COLORS,
+                          unplanned=unplanned, parent=self)
+        dlg.exec()
 
     # ---- dailies / review ---------------------------------------------------
     def _build_dailies_page(self) -> QWidget:
@@ -2743,6 +2775,144 @@ class BugReportDialog(QDialog):
         self.include_log = self.cb_log.isChecked()
         self.include_screenshot = self.cb_shot.isChecked()
         self.accept()
+
+
+class _GanttCanvas(QWidget):
+    """The painted timeline: per-artist lanes, one bar per task from its start
+    (due minus estimate, in workdays) to its due date. Weekends shaded, today
+    and the deadline as vertical lines, late bars outlined red."""
+    ROW_H = 24
+    HEADER_H = 28
+    LEFT_W = 250
+
+    def __init__(self, rows, day0, day1, today, deadline, parent=None):
+        super().__init__(parent)
+        self._rows = rows            # (artist_or_None, start, due, label, color, late)
+        self._day0, self._day1 = day0, day1
+        self._today, self._deadline = today, deadline
+        self.setMinimumHeight(self.HEADER_H + self.ROW_H * len(rows) + 8)
+        self.setMinimumWidth(900)
+
+    def _x(self, day, w):
+        span = max(1, (self._day1 - self._day0).days)
+        return self.LEFT_W + (day - self._day0).days / span * (w - self.LEFT_W - 12)
+
+    def paintEvent(self, _event):
+        from PySide6.QtGui import QPainter, QPen
+        import datetime as dt
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, False)
+        w = self.width()
+        bottom = self.HEADER_H + self.ROW_H * len(self._rows)
+        pal = self.palette()
+        fg = pal.text().color()
+        dim = QColor(fg)
+        dim.setAlpha(110)
+
+        # weekend shading + weekly gridlines with date labels
+        d = self._day0
+        while d <= self._day1:
+            x0, x1 = self._x(d, w), self._x(d + dt.timedelta(days=1), w)
+            if d.weekday() >= 5:
+                p.fillRect(int(x0), self.HEADER_H, max(1, int(x1 - x0)),
+                           bottom - self.HEADER_H, QColor(127, 127, 127, 26))
+            if d.weekday() == 0:                       # Monday gridline + label
+                p.setPen(QPen(QColor(127, 127, 127, 60)))
+                p.drawLine(int(x0), self.HEADER_H, int(x0), bottom)
+                p.setPen(dim)
+                p.drawText(int(x0) + 3, self.HEADER_H - 8,
+                           d.strftime("%d %b"))
+            d += dt.timedelta(days=1)
+
+        # rows
+        y = self.HEADER_H
+        last_artist = object()
+        for artist, start, due, label, color, late in self._rows:
+            if artist != last_artist:
+                p.setPen(QPen(QColor(127, 127, 127, 70)))
+                p.drawLine(0, y, w, y)
+                last_artist = artist
+            x0, x1 = self._x(start, w), self._x(due + dt.timedelta(days=1), w)
+            bar = QColor(color)
+            bar.setAlpha(210)
+            p.fillRect(int(x0), y + 4, max(3, int(x1 - x0)), self.ROW_H - 8, bar)
+            if late:
+                p.setPen(QPen(QColor(224, 85, 85), 2))
+                p.drawRect(int(x0), y + 4, max(3, int(x1 - x0)), self.ROW_H - 8)
+            p.setPen(fg)
+            p.drawText(6, y + self.ROW_H - 8,
+                       p.fontMetrics().elidedText(label, Qt.ElideMiddle,
+                                                  self.LEFT_W - 12))
+            y += self.ROW_H
+
+        # today + deadline verticals
+        for day, color, name in ((self._today, QColor(140, 140, 150), "today"),
+                                 (self._deadline, QColor(224, 85, 85),
+                                  "deadline")):
+            if day and self._day0 <= day <= self._day1:
+                x = self._x(day, w)
+                p.setPen(QPen(color, 2))
+                p.drawLine(int(x), self.HEADER_H - 4, int(x), bottom)
+                p.setPen(color)
+                p.drawText(int(x) + 4, self.HEADER_H + 10, name)
+        p.end()
+
+
+class GanttDialog(QDialog):
+    def __init__(self, planned, cfg, roster, health_colors, step_colors,
+                 unplanned=0, parent=None):
+        super().__init__(parent)
+        import datetime as dt
+        self.setWindowTitle("Production plan — Gantt")
+        self.resize(1150, 700)
+        today = dt.date.today()
+        deadline = planmod.parse_date(cfg.get("deadline", ""))
+
+        # per-artist lanes, tasks by due date; bar start = due - estimate
+        rows = []
+        by_artist: dict[str, list] = {}
+        for t in planned:
+            names = t.get("assignees") or ["(unassigned)"]
+            by_artist.setdefault(names[0], []).append(t)
+        for artist in sorted(by_artist):
+            for t in sorted(by_artist[artist], key=lambda t: t.get("due", "")):
+                due = planmod.parse_date(t["due"])
+                pace = planmod.availability_of(artist, cfg) / 5.0
+                dur = planmod.estimate_of(t, cfg) / (pace or 1.0)
+                start = planmod.sub_workdays(due, max(1.0, dur) - 1)
+                late = planmod.health(t, today, cfg) == planmod.HEALTH_LATE
+                color = step_colors.get(t.get("step", ""),
+                                        QColor(150, 150, 150))
+                label = (f"{usersmod.display_name(roster, artist)}   "
+                         f"{t.get('entity')} · {t.get('step')}")
+                rows.append((artist, start, due, label, color, late))
+
+        day0 = min([r[1] for r in rows] + [today]) - dt.timedelta(days=2)
+        day1 = max([r[2] for r in rows]
+                   + ([deadline] if deadline else [])) + dt.timedelta(days=4)
+
+        lay = QVBoxLayout(self)
+        legend = QHBoxLayout()
+        for step, color in step_colors.items():
+            chip = QLabel(f"■ {step}")
+            chip.setStyleSheet(f"color: rgb({color.red()},{color.green()},"
+                               f"{color.blue()});")
+            legend.addWidget(chip)
+        legend.addStretch(1)
+        if unplanned:
+            legend.addWidget(QLabel(f"{unplanned} task(s) without a due date "
+                                    f"not shown — run Auto-plan."))
+        lay.addLayout(legend)
+
+        canvas = _GanttCanvas(rows, day0, day1, today, deadline, self)
+        scroll = QScrollArea()
+        scroll.setWidget(canvas)
+        scroll.setWidgetResizable(True)
+        lay.addWidget(scroll, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.clicked.connect(self.accept)
+        lay.addWidget(buttons)
 
 
 class UserPickerDialog(QDialog):
