@@ -1422,8 +1422,32 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             "step": task.get("step"), "ttype": task.get("type"),
             "task_id": task["id"], "pub_path": pub_path, "look_name": look_name,
         })
+        if task.get("step") == "surface":
+            # WYSIWYG review: whatever the artist hid in the surface scene stays
+            # hidden in the look turntable (which renders the PUBLISHED model
+            # headless and would otherwise bring everything back).
+            hidden = _scene_hidden_names(context)
+            if hidden:
+                _PENDING_UPLOAD["extra_args"] = ["--hide", "||".join(hidden)]
         bpy.ops.flumen.publish_upload('INVOKE_DEFAULT')
         return {"FINISHED"}
+
+
+def _scene_hidden_names(context):
+    """Mesh objects the artist hid in the working scene — by ANY toggle: the
+    outliner eye (hide_get), the monitor (hide_viewport) or the camera
+    (hide_render). Scene-only state that a headless review render can't see."""
+    names = set()
+    for o in context.scene.objects:
+        if o.type != "MESH":
+            continue
+        try:
+            eye = o.hide_get()
+        except Exception:  # noqa: BLE001 — not in the active view layer
+            eye = False
+        if eye or o.hide_viewport or o.hide_render:
+            names.add(o.name)
+    return sorted(names)
 
 
 # Handoff from FLUMEN_OT_publish to the modal uploader (the codebase's established
@@ -1469,13 +1493,24 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
 
     def invoke(self, context, event):
         self._data = dict(_PENDING_UPLOAD)
-        if not self._data.get("cmd"):
+        if not self._data.get("cmd") and not self._data.get("render_only"):
             self.report({"ERROR"}, "Nothing to upload.")
             return {"CANCELLED"}
         wm = context.window_manager
         wm.progress_begin(0, 100)
         self._timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
+        # Render-only jobs (Render turntable): no upload, straight to phase 2.
+        if self._data.get("render_only"):
+            plan = self._render_plan()
+            if plan:
+                cmd, cwd, label, note = plan
+                self._note = note
+                if self._begin(context, cmd, cwd, label, "render"):
+                    return {"RUNNING_MODAL"}
+            return self._teardown(context, cancelled=True,
+                                  msg="Could not start the render — launch from "
+                                      "the Workspace app.")
         # Phase 0 (optional): headless clean/bake of the publish copy. Then the
         # upload; then the background render.
         if self._data.get("post_cmd"):
@@ -1617,6 +1652,7 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
             label, note = "Rendering playblast", "  Playblast published → dailies."
         else:
             return None
+        cmd += d.get("extra_args") or []
         full, td = _toolkit_cmd(cmd)
         if not full:
             return None
@@ -2102,6 +2138,84 @@ class FLUMEN_OT_preview_turntable(bpy.types.Operator):
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, f"Could not start preview: {exc}")
             return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class FLUMEN_OT_render_look_turntable(bpy.types.Operator):
+    bl_idname = "flumen.render_turntable"
+    bl_label = "Render turntable"
+    bl_description = ("Re-render this look's review turntable from its latest "
+                      "published version — no new publish, no texture upload. "
+                      "Objects hidden in this scene stay hidden; framing can be "
+                      "overridden per render")
+
+    override: bpy.props.BoolProperty(
+        name="Override framing", default=False,
+        description="Use a custom fit/zoom for this render instead of the "
+                    "project / per-asset setting")
+    fit_mode: bpy.props.EnumProperty(
+        name="Fit", default="box",
+        items=[("box", "Box — fit whole bounding box", ""),
+               ("height", "Height — fill vertically", ""),
+               ("width", "Width — fit widest horizontal", "")])
+    fit_scale: bpy.props.FloatProperty(
+        name="Zoom", default=1.0, min=0.05, max=5.0, soft_min=0.2, soft_max=2.0,
+        description="<1 = smaller / more margin, >1 = bigger")
+
+    def invoke(self, context, event):
+        task = active_task()
+        if not task or task.get("step") != "surface":
+            self.report({"ERROR"}, "Open a surface (shading) task first — this "
+                                   "re-renders a published look's turntable.")
+            return {"CANCELLED"}
+        global _EXISTING_LOOKS
+        _EXISTING_LOOKS = _fetch_existing_looks(task["id"])
+        if not _EXISTING_LOOKS:
+            self.report({"ERROR"}, "No published look yet — publish once first "
+                                   "(the turntable renders published textures).")
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=380, title="Render turntable", confirm_text="Render")
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(context.window_manager, "flumen_look_name", text="Look")
+        col.prop(self, "override")
+        sub = col.column()
+        sub.enabled = self.override
+        sub.prop(self, "fit_mode")
+        sub.prop(self, "fit_scale", slider=True)
+        hidden = _scene_hidden_names(context)
+        if hidden:
+            col.separator()
+            col.label(text=f"{len(hidden)} hidden object(s) will stay hidden.",
+                      icon="HIDE_ON")
+
+    def execute(self, context):
+        task = active_task()
+        if not task:
+            return {"CANCELLED"}
+        look_name = look_mod.normalize_look_name(
+            context.window_manager.flumen_look_name)
+        if look_name not in _EXISTING_LOOKS:
+            self.report({"ERROR"}, f"No published look named '{look_name}' — "
+                                   f"pick one of: {', '.join(_EXISTING_LOOKS)}.")
+            return {"CANCELLED"}
+        extra = ["--turntable-only"]
+        hidden = _scene_hidden_names(context)
+        if hidden:
+            extra += ["--hide", "||".join(hidden)]
+        if self.override:
+            extra += ["--fit-mode", self.fit_mode,
+                      "--fit-scale", f"{self.fit_scale:g}"]
+        _PENDING_UPLOAD.clear()
+        _PENDING_UPLOAD.update({
+            "render_only": True, "render": True, "step": "surface",
+            "ttype": task.get("type"), "task_id": task["id"],
+            "look_name": look_name, "extra_args": extra,
+            "success": f"Turntable of look '{look_name}' rendered.",
+        })
+        bpy.ops.flumen.publish_upload('INVOKE_DEFAULT')
         return {"FINISHED"}
 
 
@@ -3475,4 +3589,5 @@ CLASSES = (
     FLUMEN_OT_load_animation,
     FLUMEN_OT_turntable_framing,
     FLUMEN_OT_preview_turntable,
+    FLUMEN_OT_render_look_turntable,
 )

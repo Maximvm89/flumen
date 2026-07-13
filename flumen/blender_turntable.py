@@ -338,6 +338,27 @@ def run_template_mode():
         print(f"[Flumen] per-asset turntable override: "
               f"fit_mode={fit_mode} fit_scale={fit_scale}")
 
+    # Per-run override (the Render turntable dialog) beats everything above.
+    ovr_mode = os.environ.get("FLUMEN_TT_FIT_MODE_OVR", "").lower()
+    if ovr_mode in ("box", "height", "width"):
+        fit_mode = ovr_mode
+    ovr_scale = os.environ.get("FLUMEN_TT_FIT_SCALE_OVR", "")
+    if ovr_scale:
+        try:
+            fit_scale = float(ovr_scale)
+        except ValueError:
+            pass
+    if ovr_mode or ovr_scale:
+        print(f"[Flumen] per-run framing override: "
+              f"fit_mode={fit_mode} fit_scale={fit_scale}")
+
+    # Objects the artist hid in their WORKING scene (any hide toggle, eye
+    # included) — collected by the publish / Render-turntable dialog and passed
+    # through, since scene-only state never reaches this headless render.
+    hide_names = {n for n in os.environ.get("FLUMEN_TT_HIDE", "").split("||") if n}
+    if hide_names:
+        print(f"[Flumen] hiding per artist scene: {sorted(hide_names)}")
+
     roots = []
     linked = []
     hidden_n = 0
@@ -352,7 +373,9 @@ def run_template_mode():
         # NOTE: the outliner *eye* (H / hide_set) is a per-view-layer toggle that
         # does NOT survive appending into the turntable scene — it cannot be
         # honored, so use the camera/monitor icon to hide from the turntable.
-        hidden = bool(obj.hide_render or obj.hide_viewport)
+        hidden = bool(obj.hide_render or obj.hide_viewport
+                      or obj.name in hide_names
+                      or obj.name.split(".")[0] in hide_names)
         obj.hide_render = hidden
         obj.hide_viewport = hidden
         if hidden:

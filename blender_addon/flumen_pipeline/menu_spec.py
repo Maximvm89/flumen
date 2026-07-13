@@ -46,6 +46,8 @@ ACTIONS = {
     "flumen.load_animation": {"text": "Load animation…", "icon": "ANIM_DATA"},
     "flumen.cycle_format": {"text": "Preview format (16:9 ⇄ 9:16)",
                             "icon": "ARROW_LEFTRIGHT"},
+    "flumen.render_turntable": {"text": "Render turntable",
+                                "icon": "RENDER_ANIMATION"},
     "flumen.add_review_camera": {"icon": "VIEW_CAMERA"},
     "flumen.render_review": {"icon": "RENDER_STILL"},
     "flumen.save_to_task": {"icon": "FILE_TICK"},
@@ -79,7 +81,8 @@ DEFAULT_MENUS = {
     "asset:model:environments": (_TASK_CORE
                                  + [SEPARATOR, "flumen.add_publish_collection"]
                                  + _TAIL),
-    "asset:surface": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
+    "asset:surface": (["flumen.load_model", "flumen.apply_look",
+                       "flumen.render_turntable", SEPARATOR]
                       + _TASK_CORE + _ASSET_TOOLS + _TAIL),
     "asset:rig": (["flumen.load_model", "flumen.apply_look", SEPARATOR]
                   + _TASK_CORE + _ASSET_TOOLS + _TAIL),

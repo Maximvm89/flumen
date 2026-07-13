@@ -175,7 +175,10 @@ def _export_uv_only(cfg, model_path: str, uv_out: str) -> int:
 def run_look_review(cfg, creds, *, task_id: str, entity: str, base: str,
                     version: int, model_path: str, look_blend: str,
                     manifest_path: str, blend_rel: str, hdri: str | None = None,
-                    sheet_only: bool = False, dry_run: bool = False) -> int:
+                    sheet_only: bool = False, turntable_only: bool = False,
+                    fit_mode: str | None = None, fit_scale: float | None = None,
+                    hide_names: list[str] | None = None,
+                    dry_run: bool = False) -> int:
     """Render a shaded look turntable + texture/UV sheet and publish both into
     07_dailies, attached to the look's publish record. The turntable REUSES the
     model turntable pipeline (run_turntable) — same template, framing and lighting —
@@ -195,7 +198,8 @@ def run_look_review(cfg, creds, *, task_id: str, entity: str, base: str,
     uv_json = os.path.join(tempfile.gettempdir(), f"_lr_uv_{version_label}.json")
 
     if dry_run:
-        what = "texture/UV sheet only" if sheet_only else "turntable + sheet"
+        what = ("texture/UV sheet only" if sheet_only
+                else "turntable only" if turntable_only else "turntable + sheet")
         print(f"(dry-run) would render look review ({what}) of {base} v{version:03d}\n"
               f"          sheet -> {sheet_rel}"
               + ("" if sheet_only else f"\n          turntable -> {tt_rel}"))
@@ -210,9 +214,12 @@ def run_look_review(cfg, creds, *, task_id: str, entity: str, base: str,
         rc = run_turntable(cfg, creds, model_path, task_id,
                            version_label=version_label, look_blend=look_blend,
                            manifest_path=manifest_path, uv_out=uv_json,
-                           record_blend_rel=blend_rel)
+                           record_blend_rel=blend_rel, fit_mode=fit_mode,
+                           fit_scale=fit_scale, hide_names=hide_names)
         if rc:
             return rc
+    if turntable_only:
+        return 0
 
     # 2) Texture/UV sheet from the published tiles + the UV wireframe.
     entries = []
@@ -298,7 +305,9 @@ def run_turntable(cfg, creds, model_path: str, task_id: str,
                   dry_run: bool = False, preview: bool = False, *,
                   version_label: str | None = None, look_blend: str | None = None,
                   manifest_path: str | None = None, uv_out: str | None = None,
-                  record_blend_rel: str | None = None) -> int:
+                  record_blend_rel: str | None = None,
+                  fit_mode: str | None = None, fit_scale: float | None = None,
+                  hide_names: list[str] | None = None) -> int:
     """Render a turntable from model_path and publish it to 07_dailies. Reused for
     look reviews: pass look_blend + manifest_path to shade the model with a published
     look first (same template rig), version_label to name the daily after the look,
@@ -359,6 +368,14 @@ def run_turntable(cfg, creds, model_path: str, task_id: str,
         env["FLUMEN_LR_MANIFEST"] = manifest_path or ""
     if uv_out:
         env["FLUMEN_LR_UV_OUT"] = uv_out
+    # Per-run overrides (Render turntable dialog): beat both the project
+    # defaults and the per-asset framing on the PUBLISH locator.
+    if fit_mode:
+        env["FLUMEN_TT_FIT_MODE_OVR"] = str(fit_mode)
+    if fit_scale:
+        env["FLUMEN_TT_FIT_SCALE_OVR"] = str(fit_scale)
+    if hide_names:
+        env["FLUMEN_TT_HIDE"] = "||".join(hide_names)
 
     # Template mode: open the artist's turntable .blend and append the model into
     # it, parented under a named control. Otherwise open the model and auto-rig.

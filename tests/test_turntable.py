@@ -133,3 +133,29 @@ def test_face_camera_env_defaults():
     s2 = turntable.turntable_settings({"turntable": {"face_camera": False,
                                                      "front_offset_deg": 90}})
     assert s2["face_camera"] is False and s2["front_offset_deg"] == 90
+
+
+def test_run_look_review_dry_run_turntable_only(tmp_path, capsys):
+    import types
+    cfg = types.SimpleNamespace(resolved_local_root=lambda: str(tmp_path),
+                                remote_root="/r", blender_path=None)
+    rc = turntable.run_look_review(
+        cfg, creds=None, task_id="asset-characters_frank-surface",
+        entity="characters/frank", base="frank_surface_default", version=2,
+        model_path="/x/model.blend", look_blend="/x/look.blend",
+        manifest_path="/x/look.manifest.json",
+        blend_rel="03_assets/characters/frank/surface/publish/"
+                  "frank_surface_default_v002.blend",
+        hdri=None, turntable_only=True, dry_run=True)
+    assert rc == 0
+    assert "turntable only" in capsys.readouterr().out
+
+
+def test_record_turntable_extra_rels_shared_record():
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/panda", "model"))
+    tasks.publish_task(s, "/r", "marco", ["/tmp/panda_model_v001.blend"], t["id"])
+    r1 = "07_dailies/characters/panda/model/panda_model_v001_turntable.mp4"
+    turntable.record_turntable(s, "/r", t["id"], r1, "marco")
+    reloaded = tasks.get_task(s, "/r", t["id"])
+    assert "turntables" not in reloaded["publishes"][-1]   # single clip: legacy shape

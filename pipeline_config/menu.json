@@ -38,6 +38,7 @@
     "asset:surface": [
       "flumen.load_model",
       "flumen.apply_look",
+      "flumen.render_turntable",
       "---",
       "flumen.save_to_task",
       "flumen.run_checks",

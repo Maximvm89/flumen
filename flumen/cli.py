@@ -592,7 +592,10 @@ def cmd_look_review(args) -> int:
         cfg, creds, task_id=args.task, entity=entity, base=base, version=version,
         model_path=model_local, look_blend=look_blend,
         manifest_path=manifest_local, blend_rel=blend_rel, hdri=hdri,
-        sheet_only=args.sheet_only, dry_run=args.dry_run)
+        sheet_only=args.sheet_only, turntable_only=args.turntable_only,
+        fit_mode=args.fit_mode, fit_scale=args.fit_scale,
+        hide_names=([n for n in (args.hide or "").split("||") if n] or None),
+        dry_run=args.dry_run)
 
 
 def cmd_next_version(args) -> int:
@@ -1147,6 +1150,15 @@ def build_parser() -> argparse.ArgumentParser:
                                    "project default, else neutral)")
     lr.add_argument("--sheet-only", action="store_true",
                     help="regenerate just the texture/UV sheet (skip the turntable)")
+    lr.add_argument("--turntable-only", action="store_true", dest="turntable_only",
+                    help="render just the turntable (skip the texture/UV sheet)")
+    lr.add_argument("--fit-mode", dest="fit_mode",
+                    choices=["box", "height", "width"],
+                    help="framing override for this render")
+    lr.add_argument("--fit-scale", dest="fit_scale", type=float,
+                    help="framing zoom override for this render (1 = default)")
+    lr.add_argument("--hide", help="'||'-separated object names to keep hidden "
+                                   "(what the artist hid in their scene)")
     lr.set_defaults(func=cmd_look_review)
 
     nv = sub.add_parser("next-version", parents=[common],
