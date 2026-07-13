@@ -265,6 +265,9 @@ def _encode_mp4(frames_dir: str, out_mp4: str, fps) -> bool:
     cmd = [_ffmpeg_exe(), "-y", "-framerate", str(fps),
            "-start_number", str(int(start)),
            "-i", os.path.join(frames_dir, "frame_%04d.png"),
+           # yuv420p needs even dimensions; odd sources (e.g. a 405px-wide
+           # half-res 9:16 preview) are rounded down a pixel instead of failing
+           "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", out_mp4]
     try:
         subprocess.run(cmd, check=True)

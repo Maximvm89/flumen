@@ -252,11 +252,30 @@ def main():
                              "anim": c.get("flumen_anim", "") or c.get("legami_anim", "")})
     elements.sort(key=lambda e: e["id"])
 
+    # Nested delivery formats: any format NARROWER than the primary (e.g. 9:16
+    # next to a 16:9 primary) renders as a centered slice of it — same vertical
+    # FOV, same pixel size — so the vertical clip is literally the middle of the
+    # horizontal one. Achieved by locking the camera's vertical sensor size to
+    # the primary's effective vertical size for those passes.
+    cam = scene.camera.data
+    base_x, base_y = formats[0][1], formats[0][2]
+    orig_fit, orig_h = cam.sensor_fit, cam.sensor_height
+    if orig_fit == "VERTICAL":
+        nest_h = None            # vertical FOV already fixed -> formats nest
+    elif orig_fit == "HORIZONTAL" or base_x >= base_y:
+        nest_h = cam.sensor_width * (base_y / base_x)
+    else:
+        nest_h = None            # portrait-primary AUTO: leave as-is
+
     _install_render_progress(scene)
     for name, x, y in formats:
         fdir = os.path.join(frames_dir, name) if name else frames_dir
         os.makedirs(fdir, exist_ok=True)
         r.resolution_x, r.resolution_y = x, y
+        if nest_h is not None and x / y < base_x / base_y - 1e-6:
+            cam.sensor_fit, cam.sensor_height = "VERTICAL", nest_h
+        else:
+            cam.sensor_fit, cam.sensor_height = orig_fit, orig_h
         r.filepath = os.path.join(fdir, "frame_")
         with open(os.path.join(fdir, "_pb_info.json"), "w",
                   encoding="utf-8") as fh:

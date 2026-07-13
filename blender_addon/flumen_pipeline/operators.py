@@ -3079,6 +3079,39 @@ class FLUMEN_OT_cycle_format(bpy.types.Operator):
         nxt = formats[(idx + 1) % len(formats)]
         r.resolution_x = int(nxt["resolution_x"])
         r.resolution_y = int(nxt["resolution_y"])
+        # Match the render's nesting (see blender_playblast): a format narrower
+        # than the primary previews as the centered slice of it — same vertical
+        # FOV — by locking the camera's vertical sensor size. The original
+        # sensor state is stashed on the camera data and restored on the
+        # primary, where a safe-area box marks the narrowest format's crop.
+        cam = context.scene.camera.data if context.scene.camera else None
+        bx, by = (int(formats[0]["resolution_x"]),
+                  int(formats[0]["resolution_y"]))
+        if cam is not None and bx >= by:
+            if "flumen_sensor_fit" not in cam:
+                cam["flumen_sensor_fit"] = cam.sensor_fit
+                cam["flumen_sensor_height"] = cam.sensor_height
+            narrower = (int(nxt["resolution_x"]) / int(nxt["resolution_y"])
+                        < bx / by - 1e-6)
+            if narrower and cam["flumen_sensor_fit"] != "VERTICAL":
+                cam.sensor_fit = "VERTICAL"
+                cam.sensor_height = cam.sensor_width * (by / bx)
+            else:
+                cam.sensor_fit = str(cam["flumen_sensor_fit"])
+                cam.sensor_height = float(cam["flumen_sensor_height"])
+            # Crop guide on the primary: dashed box where the narrowest
+            # format's slice sits inside this frame.
+            slices = [f for f in formats
+                      if int(f["resolution_x"]) / int(f["resolution_y"])
+                      < bx / by - 1e-6]
+            if slices and nxt is formats[0]:
+                fx = min(int(f["resolution_x"]) / int(f["resolution_y"])
+                         for f in slices) * by / bx
+                try:
+                    cam.show_safe_areas = True
+                    context.scene.safe_areas.title = (1.0 - fx, 0.0)
+                except Exception:  # noqa: BLE001
+                    pass
         self.report({"INFO"}, f"Previewing {nxt['name']} "
                               f"({r.resolution_x}x{r.resolution_y}) — the "
                               f"playblast renders every format regardless.")
