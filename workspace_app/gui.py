@@ -56,6 +56,7 @@ STATUS_STYLE = {
     "in_progress": (QColor(96, 165, 250), "🔵"),
     "review":      (QColor(245, 158, 66), "🟠"),
     "done":        (QColor(74, 222, 128), "🟢"),
+    "omitted":     (QColor(110, 110, 118), "⊘"),
 }
 # A small icon per task type and per department/step (first substring match wins).
 TYPE_ICON = {"asset": "📦", "shot": "🎬"}
@@ -745,6 +746,8 @@ class MainWindow(QMainWindow):
         query = self.ed_plan_search.text()
         rows = []
         for t in tasks:
+            if t.get("status") == "omitted":
+                continue                     # cut from the show: never planned
             if not self.chk_plan_done.isChecked() and t.get("status") == "done":
                 continue
             if artist and artist not in (t.get("assignees") or []):

@@ -650,7 +650,7 @@ def cmd_plan(args) -> int:
               + (f"  {a['late']} late" if a["late"] else ""))
     for t in sorted(task_list, key=lambda t: (t.get('due') or '9999',
                                               t.get('entity', ''))):
-        if t.get("status") == "done":
+        if t.get("status") in planmod.INACTIVE_STATUSES:
             continue
         h = planmod.health(t, today, pcfg)
         print(f"  {t.get('due') or '----------'}  "

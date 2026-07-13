@@ -104,8 +104,12 @@ def step_rank(task: dict) -> int:
     return STEP_RANK.get(task.get("type", ""), {}).get(task.get("step", ""), 9)
 
 
+# Statuses outside the plan: finished work and tasks cut from the show.
+INACTIVE_STATUSES = frozenset({"done", "omitted"})
+
+
 def health(task: dict, today: datetime.date, cfg: dict) -> str:
-    if task.get("status") == "done":
+    if task.get("status") in INACTIVE_STATUSES:
         return HEALTH_DONE
     due = parse_date(task.get("due", ""))
     if due is None:
@@ -137,7 +141,7 @@ def plan_summary(tasks: list[dict], roster: list[dict],
     unassigned_days = 0.0
     remaining_days = 0.0
     for t in tasks or []:
-        if t.get("status") == "done":
+        if t.get("status") in INACTIVE_STATUSES:
             continue
         est = estimate_of(t, cfg)
         remaining_days += est
@@ -180,7 +184,7 @@ def propose_schedule(tasks: list[dict], today: datetime.date,
     queues: dict[str, list[dict]] = {}
     warnings: list[str] = []
     for t in tasks or []:
-        if t.get("status") == "done":
+        if t.get("status") in INACTIVE_STATUSES:
             continue
         names = t.get("assignees") or []
         if not names:

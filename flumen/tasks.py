@@ -272,12 +272,15 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
     save_task(sftp, remote_root, task, actor=username)
     return rels
 
-STATUSES = ["todo", "in_progress", "review", "done"]
+STATUSES = ["todo", "in_progress", "review", "done", "omitted"]
 STATUS_LABELS = {
     "todo": "To do",
     "in_progress": "In progress",
     "review": "Review",
     "done": "Done",
+    # Cut from the production: stays on record but drops out of task lists'
+    # defaults, the plan and the schedule. Set it back to To do to reinstate.
+    "omitted": "Omitted",
 }
 
 
