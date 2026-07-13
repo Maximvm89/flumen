@@ -184,6 +184,48 @@ def plan_summary(tasks: list[dict], roster: list[dict],
     }
 
 
+def reflow(tasks: list[dict], today: datetime.date, cfg: dict,
+           shot_elements: dict[str, list[str]] | None = None
+           ) -> dict[str, str]:
+    """Re-settle hand-edited due dates against reality: every task keeps its
+    desired (current) position when possible, but is pushed forward so it
+    never starts before its prerequisites finish and never overlaps an
+    earlier task of the same artist. Only pushes — dragging a prerequisite
+    EARLIER doesn't pull dependents back. Tasks without a due date are left
+    alone. Returns {task_id: due} for every positioned task."""
+    deps = task_dependencies(tasks, shot_elements)
+    by_id = {t["id"]: t for t in tasks or [] if t.get("id")}
+    placed = [t for t in tasks or []
+              if t.get("status") not in INACTIVE_STATUSES
+              and parse_date(t.get("due", ""))]
+    # Prerequisites first; within an artist, the current due order IS the
+    # queue order the user arranged.
+    placed.sort(key=lambda t: (
+        STEP_DEPTH.get((t.get("type"), t.get("step")), 9),
+        t.get("due", ""), t.get("entity", "")))
+
+    finish: dict[str, float] = {}
+    cursor: dict[str, float] = {}
+    out: dict[str, str] = {}
+    for t in placed:
+        user = (t.get("assignees") or ["(unassigned)"])[0]
+        pace = availability_of(user, cfg) / 5.0
+        dur = estimate_of(t, cfg) / (pace or 1.0)
+        desired_start = workdays_between(today, parse_date(t["due"])) - dur
+        start = max(desired_start, cursor.get(user, 0.0))
+        for d in deps.get(t["id"], []):
+            dt_ = by_id.get(d)
+            if dt_ is None or dt_.get("status") in INACTIVE_STATUSES:
+                continue
+            if d in finish:
+                start = max(start, finish[d])
+        end = start + dur
+        finish[t["id"]] = end
+        cursor[user] = end
+        out[t["id"]] = add_workdays(today, end).isoformat()
+    return out
+
+
 def load_shot_elements(sftp, remote_root: str,
                        tasks: list[dict]) -> dict[str, list[str]]:
     """{shot_entity: [asset entities in its element list]} for every shot task,

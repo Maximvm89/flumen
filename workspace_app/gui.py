@@ -939,9 +939,34 @@ class MainWindow(QMainWindow):
                 "dates) first.")
             return
         unplanned = len(tasks) - len(planned)
+
+        def on_apply(changes: dict):
+            remote = self.cfg.remote_root
+            actor = self._creds_user_safe()
+
+            def work():
+                return [self._conn_do(
+                    lambda c, x=tid, ch=ch: tasksmod.set_plan(
+                        c, remote, x, estimate_days=ch.get("estimate_days"),
+                        due=ch.get("due"), actor=actor))
+                    for tid, ch in changes.items()]
+
+            def done(updated):
+                self._busy_buttons(False)
+                self._merge_tasks(updated)
+                self.status.showMessage(
+                    f"Gantt: {len(changes)} task(s) rescheduled.")
+
+            self._busy_buttons(True)
+            self._spawn(work, done, busy_msg="Applying schedule…")
+
         dlg = GanttDialog(planned, cfg, self._roster,
                           self._HEALTH_COLORS, self._STEP_COLORS,
-                          unplanned=unplanned, parent=self)
+                          unplanned=unplanned,
+                          shot_elements=getattr(self, "_shot_elements", None),
+                          on_apply=on_apply if self._can_delete_remote()
+                          else None,
+                          parent=self)
         dlg.exec()
 
     # ---- dailies / review ---------------------------------------------------
@@ -2778,79 +2803,215 @@ class BugReportDialog(QDialog):
 
 
 class _GanttCanvas(QWidget):
-    """The painted timeline: per-artist lanes, one bar per task from its start
-    (due minus estimate, in workdays) to its due date. Weekends shaded, today
-    and the deadline as vertical lines, late bars outlined red."""
+    """Interactive timeline: per-artist lanes, one bar per task. Drag a bar to
+    move its due date; drag its RIGHT EDGE to change the estimate. Every edit
+    reflows the whole plan live (plan.reflow): dependents and overlapping
+    tasks of the same artist are pushed so the chart always shows a schedule
+    that respects the pipeline. Nothing is written until Apply."""
     ROW_H = 24
     HEADER_H = 28
     LEFT_W = 250
+    EDGE_PX = 6
 
-    def __init__(self, rows, day0, day1, today, deadline, parent=None):
+    def __init__(self, tasks, cfg, roster, step_colors, shot_elements,
+                 on_changes, parent=None):
         super().__init__(parent)
-        self._rows = rows            # (artist_or_None, start, due, label, color, late)
-        self._day0, self._day1 = day0, day1
-        self._today, self._deadline = today, deadline
-        self.setMinimumHeight(self.HEADER_H + self.ROW_H * len(rows) + 8)
-        self.setMinimumWidth(900)
+        import copy
+        import datetime as dt
+        self._cfg = cfg
+        self._roster = roster
+        self._colors = step_colors
+        self._elements = shot_elements or {}
+        self._on_changes = on_changes            # callback(n_changes)
+        self._today = dt.date.today()
+        self._deadline = planmod.parse_date(cfg.get("deadline", ""))
+        self._tasks = [copy.deepcopy(t) for t in tasks]
+        self._orig = {t["id"]: (t.get("due", ""), t.get("estimate_days"))
+                      for t in self._tasks}
+        self._drag = None                        # (mode, task, press_x, orig)
+        self.setMouseTracking(True)
+        self._reflow()
 
-    def _x(self, day, w):
+    # -- model ------------------------------------------------------------
+    def _reflow(self):
+        settled = planmod.reflow(self._tasks, self._today, self._cfg,
+                                 self._elements)
+        for t in self._tasks:
+            if t["id"] in settled:
+                t["due"] = settled[t["id"]]
+        self._rebuild_rows()
+        if self._on_changes:
+            self._on_changes(len(self.changes()))
+        self.update()
+
+    def _rebuild_rows(self):
+        import datetime as dt
+        rows = []
+        by_artist: dict[str, list] = {}
+        for t in self._tasks:
+            if not planmod.parse_date(t.get("due", "")):
+                continue
+            by_artist.setdefault((t.get("assignees") or ["(unassigned)"])[0],
+                                 []).append(t)
+        for artist in sorted(by_artist):
+            for t in sorted(by_artist[artist], key=lambda t: t.get("due", "")):
+                due = planmod.parse_date(t["due"])
+                pace = planmod.availability_of(artist, self._cfg) / 5.0
+                dur = planmod.estimate_of(t, self._cfg) / (pace or 1.0)
+                start = planmod.sub_workdays(due, max(1.0, dur) - 1)
+                rows.append({"task": t, "artist": artist, "start": start,
+                             "due": due,
+                             "moved": (t.get("due", ""),
+                                       t.get("estimate_days"))
+                                      != self._orig.get(t["id"])})
+        self._rows = rows
+        day0 = min([r["start"] for r in rows] + [self._today])
+        day1 = max([r["due"] for r in rows]
+                   + ([self._deadline] if self._deadline else []))
+        self._day0 = day0 - dt.timedelta(days=2)
+        self._day1 = day1 + dt.timedelta(days=4)
+        self.setMinimumHeight(self.HEADER_H + self.ROW_H * len(rows) + 8)
+
+    def changes(self) -> dict:
+        """{task_id: {due, estimate_days}} for every task that differs from
+        what was loaded."""
+        out = {}
+        for t in self._tasks:
+            due0, est0 = self._orig.get(t["id"], ("", None))
+            if (t.get("due", ""), t.get("estimate_days")) != (due0, est0):
+                out[t["id"]] = {"due": t.get("due", ""),
+                                "estimate_days": t.get("estimate_days")}
+        return out
+
+    # -- geometry -----------------------------------------------------------
+    def _x(self, day):
         span = max(1, (self._day1 - self._day0).days)
+        w = self.width()
         return self.LEFT_W + (day - self._day0).days / span * (w - self.LEFT_W - 12)
 
+    def _day_px(self):
+        import datetime as dt
+        return max(1e-6, self._x(self._day0 + dt.timedelta(days=1))
+                   - self._x(self._day0))
+
+    def _row_at(self, pos):
+        i = int((pos.y() - self.HEADER_H) // self.ROW_H)
+        return self._rows[i] if 0 <= i < len(self._rows) else None
+
+    def _bar_span(self, row):
+        import datetime as dt
+        return (self._x(row["start"]), self._x(row["due"] + dt.timedelta(days=1)))
+
+    # -- interaction ----------------------------------------------------------
+    def mousePressEvent(self, ev):
+        row = self._row_at(ev.position())
+        if not row:
+            return
+        x0, x1 = self._bar_span(row)
+        x = ev.position().x()
+        t = row["task"]
+        if abs(x - x1) <= self.EDGE_PX:
+            self._drag = ("resize", t, x,
+                          planmod.estimate_of(t, self._cfg))
+        elif x0 <= x <= x1:
+            self._drag = ("move", t, x, t.get("due", ""))
+
+    def mouseMoveEvent(self, ev):
+        import datetime as dt
+        if self._drag is None:
+            row = self._row_at(ev.position())
+            if row:
+                x0, x1 = self._bar_span(row)
+                x = ev.position().x()
+                if abs(x - x1) <= self.EDGE_PX:
+                    self.setCursor(Qt.SizeHorCursor)
+                elif x0 <= x <= x1:
+                    self.setCursor(Qt.OpenHandCursor)
+                else:
+                    self.unsetCursor()
+            else:
+                self.unsetCursor()
+            return
+        mode, t, press_x, orig = self._drag
+        days = round((ev.position().x() - press_x) / self._day_px())
+        if mode == "move":
+            base = planmod.parse_date(orig)
+            if base is None:
+                return
+            due = base + dt.timedelta(days=days)
+            while due.weekday() >= 5:                 # snap onto a workday
+                due += dt.timedelta(days=1)
+            if due < self._today:
+                due = self._today
+            t["due"] = due.isoformat()
+        else:
+            pace = planmod.availability_of(
+                (t.get("assignees") or [""])[0], self._cfg) / 5.0 or 1.0
+            est = max(0.5, orig + days * pace)
+            t["estimate_days"] = round(est * 2) / 2   # half-day steps
+        self._reflow()
+
+    def mouseReleaseEvent(self, _ev):
+        self._drag = None
+
+    # -- painting ---------------------------------------------------------------
     def paintEvent(self, _event):
         from PySide6.QtGui import QPainter, QPen
         import datetime as dt
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, False)
         w = self.width()
         bottom = self.HEADER_H + self.ROW_H * len(self._rows)
-        pal = self.palette()
-        fg = pal.text().color()
+        fg = self.palette().text().color()
         dim = QColor(fg)
         dim.setAlpha(110)
 
-        # weekend shading + weekly gridlines with date labels
         d = self._day0
         while d <= self._day1:
-            x0, x1 = self._x(d, w), self._x(d + dt.timedelta(days=1), w)
+            x0, x1 = self._x(d), self._x(d + dt.timedelta(days=1))
             if d.weekday() >= 5:
                 p.fillRect(int(x0), self.HEADER_H, max(1, int(x1 - x0)),
                            bottom - self.HEADER_H, QColor(127, 127, 127, 26))
-            if d.weekday() == 0:                       # Monday gridline + label
+            if d.weekday() == 0:
                 p.setPen(QPen(QColor(127, 127, 127, 60)))
                 p.drawLine(int(x0), self.HEADER_H, int(x0), bottom)
                 p.setPen(dim)
-                p.drawText(int(x0) + 3, self.HEADER_H - 8,
-                           d.strftime("%d %b"))
+                p.drawText(int(x0) + 3, self.HEADER_H - 8, d.strftime("%d %b"))
             d += dt.timedelta(days=1)
 
-        # rows
         y = self.HEADER_H
         last_artist = object()
-        for artist, start, due, label, color, late in self._rows:
-            if artist != last_artist:
+        for row in self._rows:
+            t = row["task"]
+            if row["artist"] != last_artist:
                 p.setPen(QPen(QColor(127, 127, 127, 70)))
                 p.drawLine(0, y, w, y)
-                last_artist = artist
-            x0, x1 = self._x(start, w), self._x(due + dt.timedelta(days=1), w)
-            bar = QColor(color)
-            bar.setAlpha(210)
+                last_artist = row["artist"]
+            x0, x1 = self._bar_span(row)
+            bar = QColor(self._colors.get(t.get("step", ""),
+                                          QColor(150, 150, 150)))
+            bar.setAlpha(230 if row["moved"] else 200)
             p.fillRect(int(x0), y + 4, max(3, int(x1 - x0)), self.ROW_H - 8, bar)
-            if late:
-                p.setPen(QPen(QColor(224, 85, 85), 2))
+            if row["moved"]:
+                p.setPen(QPen(fg, 2))
                 p.drawRect(int(x0), y + 4, max(3, int(x1 - x0)), self.ROW_H - 8)
+            due0 = planmod.parse_date(self._orig.get(t["id"], ("",))[0])
+            if row["moved"] and due0 and due0 != row["due"]:
+                p.setPen(QPen(dim, 1, Qt.DashLine))    # ghost of the old date
+                gx = self._x(due0 + dt.timedelta(days=1))
+                p.drawLine(int(gx), y + 4, int(gx), y + self.ROW_H - 4)
             p.setPen(fg)
+            label = (f"{usersmod.display_name(self._roster, row['artist'])}   "
+                     f"{t.get('entity')} · {t.get('step')}")
             p.drawText(6, y + self.ROW_H - 8,
                        p.fontMetrics().elidedText(label, Qt.ElideMiddle,
                                                   self.LEFT_W - 12))
             y += self.ROW_H
 
-        # today + deadline verticals
         for day, color, name in ((self._today, QColor(140, 140, 150), "today"),
                                  (self._deadline, QColor(224, 85, 85),
                                   "deadline")):
             if day and self._day0 <= day <= self._day1:
-                x = self._x(day, w)
+                x = self._x(day)
                 p.setPen(QPen(color, 2))
                 p.drawLine(int(x), self.HEADER_H - 4, int(x), bottom)
                 p.setPen(color)
@@ -2860,36 +3021,11 @@ class _GanttCanvas(QWidget):
 
 class GanttDialog(QDialog):
     def __init__(self, planned, cfg, roster, health_colors, step_colors,
-                 unplanned=0, parent=None):
+                 unplanned=0, shot_elements=None, on_apply=None, parent=None):
         super().__init__(parent)
-        import datetime as dt
         self.setWindowTitle("Production plan — Gantt")
         self.resize(1150, 700)
-        today = dt.date.today()
-        deadline = planmod.parse_date(cfg.get("deadline", ""))
-
-        # per-artist lanes, tasks by due date; bar start = due - estimate
-        rows = []
-        by_artist: dict[str, list] = {}
-        for t in planned:
-            names = t.get("assignees") or ["(unassigned)"]
-            by_artist.setdefault(names[0], []).append(t)
-        for artist in sorted(by_artist):
-            for t in sorted(by_artist[artist], key=lambda t: t.get("due", "")):
-                due = planmod.parse_date(t["due"])
-                pace = planmod.availability_of(artist, cfg) / 5.0
-                dur = planmod.estimate_of(t, cfg) / (pace or 1.0)
-                start = planmod.sub_workdays(due, max(1.0, dur) - 1)
-                late = planmod.health(t, today, cfg) == planmod.HEALTH_LATE
-                color = step_colors.get(t.get("step", ""),
-                                        QColor(150, 150, 150))
-                label = (f"{usersmod.display_name(roster, artist)}   "
-                         f"{t.get('entity')} · {t.get('step')}")
-                rows.append((artist, start, due, label, color, late))
-
-        day0 = min([r[1] for r in rows] + [today]) - dt.timedelta(days=2)
-        day1 = max([r[2] for r in rows]
-                   + ([deadline] if deadline else [])) + dt.timedelta(days=4)
+        self._on_apply = on_apply
 
         lay = QVBoxLayout(self)
         legend = QHBoxLayout()
@@ -2898,21 +3034,44 @@ class GanttDialog(QDialog):
             chip.setStyleSheet(f"color: rgb({color.red()},{color.green()},"
                                f"{color.blue()});")
             legend.addWidget(chip)
+        legend.addSpacing(16)
+        legend.addWidget(QLabel("Drag a bar to move it · drag its right edge "
+                                "to resize the estimate — the rest reflows."))
         legend.addStretch(1)
         if unplanned:
             legend.addWidget(QLabel(f"{unplanned} task(s) without a due date "
                                     f"not shown — run Auto-plan."))
         lay.addLayout(legend)
 
-        canvas = _GanttCanvas(rows, day0, day1, today, deadline, self)
+        self.b_apply = QPushButton("Apply changes")
+        self.b_apply.setEnabled(False)
+
+        def on_changes(n):
+            self.b_apply.setEnabled(bool(n and self._on_apply))
+            self.b_apply.setText(f"Apply {n} change(s)" if n
+                                 else "Apply changes")
+
+        self.canvas = _GanttCanvas(planned, cfg, roster, step_colors,
+                                   shot_elements, on_changes, self)
         scroll = QScrollArea()
-        scroll.setWidget(canvas)
+        scroll.setWidget(self.canvas)
         scroll.setWidgetResizable(True)
         lay.addWidget(scroll, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.clicked.connect(self.accept)
-        lay.addWidget(buttons)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.b_apply.clicked.connect(self._apply)
+        b_close = QPushButton("Close")
+        b_close.clicked.connect(self.reject)
+        buttons.addWidget(self.b_apply)
+        buttons.addWidget(b_close)
+        lay.addLayout(buttons)
+
+    def _apply(self):
+        changes = self.canvas.changes()
+        if changes and self._on_apply:
+            self._on_apply(changes)
+        self.accept()
 
 
 class UserPickerDialog(QDialog):

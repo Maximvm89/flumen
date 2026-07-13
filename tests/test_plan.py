@@ -159,3 +159,36 @@ def test_unscheduled_prerequisite_warns():
 def test_sub_workdays_inverse_of_add():
     for n in (1, 3, 7, 10):
         assert P.sub_workdays(P.add_workdays(MON, n), n) == MON
+
+
+def test_reflow_pushes_dependent_forward():
+    """Dragging a model later pushes its surface (kept order, no overlap)."""
+    model = _t("model", assignees=["a"], est=3,
+               due=P.add_workdays(MON, 10).isoformat())      # dragged late
+    surface = {"id": "x-surface", "type": "asset", "entity": "characters/frank",
+               "step": "surface", "status": "todo", "assignees": ["b"],
+               "estimate_days": 2, "due": P.add_workdays(MON, 5).isoformat()}
+    out = P.reflow([model, surface], MON, CFG)
+    assert out["x-model"] == P.add_workdays(MON, 10).isoformat()  # kept
+    assert out["x-surface"] == P.add_workdays(MON, 12).isoformat()  # pushed
+
+
+def test_reflow_keeps_untouched_positions():
+    a = _t("model", assignees=["a"], est=3, due=P.add_workdays(MON, 3).isoformat())
+    b = {"id": "x-rig", "type": "asset", "entity": "characters/frank",
+         "step": "rig", "status": "todo", "assignees": ["a"],
+         "estimate_days": 2, "due": P.add_workdays(MON, 8).isoformat()}
+    out = P.reflow([a, b], MON, CFG)
+    assert out["x-model"] == P.add_workdays(MON, 3).isoformat()
+    assert out["x-rig"] == P.add_workdays(MON, 8).isoformat()   # gap preserved
+
+
+def test_reflow_same_artist_overlap_slides():
+    """Two tasks dragged onto each other: the later-due one slides after."""
+    t1 = _t("model", assignees=["a"], est=3, due=P.add_workdays(MON, 3).isoformat())
+    t2 = {"id": "x-model2", "type": "asset", "entity": "characters/orso",
+          "step": "model", "status": "todo", "assignees": ["a"],
+          "estimate_days": 3, "due": P.add_workdays(MON, 4).isoformat()}
+    out = P.reflow([t1, t2], MON, CFG)
+    assert out["x-model"] == P.add_workdays(MON, 3).isoformat()
+    assert out["x-model2"] == P.add_workdays(MON, 6).isoformat()  # after t1
