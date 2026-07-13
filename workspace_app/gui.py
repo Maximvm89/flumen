@@ -609,10 +609,15 @@ class MainWindow(QMainWindow):
         b_unassign_me = QPushButton("Unassign me")
         b_unassign_me.clicked.connect(lambda: self._assign_selected(self._creds().user, False))
         b_assign_to = QPushButton("Assign to…")
-        b_assign_to.clicked.connect(self._assign_to)
+        b_assign_to.clicked.connect(lambda: self._assign_to(add=True))
+        b_unassign_from = QPushButton("Unassign…")
+        b_unassign_from.setToolTip("Remove someone from the selected tasks "
+                                   "(fix a wrong assignment)")
+        b_unassign_from.clicked.connect(lambda: self._assign_to(add=False))
         rowops.addWidget(b_assign_me)
         rowops.addWidget(b_unassign_me)
         rowops.addWidget(b_assign_to)
+        rowops.addWidget(b_unassign_from)
         rowops.addStretch(1)
         rowops.addWidget(QLabel("Set status:"))
         self.cb_set_status = QComboBox()
@@ -1906,7 +1911,7 @@ class MainWindow(QMainWindow):
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Discovering users…")
 
-    def _assign_to(self):
+    def _assign_to(self, add: bool = True):
         if not self._selected_tasks():
             QMessageBox.information(self, "No tasks selected", "Select tasks first.")
             return
@@ -1918,6 +1923,7 @@ class MainWindow(QMainWindow):
                 "Discover to build the roster.")
             return
         dlg = UserPickerDialog(roster, self)
+        dlg.setWindowTitle("Assign to" if add else "Unassign")
         if dlg.exec() != QDialog.Accepted:
             return
         chosen = dlg.selected_usernames()
@@ -1932,7 +1938,7 @@ class MainWindow(QMainWindow):
             for tid in ids:
                 for name in chosen:
                     self._conn_do(lambda c, x=tid, n=name: tasksmod.assign(
-                        c, remote, x, n, add=True, actor=actor))
+                        c, remote, x, n, add=add, actor=actor))
             return len(ids)
 
         def done(_n):
