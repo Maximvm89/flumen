@@ -259,6 +259,51 @@ class SFTPClient:
         except IOError:
             pass
 
+    def read_many(self, paths: list[str], workers: int = 8) -> dict:
+        """Read several small remote text files CONCURRENTLY over extra SFTP
+        channels (latency-bound, same trick as walk_remote). Returns
+        {path: text | None (missing/unreadable)}."""
+        import paramiko
+        from concurrent.futures import ThreadPoolExecutor
+        paths = list(paths)
+        if not paths or self.dry_run:
+            return {p: None for p in paths}
+        chan_pool: "queue.Queue" = queue.Queue()
+        opened = []
+        try:
+            for _ in range(max(1, min(workers, len(paths)))):
+                try:
+                    ch = paramiko.SFTPClient.from_transport(self._transport)
+                except Exception:  # noqa: BLE001 — fewer channels, still works
+                    break
+                opened.append(ch)
+                chan_pool.put(ch)
+            if not opened:
+                opened.append(self._sftp)
+                chan_pool.put(self._sftp)
+
+            def read_one(p):
+                ch = chan_pool.get()
+                try:
+                    with ch.open(p, "r") as fh:
+                        data = fh.read()
+                    return p, (data.decode("utf-8")
+                               if isinstance(data, bytes) else data)
+                except IOError:
+                    return p, None
+                finally:
+                    chan_pool.put(ch)
+
+            with ThreadPoolExecutor(max_workers=len(opened)) as ex:
+                return dict(ex.map(read_one, paths))
+        finally:
+            for ch in opened:
+                if ch is not self._sftp:
+                    try:
+                        ch.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
     def read_text(self, remote_path: str) -> str | None:
         """Read a small remote text file (e.g. a ledger). None if missing."""
         if self.dry_run:

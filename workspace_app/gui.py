@@ -843,14 +843,14 @@ class MainWindow(QMainWindow):
         ids = [t["id"] for t in chosen]
 
         def work():
-            for tid in ids:
-                self._conn_do(lambda c, x=tid: tasksmod.set_plan(
-                    c, remote, x, estimate_days=estimate, due=due, actor=actor))
-            return len(ids)
+            return [self._conn_do(lambda c, x=tid: tasksmod.set_plan(
+                c, remote, x, estimate_days=estimate, due=due, actor=actor))
+                for tid in ids]
 
-        def done(n):
+        def done(updated):
             self._busy_buttons(False)
-            self._load_tasks()
+            self._merge_tasks(updated)
+            self.status.showMessage(f"{len(ids)} task(s) updated.")
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating plan…")
@@ -898,15 +898,15 @@ class MainWindow(QMainWindow):
         actor = self._creds_user_safe()
 
         def work():
-            for tid, due in proposal.items():
-                self._conn_do(lambda c, x=tid, d=due: tasksmod.set_plan(
-                    c, remote, x, due=d, actor=actor))
-            return len(proposal)
+            return [self._conn_do(lambda c, x=tid, d=due: tasksmod.set_plan(
+                c, remote, x, due=d, actor=actor))
+                for tid, due in proposal.items()]
 
-        def done(n):
+        def done(updated):
             self._busy_buttons(False)
-            self.status.showMessage(f"Auto-plan applied to {n} task(s).")
-            self._load_tasks()
+            self._merge_tasks(updated)
+            self.status.showMessage(
+                f"Auto-plan applied to {len(proposal)} task(s).")
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Applying plan…")
@@ -1823,6 +1823,24 @@ class MainWindow(QMainWindow):
                 out.append(t)
         return out
 
+    def _merge_tasks(self, updated: list[dict | None]):
+        """Fold edited task records back into the loaded list and re-render —
+        no full server reload per edit (that's what made every assign/status
+        change crawl: it re-downloaded EVERY task file)."""
+        tasks = getattr(self, "_tasks", None) or []
+        by_id = {t.get("id"): i for i, t in enumerate(tasks)}
+        for t in updated or []:
+            if not t:
+                continue
+            i = by_id.get(t.get("id"))
+            if i is None:
+                tasks.append(t)
+            else:
+                tasks[i] = t
+        self._tasks = tasks
+        self._render_tasks()
+        self._render_plan()
+
     def _assign_selected(self, username: str, add: bool):
         if not self.cfg or not username:
             return
@@ -1835,14 +1853,13 @@ class MainWindow(QMainWindow):
         ids = [t["id"] for t in chosen]
 
         def work():
-            for tid in ids:
-                self._conn_do(lambda c, x=tid: tasksmod.assign(
-                    c, remote, x, username, add=add, actor=actor))
-            return len(ids)
+            return [self._conn_do(lambda c, x=tid: tasksmod.assign(
+                c, remote, x, username, add=add, actor=actor)) for tid in ids]
 
-        def done(n):
+        def done(updated):
             self._busy_buttons(False)
-            self._load_tasks()
+            self._merge_tasks(updated)
+            self.status.showMessage(f"{len(ids)} task(s) updated.")
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating assignees…")
@@ -1935,15 +1952,18 @@ class MainWindow(QMainWindow):
         ids = [t["id"] for t in chosen_tasks]
 
         def work():
+            out = []
             for tid in ids:
                 for name in chosen:
-                    self._conn_do(lambda c, x=tid, n=name: tasksmod.assign(
-                        c, remote, x, n, add=add, actor=actor))
-            return len(ids)
+                    out.append(self._conn_do(
+                        lambda c, x=tid, n=name: tasksmod.assign(
+                            c, remote, x, n, add=add, actor=actor)))
+            return out
 
-        def done(_n):
+        def done(updated):
             self._busy_buttons(False)
-            self._load_tasks()
+            self._merge_tasks(updated)
+            self.status.showMessage(f"{len(ids)} task(s) updated.")
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating assignees…")
@@ -1961,14 +1981,13 @@ class MainWindow(QMainWindow):
         ids = [t["id"] for t in chosen]
 
         def work():
-            for tid in ids:
-                self._conn_do(lambda c, x=tid: tasksmod.set_status(
-                    c, remote, x, status, actor=actor))
-            return len(ids)
+            return [self._conn_do(lambda c, x=tid: tasksmod.set_status(
+                c, remote, x, status, actor=actor)) for tid in ids]
 
-        def done(n):
+        def done(updated):
             self._busy_buttons(False)
-            self._load_tasks()
+            self._merge_tasks(updated)
+            self.status.showMessage(f"{len(ids)} task(s) updated.")
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating status…")

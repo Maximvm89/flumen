@@ -343,12 +343,19 @@ def matches_query(task: dict, query: str) -> bool:
 
 
 def load_tasks(sftp, remote_root: str) -> list[dict]:
-    out = []
     d = tasks_dir(remote_root)
-    for e in sftp.listdir(d):
-        if e["is_dir"] or not e["name"].endswith(".json"):
-            continue
-        txt = sftp.read_text(d + "/" + e["name"])
+    paths = [d + "/" + e["name"] for e in sftp.listdir(d)
+             if not e["is_dir"] and e["name"].endswith(".json")]
+    # Dozens of small files on a remote server: read them concurrently when the
+    # client supports it (SFTPClient.read_many) — the load is latency-bound.
+    reader = getattr(sftp, "read_many", None)
+    if callable(reader):
+        by_path = reader(paths)
+        texts = [by_path.get(p) for p in paths]
+    else:
+        texts = [sftp.read_text(p) for p in paths]
+    out = []
+    for txt in texts:
         if not txt:
             continue
         try:
