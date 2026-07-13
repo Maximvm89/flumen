@@ -598,6 +598,68 @@ def cmd_look_review(args) -> int:
         dry_run=args.dry_run)
 
 
+def cmd_plan(args) -> int:
+    """Production plan: capacity vs remaining work up to the deadline, per-task
+    schedule health, and the hybrid auto-plan (--propose / --apply)."""
+    import datetime as _dt
+    import json as _json
+    from . import plan as planmod, tasks as T, users as U
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    rr = cfg.remote_root.rstrip("/")
+    with SFTPClient(creds) as client:
+        task_list = T.load_tasks(client, rr)
+        roster = U.load_roster(client, rr)
+        try:
+            ps = _json.loads(client.read_text(
+                rr + "/02_pipeline/project_settings.json") or "{}")
+        except ValueError:
+            ps = {}
+        pcfg = planmod.planning_config(ps)
+        today = _dt.date.today()
+
+        if args.propose or args.apply:
+            proposal, warns = planmod.propose_schedule(task_list, today, pcfg)
+            by_id = {t["id"]: t for t in task_list}
+            for tid, due in sorted(proposal.items(), key=lambda kv: kv[1]):
+                t = by_id[tid]
+                print(f"  {due}  {t.get('entity'):<28} {t.get('step'):<10} "
+                      f"{', '.join(t.get('assignees') or [])}")
+            for w in warns:
+                print(f"  warning: {w}")
+            if args.apply:
+                for tid, due in proposal.items():
+                    T.set_plan(client, rr, tid, due=due, actor=creds.user)
+                print(f"applied {len(proposal)} due date(s).")
+            else:
+                print(f"({len(proposal)} proposed — re-run with --apply "
+                      f"to write them)")
+            return 0
+
+    s = planmod.plan_summary(task_list, roster, today, pcfg)
+    print(f"deadline {s['deadline'] or '(none)'} — {s['workdays_left']} "
+          f"workday(s) left")
+    print(f"remaining {s['remaining_days']}d vs capacity {s['capacity_days']}d"
+          f" -> {'FITS' if s['fits'] else 'OVER'}"
+          + (f"  ({s['unassigned_days']}d unassigned)"
+             if s['unassigned_days'] else ""))
+    for u, a in sorted(s["per_artist"].items()):
+        flag = " OVER" if a["remaining"] > a["capacity"] else ""
+        print(f"  {u:<22} {a['tasks']:>3} task(s)  {a['remaining']:>6.1f}d "
+              f"/ {a['capacity']:.1f}d{flag}"
+              + (f"  {a['late']} late" if a["late"] else ""))
+    for t in sorted(task_list, key=lambda t: (t.get('due') or '9999',
+                                              t.get('entity', ''))):
+        if t.get("status") == "done":
+            continue
+        h = planmod.health(t, today, pcfg)
+        print(f"  {t.get('due') or '----------'}  "
+              f"{planmod.HEALTH_LABELS[h]:<9} {t.get('entity'):<28} "
+              f"{t.get('step'):<10} est {planmod.estimate_of(t, pcfg):g}d  "
+              f"{', '.join(t.get('assignees') or []) or '(unassigned)'}")
+    return 0
+
+
 def cmd_next_version(args) -> int:
     """Print the next publish version for a task (from its server history). Used by
     the Blender add-on so versions stay monotonic across machines."""
@@ -1160,6 +1222,15 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--hide", help="'||'-separated object names to keep hidden "
                                    "(what the artist hid in their scene)")
     lr.set_defaults(func=cmd_look_review)
+
+    pl = sub.add_parser("plan", parents=[common],
+                        help="production plan: capacity vs deadline, health, "
+                             "auto-plan proposal")
+    pl.add_argument("--propose", action="store_true",
+                    help="print proposed due dates (hybrid auto-plan)")
+    pl.add_argument("--apply", action="store_true",
+                    help="write the proposed due dates onto the tasks")
+    pl.set_defaults(func=cmd_plan)
 
     nv = sub.add_parser("next-version", parents=[common],
                         help="print the next publish version for a task")

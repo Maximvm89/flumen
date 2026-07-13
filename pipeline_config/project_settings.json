@@ -113,6 +113,17 @@
       "comp": null
     }
   },
+  "_planning_note": "Production plan (Plan tab): deadline drives the capacity-vs-remaining math and schedule health. default_estimates = workdays assumed per step when a task has no estimate of its own; availability = workdays/week per artist when not 5 (part-timers). Estimates and due dates live on the task records, edited from the Plan tab.",
+  "planning": {
+    "deadline": "2026-09-01",
+    "due_soon_days": 3,
+    "default_estimates": {
+      "model": 3.0, "surface": 2.0, "rig": 3.0, "dressing": 2.0,
+      "layout": 1.0, "animation": 3.0, "lighting": 2.0
+    },
+    "default_estimate": 2.0,
+    "availability": {}
+  },
   "_profiling_note": "Pre-publish scene profiler (environments): WARN-only, never blocks. Omit a key to skip that check.",
   "profiling": {
     "apply_to_categories": [

@@ -390,6 +390,31 @@ def assign(sftp, remote_root: str, task_id: str, username: str,
     return save_task(sftp, remote_root, t, actor or username)
 
 
+def set_plan(sftp, remote_root: str, task_id: str,
+             estimate_days: float | None = None, due: str | None = None,
+             actor: str = "") -> dict | None:
+    """Update a task's planning fields. None leaves a field untouched; an empty
+    string / 0 clears it. `due` is 'YYYY-MM-DD'."""
+    t = _load_one(sftp, remote_root, task_id)
+    if not t:
+        return None
+    if estimate_days is not None:
+        try:
+            v = float(estimate_days)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v > 0:
+            t["estimate_days"] = v
+        else:
+            t.pop("estimate_days", None)
+    if due is not None:
+        if str(due).strip():
+            t["due"] = str(due).strip()
+        else:
+            t.pop("due", None)
+    return save_task(sftp, remote_root, t, actor)
+
+
 def set_status(sftp, remote_root: str, task_id: str, status: str,
                actor: str = "") -> dict | None:
     if status not in STATUSES:

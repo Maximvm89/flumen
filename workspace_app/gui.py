@@ -35,6 +35,7 @@ from flumen import schema as schema_mod
 from flumen import review as reviewmod
 from flumen import users as usersmod
 from flumen import storage as storagemod
+from flumen import plan as planmod
 from flumen import clipboard as clipboardmod
 from flumen import bugreport
 from flumen.version import get_version
@@ -237,6 +238,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs, 1)
         self.tabs.addTab(self._build_tasks_page(), "Tasks")
+        self.tabs.addTab(self._build_plan_page(), "Plan")
         self.tabs.addTab(self._build_dailies_page(), "Dailies")
         self.tabs.addTab(self._build_files_page(), "Files")
         self.tabs.addTab(self._build_storage_page(), "Storage")
@@ -621,6 +623,285 @@ class MainWindow(QMainWindow):
         rowops.addWidget(b_apply_status)
         tl.addLayout(rowops)
         return page
+
+    # ---- production plan ------------------------------------------------------
+    _HEALTH_COLORS = {
+        planmod.HEALTH_LATE: QColor("#e05555"),
+        planmod.HEALTH_DUE_SOON: QColor("#e0a030"),
+        planmod.HEALTH_ON_TRACK: QColor("#5fae62"),
+        planmod.HEALTH_DONE: QColor("#7a7a7a"),
+        planmod.HEALTH_UNPLANNED: QColor("#9a86c8"),
+    }
+
+    def _build_plan_page(self) -> QWidget:
+        page = QWidget()
+        pl = QVBoxLayout(page)
+
+        # Header: the plan-vs-capacity math, refreshed with the task list.
+        self.lb_plan_header = QLabel("Sign in and load tasks to see the plan.")
+        self.lb_plan_header.setWordWrap(True)
+        f = self.lb_plan_header.font()
+        f.setBold(True)
+        self.lb_plan_header.setFont(f)
+        pl.addWidget(self.lb_plan_header)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Artist:"))
+        self.cb_plan_artist = QComboBox()
+        self.cb_plan_artist.addItem("Everyone", None)
+        self.cb_plan_artist.currentIndexChanged.connect(self._render_plan)
+        controls.addWidget(self.cb_plan_artist)
+        self.chk_plan_done = QCheckBox("Show done")
+        self.chk_plan_done.toggled.connect(self._render_plan)
+        controls.addWidget(self.chk_plan_done)
+        controls.addSpacing(12)
+        self.ed_plan_search = QLineEdit()
+        self.ed_plan_search.setPlaceholderText("Search… (entity, step, assignee)")
+        self.ed_plan_search.setClearButtonEnabled(True)
+        self.ed_plan_search.textChanged.connect(self._render_plan)
+        self.ed_plan_search.setMinimumWidth(220)
+        controls.addWidget(self.ed_plan_search, 1)
+        controls.addStretch(0)
+        self.b_autoplan = QPushButton("Auto-plan…")
+        self.b_autoplan.setToolTip(
+            "Propose due dates: spreads each artist's remaining tasks over the "
+            "workdays to the deadline, in pipeline order. You review before "
+            "anything is written; dates you set by hand are overwritten only "
+            "if you apply.")
+        self.b_autoplan.clicked.connect(self._auto_plan)
+        controls.addWidget(self.b_autoplan)
+        b_reload = QPushButton("Refresh")
+        b_reload.clicked.connect(self._load_tasks)
+        controls.addWidget(b_reload)
+        pl.addLayout(controls)
+
+        self.plan_table = QTableWidget(0, 7)
+        self.plan_table.setHorizontalHeaderLabels(
+            ["Health", "Due", "Entity", "Step", "Assignees", "Est (d)", "Status"])
+        self.plan_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.plan_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.plan_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.plan_table.setSortingEnabled(True)
+        self.plan_table.setAlternatingRowColors(True)
+        self.plan_table.setShowGrid(False)
+        self.plan_table.verticalHeader().setDefaultSectionSize(26)
+        self.plan_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch)
+        pl.addWidget(self.plan_table, 1)
+
+        rowops = QHBoxLayout()
+        b_est = QPushButton("Set estimate…")
+        b_est.clicked.connect(self._plan_set_estimate)
+        b_due = QPushButton("Set due date…")
+        b_due.clicked.connect(self._plan_set_due)
+        b_clear = QPushButton("Clear dates")
+        b_clear.clicked.connect(lambda: self._plan_write(due=""))
+        rowops.addWidget(b_est)
+        rowops.addWidget(b_due)
+        rowops.addWidget(b_clear)
+        rowops.addStretch(1)
+        rowops.addWidget(QLabel("Assign + estimates live on the tasks — the "
+                                "Tasks tab assigns, statuses track progress."))
+        pl.addLayout(rowops)
+        return page
+
+    def _planning_cfg(self) -> dict:
+        return planmod.planning_config(getattr(self, "_project_settings", {}))
+
+    def _render_plan(self):
+        tasks = getattr(self, "_tasks", None) or []
+        cfg = self._planning_cfg()
+        today = _dt.date.today()
+
+        # header math
+        s = planmod.plan_summary(tasks, getattr(self, "_roster", []), today, cfg)
+        if s["deadline"]:
+            fit = ("✓ fits" if s["fits"]
+                   else f"▲ OVER by {s['remaining_days'] - s['capacity_days']:.1f}d")
+            self.lb_plan_header.setText(
+                f"Deadline {s['deadline']} — {s['workdays_left']} workdays left"
+                f"   ·   remaining {s['remaining_days']}d vs capacity "
+                f"{s['capacity_days']}d ({fit})"
+                + (f"   ·   {s['unassigned_days']}d unassigned"
+                   if s["unassigned_days"] else ""))
+        else:
+            self.lb_plan_header.setText(
+                "No deadline set — add planning.deadline to project_settings.")
+
+        # artist filter combo (rebuild, keep selection)
+        current = self.cb_plan_artist.currentData()
+        self.cb_plan_artist.blockSignals(True)
+        self.cb_plan_artist.clear()
+        self.cb_plan_artist.addItem("Everyone", None)
+        for u in sorted(a.get("username", "") for a in
+                        (getattr(self, "_roster", []) or []) if a.get("active")):
+            self.cb_plan_artist.addItem(u, u)
+            if u == current:
+                self.cb_plan_artist.setCurrentIndex(
+                    self.cb_plan_artist.count() - 1)
+        self.cb_plan_artist.blockSignals(False)
+
+        artist = self.cb_plan_artist.currentData()
+        query = self.ed_plan_search.text()
+        rows = []
+        for t in tasks:
+            if not self.chk_plan_done.isChecked() and t.get("status") == "done":
+                continue
+            if artist and artist not in (t.get("assignees") or []):
+                continue
+            if not tasksmod.matches_query(t, query):
+                continue
+            rows.append(t)
+        order = {planmod.HEALTH_LATE: 0, planmod.HEALTH_DUE_SOON: 1,
+                 planmod.HEALTH_ON_TRACK: 2, planmod.HEALTH_UNPLANNED: 3,
+                 planmod.HEALTH_DONE: 4}
+        rows.sort(key=lambda t: (order.get(planmod.health(t, today, cfg), 9),
+                                 t.get("due") or "9999",
+                                 t.get("entity", ""), t.get("step", "")))
+
+        self.plan_table.setSortingEnabled(False)
+        self.plan_table.setRowCount(len(rows))
+        for i, t in enumerate(rows):
+            h = planmod.health(t, today, cfg)
+            own = t.get("estimate_days")
+            est = planmod.estimate_of(t, cfg)
+            cells = [
+                planmod.HEALTH_LABELS[h],
+                t.get("due", ""),
+                t.get("entity", ""),
+                f"{step_icon(t.get('step', ''))}  {t.get('step', '')}",
+                ", ".join(usersmod.display_name(self._roster, u)
+                          for u in (t.get("assignees") or [])),
+                f"{est:g}" + ("" if own else " (default)"),
+                tasksmod.STATUS_LABELS.get(t.get("status", ""), ""),
+            ]
+            for j, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if j == 0:
+                    item.setData(Qt.UserRole, t)
+                    item.setForeground(QBrush(self._HEALTH_COLORS[h]))
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+                self.plan_table.setItem(i, j, item)
+        self.plan_table.setSortingEnabled(True)
+
+    def _plan_selected(self) -> list[dict]:
+        out = []
+        for idx in self.plan_table.selectionModel().selectedRows():
+            item = self.plan_table.item(idx.row(), 0)
+            t = item.data(Qt.UserRole) if item else None
+            if t:
+                out.append(t)
+        return out
+
+    def _plan_set_estimate(self):
+        chosen = self._plan_selected()
+        if not chosen:
+            QMessageBox.information(self, "No tasks selected",
+                                    "Select tasks in the plan first.")
+            return
+        val, ok = QInputDialog.getDouble(
+            self, "Set estimate", "Workdays per task (0 = back to the step "
+            "default):", 2.0, 0.0, 60.0, 1)
+        if ok:
+            self._plan_write(estimate=val)
+
+    def _plan_set_due(self):
+        chosen = self._plan_selected()
+        if not chosen:
+            QMessageBox.information(self, "No tasks selected",
+                                    "Select tasks in the plan first.")
+            return
+        text, ok = QInputDialog.getText(
+            self, "Set due date", "Due date (YYYY-MM-DD, empty clears):",
+            text=self._planning_cfg().get("deadline", ""))
+        if not ok:
+            return
+        text = text.strip()
+        if text and planmod.parse_date(text) is None:
+            QMessageBox.warning(self, "Bad date",
+                                f"'{text}' is not a YYYY-MM-DD date.")
+            return
+        self._plan_write(due=text)
+
+    def _plan_write(self, estimate: float | None = None,
+                    due: str | None = None):
+        chosen = self._plan_selected()
+        if not chosen or not self.cfg:
+            return
+        remote = self.cfg.remote_root
+        actor = self._creds_user_safe()
+        ids = [t["id"] for t in chosen]
+
+        def work():
+            for tid in ids:
+                self._conn_do(lambda c, x=tid: tasksmod.set_plan(
+                    c, remote, x, estimate_days=estimate, due=due, actor=actor))
+            return len(ids)
+
+        def done(n):
+            self._busy_buttons(False)
+            self._load_tasks()
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Updating plan…")
+
+    def _auto_plan(self):
+        if not self.cfg:
+            return
+        if not self._can_delete_remote():
+            QMessageBox.information(self, "Supervisors only",
+                                    "Auto-planning writes due dates on every "
+                                    "task — ask your supervisor.")
+            return
+        cfg = self._planning_cfg()
+        if not cfg.get("deadline"):
+            QMessageBox.warning(self, "No deadline",
+                                "Set planning.deadline in project_settings "
+                                "first — the auto-plan spreads work over the "
+                                "days remaining to it.")
+            return
+        tasks = getattr(self, "_tasks", None) or []
+        proposal, warns = planmod.propose_schedule(
+            tasks, _dt.date.today(), cfg)
+        if not proposal:
+            QMessageBox.information(self, "Nothing to plan",
+                                    "No assigned, unfinished tasks to "
+                                    "schedule. Assign tasks first (Tasks tab).")
+            return
+        by_id = {t["id"]: t for t in tasks}
+        lines = [f"{due}   {by_id[tid].get('entity')} · {by_id[tid].get('step')}"
+                 f"   ({', '.join(by_id[tid].get('assignees') or [])})"
+                 for tid, due in sorted(proposal.items(), key=lambda kv: kv[1])]
+        if warns:
+            lines += [""] + [f"⚠ {w}" for w in warns]
+        box = QMessageBox(self)
+        box.setWindowTitle("Auto-plan proposal")
+        box.setText(f"{len(proposal)} due date(s) proposed"
+                    + (f", {len(warns)} warning(s)" if warns else "")
+                    + ".\n\nApply writes them onto the tasks (overwriting "
+                      "existing due dates of scheduled tasks).")
+        box.setDetailedText("\n".join(lines))
+        box.setStandardButtons(QMessageBox.Apply | QMessageBox.Cancel)
+        if box.exec() != QMessageBox.Apply:
+            return
+        remote = self.cfg.remote_root
+        actor = self._creds_user_safe()
+
+        def work():
+            for tid, due in proposal.items():
+                self._conn_do(lambda c, x=tid, d=due: tasksmod.set_plan(
+                    c, remote, x, due=d, actor=actor))
+            return len(proposal)
+
+        def done(n):
+            self._busy_buttons(False)
+            self.status.showMessage(f"Auto-plan applied to {n} task(s).")
+            self._load_tasks()
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Applying plan…")
 
     # ---- dailies / review ---------------------------------------------------
     def _build_dailies_page(self) -> QWidget:
@@ -1446,12 +1727,22 @@ class MainWindow(QMainWindow):
         def work():
             tasks = self._conn_do(lambda c: tasksmod.load_tasks(c, remote))
             roster = self._conn_do(lambda c: usersmod.load_roster(c, remote))
-            return tasks, roster
+            # Fresh project settings ride along (deadline + planning defaults
+            # for the Plan tab) — served-side truth, not the local mirror.
+            import json as _json
+            try:
+                settings = _json.loads(self._conn_do(lambda c: c.read_text(
+                    remote.rstrip("/") + "/02_pipeline/project_settings.json"))
+                    or "{}")
+            except Exception:  # noqa: BLE001
+                settings = {}
+            return tasks, roster, settings
 
         def done(result):
             self._busy_buttons(False)
-            self._tasks, self._roster = result
+            self._tasks, self._roster, self._project_settings = result
             self._render_tasks()
+            self._render_plan()
             # Server-side deletion is supervisor-only — reflect it in the UI.
             can = self._can_delete_remote()
             self.b_delete_review.setEnabled(can)
