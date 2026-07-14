@@ -4,3 +4,4 @@ python-dotenv>=1.0
 imageio-ffmpeg>=0.4   # bundled ffmpeg for turntable MP4 encoding
 Pillow>=10.0          # texture/UV review sheet composition
 syncsketch>=1.0      # auto-upload dailies to SyncSketch reviews
+zstandard>=0.22

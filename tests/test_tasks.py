@@ -398,7 +398,7 @@ def test_publish_task_skips_unchanged_sidecar_textures(tmp_path):
     s = SizedSrv()
     t = tasks.save_task(s, "/r", tasks.new_task("asset", "environments/house", "model"))
     blend = tmp_path / "house_model_v002.blend"
-    blend.write_bytes(b"B" * 10)
+    blend.write_bytes(b"BLENDER-v4")          # valid header, 10 bytes
     tdir = tmp_path / "textures"
     tdir.mkdir()
     same = tdir / "wood.png"
@@ -429,7 +429,7 @@ def test_publish_task_uploads_changed_sidecar_texture(tmp_path):
     s = SizedSrv()
     t = tasks.save_task(s, "/r", tasks.new_task("asset", "environments/house", "model"))
     blend = tmp_path / "house_model_v003.blend"
-    blend.write_bytes(b"B")
+    blend.write_bytes(b"BLENDER-v4")
     tdir = tmp_path / "textures"
     tdir.mkdir()
     changed = tdir / "wood.png"
@@ -440,3 +440,37 @@ def test_publish_task_uploads_changed_sidecar_texture(tmp_path):
     tasks.publish_task(s, "/r", "marco", [str(blend)], t["id"],
                  texture_files=[str(changed)])
     assert s.files["/r/" + pub + "/textures/wood.png"] != "QQQQ"
+
+
+def test_validate_blend_file(tmp_path):
+    import zstandard
+    # healthy uncompressed
+    ok = tmp_path / "ok.blend"
+    ok.write_bytes(b"BLENDER-v405" + b"\x00" * 2048)
+    assert tasks.validate_blend_file(str(ok)) is None
+    # healthy zstd-compressed
+    okz = tmp_path / "okz.blend"
+    okz.write_bytes(zstandard.ZstdCompressor().compress(b"BLENDER" + b"\x00" * 4096))
+    assert tasks.validate_blend_file(str(okz)) is None
+    # truncated zstd (the orso v021 case): cut the stream mid-frame
+    bad = tmp_path / "bad.blend"
+    full = zstandard.ZstdCompressor().compress(b"BLENDER" + b"\x01\x02\x03" * 100000)
+    bad.write_bytes(full[: len(full) // 2] + b"\x00" * 2048)
+    err = tasks.validate_blend_file(str(bad))
+    assert err and ("truncat" in err or "corrupt" in err)
+    # garbage header
+    junk = tmp_path / "junk.blend"
+    junk.write_bytes(b"NOTABLEND" * 100)
+    assert "unknown header" in tasks.validate_blend_file(str(junk))
+    # missing file: not this check's job (the upload fails loudly)
+    assert tasks.validate_blend_file(str(tmp_path / "nope.blend")) is None
+
+
+def test_publish_task_refuses_corrupt_blend(tmp_path):
+    import pytest
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/orso", "model"))
+    bad = tmp_path / "orso_model_v021.blend"
+    bad.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 4096)   # broken zstd
+    with pytest.raises(ValueError, match="publish aborted"):
+        tasks.publish_task(s, "/r", "elisa", [str(bad)], t["id"])

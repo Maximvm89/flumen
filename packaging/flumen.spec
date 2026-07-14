@@ -23,7 +23,7 @@ datas += collect_data_files("imageio_ffmpeg")
 
 ICON = os.path.join(ROOT, "packaging", "flumen.ico")  # embedded in the .exe files
 
-hiddenimports = ["paramiko", "yaml", "dotenv", "syncsketch", "PIL", "PIL.Image", "PIL.ImageDraw",
+hiddenimports = ["paramiko", "yaml", "dotenv", "syncsketch", "zstandard", "PIL", "PIL.Image", "PIL.ImageDraw",
                  "PIL.ImageFont"]
 
 cli_a = Analysis(

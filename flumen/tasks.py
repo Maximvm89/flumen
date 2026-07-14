@@ -171,6 +171,54 @@ def published_dressings(task: dict) -> list[dict]:
     return [best[k] for k in sorted(best)]
 
 
+def validate_blend_file(path: str) -> str | None:
+    """Cheap integrity check of a .blend on disk: readable, plausible header,
+    and — for the compressed saves the pipeline writes — a complete zstd
+    stream (a truncated file fails decompression). Returns an error string,
+    or None when the file looks healthy."""
+    import os as _os
+    if not _os.path.isfile(path):
+        return None                    # nothing to check — upload will fail loudly
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError as exc:
+        return f"unreadable: {exc}"
+    if head.startswith(b"BLENDER"):
+        return None                    # uncompressed save
+    if head[:4] == b"\x28\xb5\x2f\xfd":   # zstd magic (compressed save)
+        try:
+            import zstandard
+        except ImportError:
+            return None                # can't verify without the lib — allow
+        # Blender saves as CONCATENATED zstd frames, and the lib's stream
+        # readers accept a truncated final frame silently — walk the frames
+        # with decompressobj and require the last one to have COMPLETED.
+        try:
+            dctx = zstandard.ZstdDecompressor()
+            obj, fed = dctx.decompressobj(), False
+            with open(path, "rb") as fh:
+                pending = b""
+                while True:
+                    chunk = pending or fh.read(1 << 20)
+                    pending = b""
+                    if not chunk:
+                        break
+                    obj.decompress(chunk)
+                    fed = True
+                    if obj.eof:
+                        pending = obj.unused_data
+                        obj, fed = dctx.decompressobj(), False
+            if fed and not obj.eof:
+                return "truncated (incomplete zstd frame)"
+            return None
+        except Exception as exc:  # noqa: BLE001 — corrupt stream
+            return f"truncated or corrupt ({exc})"
+    if head[:2] == b"\x1f\x8b":
+        return None                    # legacy gzip-compressed .blend
+    return "not a .blend file (unknown header)"
+
+
 def publish_task(sftp, remote_root: str, username: str, local_files,
                  task_id: str, status: str = "review",
                  description: str = "", texture_files=None,
@@ -205,6 +253,17 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
             "file(s) " + ", ".join(clash) +
             f" already published for task {task_id}; refusing to overwrite. "
             "Re-run publish to get the next version.")
+    # Never ship a corrupted publish: a truncated .blend (disk full, crashed
+    # save, interrupted copy) uploads "successfully" and breaks everyone
+    # downstream. Validate every .blend before any byte leaves the machine.
+    for f in local_files:
+        if str(f).lower().endswith(".blend"):
+            err = validate_blend_file(f)
+            if err:
+                raise ValueError(
+                    f"{_os.path.basename(f)} is not a valid .blend ({err}) — "
+                    f"publish aborted, nothing uploaded. Check free disk "
+                    f"space, then publish again.")
     # Resolve every (local file -> publish rel) up front so we can report progress
     # against the grand total of bytes, across the .blend/FBX and any textures.
     def _sz(p):

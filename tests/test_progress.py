@@ -50,7 +50,7 @@ def test_human_eta_units():
 def test_publish_task_reports_cumulative_progress(tmp_path):
     # Two real files of known sizes so getsize works and progress is byte-weighted.
     a = tmp_path / "panda_model_v001.blend"
-    a.write_bytes(b"x" * 300)
+    a.write_bytes(b"BLENDER" + b"x" * 293)    # valid header, still 300 bytes
     b = tmp_path / "panda_model_v001.fbx"
     b.write_bytes(b"y" * 100)
     s = FakeSrv()
