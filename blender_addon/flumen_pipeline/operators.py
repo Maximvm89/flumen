@@ -2294,6 +2294,36 @@ def _clear_element_holder(holder):
             pass
 
 
+def _element_matrix_snapshot(holder):
+    """{object name: matrix_basis} for everything under an element holder —
+    the artist's placement, captured before an update clears the content."""
+    return {o.name: o.matrix_basis.copy() for o in holder.all_objects}
+
+
+def _element_matrix_restore(holder, snap):
+    """Re-apply captured local matrices to same-named objects after a relink
+    (base-name fallback absorbs .001 suffix drift between publishes).
+    Returns how many objects got their placement back."""
+    if not snap:
+        return 0
+    by_base = {}
+    for name in snap:
+        by_base.setdefault(name.split(".")[0], name)
+    restored = 0
+    for o in holder.all_objects:
+        m = snap.get(o.name)
+        if m is None:
+            src = by_base.get(o.name.split(".")[0])
+            m = snap.get(src) if src else None
+        if m is not None:
+            try:
+                o.matrix_basis = m
+                restored += 1
+            except Exception:  # noqa: BLE001
+                pass
+    return restored
+
+
 def _link_collection_override(context, blend_local, coll_name, holder):
     """LINK a named collection from a published .blend and make a fully-editable
     library override nested under `holder`. The core loader shared by shot
@@ -3303,19 +3333,24 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         for it in context.window_manager.flumen_build_items:
             row = box.row(align=True)
             cb = row.row()
-            # healthy present elements can't be re-built (protects animation);
-            # broken ones (publish gone from disk) can — that's the repair path.
-            cb.enabled = (not it.present) or it.broken
+            # Any asset element can be re-ticked to UPDATE to the latest
+            # publish (placement is captured and re-applied). Only a healthy
+            # camera stays locked — rebuilding it would lose the camera move.
+            cb.enabled = it.broken or not it.present or it.kind != "camera"
             cb.prop(it, "enabled", text="")
             icon = ("ERROR" if it.broken
                     else "CHECKMARK" if it.present
                     else "OUTLINER_OB_CAMERA" if it.kind == "camera"
                     else "OUTLINER_OB_ARMATURE")
             row.label(text=it.label, icon=icon)
-            if it.present and not it.broken:
-                row.label(text="already in scene")
+            if it.present and not it.broken and not it.enabled:
+                row.label(text="already in scene — tick to update")
             elif it.broken:
                 row.label(text="missing on disk — rebuild")
+            elif it.present and it.enabled and it.kind != "camera":
+                # updating: pick which step to bring back in
+                sub = row.row()
+                sub.prop(it, "step", text="")
             elif it.kind == "camera":
                 row.label(text=it.detail)
             else:
@@ -3328,16 +3363,18 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         task = active_task()
         if not task:
             return {"CANCELLED"}
-        chosen, picks, rebuild = [], {}, set()
+        chosen, picks, rebuild, update = [], {}, set(), set()
         present_ct, deselected_ct = 0, 0
         for it in context.window_manager.flumen_build_items:
-            if it.present and not (it.broken and it.enabled):
+            if it.present and not it.enabled:
                 present_ct += 1
             elif it.enabled:
                 eid = json.loads(it.payload)["id"]
                 chosen.append(eid)
-                if it.present:                       # broken + ticked -> repair
-                    rebuild.add(eid)
+                if it.present:
+                    # ticked while in scene: repair if broken, else update to
+                    # the latest publish (placement preserved)
+                    (rebuild if it.broken else update).add(eid)
                 if it.kind == "asset" and it.step:   # honour the chosen step
                     picks[eid] = it.step
             else:
@@ -3375,16 +3412,19 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         anim_elements = ((data or {}).get("anim") or {}).get("elements") or {}
 
         built, skipped, repaired, animated, dressed = [], [], [], 0, 0
+        snapshots, placement_kept = {}, 0
         for el in elements:
             eid = str(el.get("id", ""))
-            if eid in rebuild:
+            if eid in rebuild or eid in update:
                 holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
                 if holder is not None:
-                    if not _element_content_broken(holder):
+                    if eid in rebuild and not _element_content_broken(holder):
                         repaired.append(el)   # reload healed it — keep as-is
                         continue
-                    # still broken (e.g. the linked version is gone from the
-                    # server): drop the dead content and relink fresh
+                    # Update / hard rebuild: remember where the artist PLACED
+                    # everything, clear the old content, relink the latest
+                    # publish, then put it back where it was.
+                    snapshots[eid] = _element_matrix_snapshot(holder)
                     _clear_element_holder(holder)
             loader = _ELEMENT_LOADERS.get(el.get("kind"))
             if loader is None:
@@ -3395,6 +3435,9 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             except Exception as exc:  # noqa: BLE001 — one bad element never kills it
                 holder, err = None, str(exc)
             (built if holder else skipped).append((el, err))
+            if holder and eid in snapshots:
+                placement_kept += _element_matrix_restore(holder,
+                                                          snapshots[eid])
             if holder:
                 # Stamp the holder so the playblast HUD can show what's in the shot.
                 holder["flumen_step"] = ("camera" if el.get("kind") == "camera"
@@ -3431,6 +3474,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             pass
 
         parts = [f"Built {len(built)} element(s)"]
+        if update:
+            parts.append(f"updated {len(update & {e.get('id') for e, _ in built})}"
+                         f" to the latest publish")
+        if placement_kept:
+            parts.append(f"placement kept on {placement_kept} object(s)")
         if repaired:
             parts.append(f"repaired {len(repaired)} in place (files re-fetched, "
                          f"animation kept)")
