@@ -331,9 +331,11 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
     save_task(sftp, remote_root, task, actor=username)
     return rels
 
-STATUSES = ["todo", "in_progress", "review", "done", "omitted"]
+STATUSES = ["todo", "ready", "in_progress", "review", "done", "omitted"]
 STATUS_LABELS = {
     "todo": "To do",
+    # Prerequisites delivered — an artist can pick this up right now.
+    "ready": "Ready to start",
     "in_progress": "In progress",
     "review": "Review",
     "done": "Done",

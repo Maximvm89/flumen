@@ -53,6 +53,7 @@ DIFF_BG, DIFF_FG = QColor(252, 235, 235), QColor(163, 45, 45)
 # the colored dot + bold text carry the signal, which reads on any theme.
 STATUS_STYLE = {
     "todo":        (QColor(150, 155, 165), "⚪"),
+    "ready":       (QColor(240, 200, 80), "🟡"),
     "in_progress": (QColor(96, 165, 250), "🔵"),
     "review":      (QColor(245, 158, 66), "🟠"),
     "done":        (QColor(74, 222, 128), "🟢"),
