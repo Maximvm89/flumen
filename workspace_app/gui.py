@@ -3133,6 +3133,9 @@ def _app_icon_path() -> str:
 
 def main():
     applog.setup_logging()
+    # Mute Qt's macOS accessibility-bridge chatter ("Cell requested for row N
+    # is out of bounds…"): harmless resync noise whenever a table is rebuilt.
+    os.environ.setdefault("QT_LOGGING_RULES", "qt.accessibility*=false")
     app = QApplication(sys.argv)
     icon = _app_icon_path()
     if os.path.isfile(icon):
