@@ -844,6 +844,38 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Bad date",
                                 f"'{text}' is not a YYYY-MM-DD date.")
             return
+        # Starting earlier? Check the pipeline: list every unfinished
+        # prerequisite that lands AFTER the chosen date, so you know what has
+        # to publish early for this to hold. Warns, never blocks.
+        new_due = planmod.parse_date(text)
+        if new_due:
+            tasks = getattr(self, "_tasks", None) or []
+            deps = planmod.task_dependencies(
+                tasks, getattr(self, "_shot_elements", None))
+            by_id = {t["id"]: t for t in tasks}
+            conflicts = []
+            for t in chosen:
+                for d in deps.get(t["id"], []):
+                    dt_ = by_id.get(d)
+                    if not dt_ or dt_.get("status") in ("done", "omitted"):
+                        continue
+                    d_due = planmod.parse_date(dt_.get("due", ""))
+                    if d_due is None or d_due > new_due:
+                        conflicts.append(
+                            f"{t.get('entity')} · {t.get('step')}  needs  "
+                            f"{dt_.get('entity')} · {dt_.get('step')} "
+                            f"(due {dt_.get('due') or 'unplanned'})")
+            if conflicts:
+                box = QMessageBox(self)
+                box.setWindowTitle("Earlier than its prerequisites")
+                box.setText(
+                    f"{len(conflicts)} prerequisite(s) finish AFTER {text} — "
+                    f"this date only holds if they deliver early.\n\n"
+                    f"Set it anyway?")
+                box.setDetailedText("\n".join(conflicts))
+                box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+                if box.exec() != QMessageBox.Yes:
+                    return
         self._plan_write(due=text)
 
     def _plan_write(self, estimate: float | None = None,
@@ -939,34 +971,9 @@ class MainWindow(QMainWindow):
                 "dates) first.")
             return
         unplanned = len(tasks) - len(planned)
-
-        def on_apply(changes: dict):
-            remote = self.cfg.remote_root
-            actor = self._creds_user_safe()
-
-            def work():
-                return [self._conn_do(
-                    lambda c, x=tid, ch=ch: tasksmod.set_plan(
-                        c, remote, x, estimate_days=ch.get("estimate_days"),
-                        due=ch.get("due"), actor=actor))
-                    for tid, ch in changes.items()]
-
-            def done(updated):
-                self._busy_buttons(False)
-                self._merge_tasks(updated)
-                self.status.showMessage(
-                    f"Gantt: {len(changes)} task(s) rescheduled.")
-
-            self._busy_buttons(True)
-            self._spawn(work, done, busy_msg="Applying schedule…")
-
         dlg = GanttDialog(planned, cfg, self._roster,
                           self._HEALTH_COLORS, self._STEP_COLORS,
-                          unplanned=unplanned,
-                          shot_elements=getattr(self, "_shot_elements", None),
-                          on_apply=on_apply if self._can_delete_remote()
-                          else None,
-                          parent=self)
+                          unplanned=unplanned, parent=self)
         dlg.exec()
 
     # ---- dailies / review ---------------------------------------------------
@@ -2803,108 +2810,54 @@ class BugReportDialog(QDialog):
 
 
 class _GanttCanvas(QWidget):
-    """Interactive timeline: per-artist lanes, one bar per task.
-
-    Drag a bar to move its due date; drag its RIGHT EDGE to resize the
-    estimate; DOUBLE-CLICK a bar to revert it; Ctrl+wheel zooms.
-
-    Editing is stateless: only bars you explicitly dragged are 'edits' —
-    every frame the display is recomputed from the ORIGINAL plan + your
-    edits through plan.reflow, so dependents follow your drags in both
-    directions and a wiggle never scatters the plan. Row order freezes
-    while you drag (no lane-jumping under the cursor). Nothing is written
-    until Apply."""
+    """Read-only timeline: per-artist lanes, one bar per task from start (due
+    minus estimate at the artist's pace) to due date. Weekends shaded, today
+    and the deadline as vertical lines, late bars outlined red. Ctrl+wheel
+    zooms. Editing happens in the Plan table (Set due date… checks the
+    pipeline dependencies)."""
     ROW_H = 24
     HEADER_H = 28
     LEFT_W = 250
-    EDGE_PX = 5
 
-    def __init__(self, tasks, cfg, roster, step_colors, shot_elements,
-                 on_changes, parent=None):
+    def __init__(self, tasks, cfg, roster, step_colors, parent=None):
         super().__init__(parent)
-        import copy
         import datetime as dt
         self._cfg = cfg
         self._roster = roster
         self._colors = step_colors
-        self._elements = shot_elements or {}
-        self._on_changes = on_changes            # callback(n_changes)
         self._today = dt.date.today()
         self._deadline = planmod.parse_date(cfg.get("deadline", ""))
-        self._orig = [copy.deepcopy(t) for t in tasks]
-        self._orig_by_id = {t["id"]: t for t in self._orig}
-        self._edits: dict[str, dict] = {}        # tid -> {due?, estimate_days?}
-        self._drag = None                        # (mode, tid, press_x, orig_val)
-        self._frozen = None                      # row order while dragging
         self._ppd = 0.0                          # pixels per day (0 = fit)
-        self.setMouseTracking(True)
-        self._settle()
-
-    # -- model ------------------------------------------------------------
-    def _settle(self):
-        """Rebuild the display: original plan + explicit edits, reflowed."""
-        import copy
-        view = [copy.deepcopy(t) for t in self._orig]
-        for t in view:
-            e = self._edits.get(t["id"])
-            if e:
-                t.update({k: v for k, v in e.items() if v is not None})
-        settled = planmod.reflow(view, self._today, self._cfg, self._elements)
-        for t in view:
-            if t["id"] in settled:
-                t["due"] = settled[t["id"]]
-        self._view = view
-        self._rebuild_rows()
-        if self._on_changes:
-            self._on_changes(len(self.changes()))
-        self._apply_zoom_width()
-        self.update()
-
-    def _rebuild_rows(self):
-        import datetime as dt
-        entries = {}
-        for t in self._view:
-            if not planmod.parse_date(t.get("due", "")):
-                continue
-            artist = (t.get("assignees") or ["(unassigned)"])[0]
-            due = planmod.parse_date(t["due"])
-            pace = planmod.availability_of(artist, self._cfg) / 5.0
-            dur = planmod.estimate_of(t, self._cfg) / (pace or 1.0)
-            orig = self._orig_by_id.get(t["id"], {})
-            entries[t["id"]] = {
-                "task": t, "artist": artist, "due": due,
-                "start": planmod.sub_workdays(due, max(1.0, dur) - 1),
-                "moved": (t.get("due", "") != orig.get("due", "")
-                          or t.get("estimate_days") != orig.get("estimate_days")),
-            }
-        if self._frozen is not None:
-            order = [tid for tid in self._frozen if tid in entries]
-        else:
-            order = [tid for tid, _e in sorted(
-                entries.items(),
-                key=lambda kv: (kv[1]["artist"], kv[1]["due"],
-                                kv[1]["task"].get("entity", "")))]
-        self._rows = [entries[tid] for tid in order]
-        day0 = min([r["start"] for r in self._rows] + [self._today])
-        day1 = max([r["due"] for r in self._rows]
+        rows = []
+        by_artist: dict[str, list] = {}
+        for t in tasks:
+            if planmod.parse_date(t.get("due", "")):
+                by_artist.setdefault((t.get("assignees")
+                                      or ["(unassigned)"])[0], []).append(t)
+        for artist in sorted(by_artist):
+            for t in sorted(by_artist[artist], key=lambda t: t.get("due", "")):
+                due = planmod.parse_date(t["due"])
+                pace = planmod.availability_of(artist, cfg) / 5.0
+                dur = planmod.estimate_of(t, cfg) / (pace or 1.0)
+                rows.append({
+                    "artist": artist, "due": due,
+                    "start": planmod.sub_workdays(due, max(1.0, dur) - 1),
+                    "late": planmod.health(t, self._today, cfg)
+                            == planmod.HEALTH_LATE,
+                    "color": step_colors.get(t.get("step", ""),
+                                             QColor(150, 150, 150)),
+                    "label": (f"{usersmod.display_name(roster, artist)}   "
+                              f"{t.get('entity')} · {t.get('step')}"),
+                })
+        self._rows = rows
+        day0 = min([r["start"] for r in rows] + [self._today])
+        day1 = max([r["due"] for r in rows]
                    + ([self._deadline] if self._deadline else []))
         self._day0 = day0 - dt.timedelta(days=2)
         self._day1 = day1 + dt.timedelta(days=4)
-        self.setMinimumHeight(self.HEADER_H + self.ROW_H * len(self._rows) + 8)
+        self.setMinimumHeight(self.HEADER_H + self.ROW_H * len(rows) + 8)
+        self._apply_zoom_width()
 
-    def changes(self) -> dict:
-        """{task_id: {due, estimate_days}} for every task whose SETTLED state
-        differs from the loaded plan (your drags + their ripple effects)."""
-        out = {}
-        for t in self._view:
-            o = self._orig_by_id.get(t["id"], {})
-            if (t.get("due", "") != o.get("due", "")
-                    or t.get("estimate_days") != o.get("estimate_days")):
-                out[t["id"]] = {"due": t.get("due", ""),
-                                "estimate_days": t.get("estimate_days")}
-        return out
-
-    # -- geometry -----------------------------------------------------------
     def _span_days(self):
         return max(1, (self._day1 - self._day0).days)
 
@@ -2920,110 +2873,19 @@ class _GanttCanvas(QWidget):
         return (self.LEFT_W + (day - self._day0).days
                 / self._span_days() * (w - self.LEFT_W - 12))
 
-    def _day_px(self):
-        import datetime as dt
-        return max(1e-6, self._x(self._day0 + dt.timedelta(days=1))
-                   - self._x(self._day0))
-
-    def _row_at(self, pos):
-        i = int((pos.y() - self.HEADER_H) // self.ROW_H)
-        return self._rows[i] if 0 <= i < len(self._rows) else None
-
-    def _bar_span(self, row):
-        import datetime as dt
-        return (self._x(row["start"]),
-                self._x(row["due"] + dt.timedelta(days=1)))
-
-    def _hit(self, pos):
-        """(mode, row) under the cursor: 'resize' only on the right edge of a
-        bar wide enough that the handle can't eat the whole bar."""
-        row = self._row_at(pos)
-        if not row:
-            return None, None
-        x0, x1 = self._bar_span(row)
-        x = pos.x()
-        if x1 - x0 > 3 * self.EDGE_PX and abs(x - x1) <= self.EDGE_PX:
-            return "resize", row
-        if x0 - 2 <= x <= x1 + 2:
-            return "move", row
-        return None, None
-
-    # -- interaction ----------------------------------------------------------
     def wheelEvent(self, ev):
         if not (ev.modifiers() & Qt.ControlModifier):
             ev.ignore()
             return
-        cur = self._ppd or self._day_px()
+        import datetime as dt
+        cur = self._ppd or max(1e-6, self._x(self._day0 + dt.timedelta(days=1))
+                               - self._x(self._day0))
         factor = 1.2 if ev.angleDelta().y() > 0 else 1 / 1.2
         self._ppd = max(4.0, min(60.0, cur * factor))
         self._apply_zoom_width()
         self.update()
         ev.accept()
 
-    def mousePressEvent(self, ev):
-        mode, row = self._hit(ev.position())
-        if not mode:
-            return
-        t = row["task"]
-        self._frozen = [r["task"]["id"] for r in self._rows]
-        if mode == "resize":
-            self._drag = ("resize", t["id"], ev.position().x(),
-                          planmod.estimate_of(t, self._cfg))
-        else:
-            self._drag = ("move", t["id"], ev.position().x(),
-                          t.get("due", ""))
-            self.setCursor(Qt.ClosedHandCursor)
-
-    def mouseMoveEvent(self, ev):
-        import datetime as dt
-        if self._drag is None:
-            mode, _row = self._hit(ev.position())
-            self.setCursor(Qt.SizeHorCursor if mode == "resize"
-                           else Qt.OpenHandCursor if mode == "move"
-                           else Qt.ArrowCursor)
-            return
-        mode, tid, press_x, orig = self._drag
-        days = round((ev.position().x() - press_x) / self._day_px())
-        edit = self._edits.setdefault(tid, {})
-        if mode == "move":
-            base = planmod.parse_date(orig)
-            if base is None:
-                return
-            due = base + dt.timedelta(days=days)
-            due = max(due, self._today)
-            while due.weekday() >= 5:                 # snap onto a workday
-                due += dt.timedelta(days=1)
-            if edit.get("due") == due.isoformat():
-                return                                # no change -> no churn
-            edit["due"] = due.isoformat()
-        else:
-            user = (self._orig_by_id[tid].get("assignees") or [""])[0]
-            pace = planmod.availability_of(user, self._cfg) / 5.0 or 1.0
-            est = max(0.5, round((orig + days * pace) * 2) / 2)
-            if edit.get("estimate_days") == est:
-                return
-            edit["estimate_days"] = est
-        self._settle()
-
-    def mouseReleaseEvent(self, ev):
-        if self._drag is not None:
-            mode, tid, press_x, orig = self._drag
-            # a plain click (no movement) is not an edit — drop the no-op
-            e = self._edits.get(tid)
-            if e is not None and not e:
-                self._edits.pop(tid, None)
-            self._drag = None
-            self._frozen = None
-            self._settle()
-        self.unsetCursor()
-
-    def mouseDoubleClickEvent(self, ev):
-        _mode, row = self._hit(ev.position())
-        if row and row["task"]["id"] in self._edits:
-            self._edits.pop(row["task"]["id"], None)   # revert this bar
-            self._settle()
-
-    # -- painting ---------------------------------------------------------------
     def paintEvent(self, _event):
         from PySide6.QtGui import QPainter, QPen
         import datetime as dt
@@ -3050,30 +2912,21 @@ class _GanttCanvas(QWidget):
         y = self.HEADER_H
         last_artist = object()
         for row in self._rows:
-            t = row["task"]
             if row["artist"] != last_artist:
                 p.setPen(QPen(QColor(127, 127, 127, 70)))
                 p.drawLine(0, y, w, y)
                 last_artist = row["artist"]
-            x0, x1 = self._bar_span(row)
-            bar = QColor(self._colors.get(t.get("step", ""),
-                                          QColor(150, 150, 150)))
-            bar.setAlpha(230 if row["moved"] else 200)
+            x0 = self._x(row["start"])
+            x1 = self._x(row["due"] + dt.timedelta(days=1))
+            bar = QColor(row["color"])
+            bar.setAlpha(210)
             p.fillRect(int(x0), y + 4, max(3, int(x1 - x0)), self.ROW_H - 8, bar)
-            if row["moved"]:
-                p.setPen(QPen(fg, 2))
+            if row["late"]:
+                p.setPen(QPen(QColor(224, 85, 85), 2))
                 p.drawRect(int(x0), y + 4, max(3, int(x1 - x0)), self.ROW_H - 8)
-                due0 = planmod.parse_date(
-                    self._orig_by_id.get(t["id"], {}).get("due", ""))
-                if due0 and due0 != row["due"]:
-                    p.setPen(QPen(dim, 1, Qt.DashLine))   # ghost old date
-                    gx = self._x(due0 + dt.timedelta(days=1))
-                    p.drawLine(int(gx), y + 4, int(gx), y + self.ROW_H - 4)
             p.setPen(fg)
-            label = (f"{usersmod.display_name(self._roster, row['artist'])}   "
-                     f"{t.get('entity')} · {t.get('step')}")
             p.drawText(6, y + self.ROW_H - 8,
-                       p.fontMetrics().elidedText(label, Qt.ElideMiddle,
+                       p.fontMetrics().elidedText(row["label"], Qt.ElideMiddle,
                                                   self.LEFT_W - 12))
             y += self.ROW_H
 
@@ -3091,12 +2944,10 @@ class _GanttCanvas(QWidget):
 
 class GanttDialog(QDialog):
     def __init__(self, planned, cfg, roster, health_colors, step_colors,
-                 unplanned=0, shot_elements=None, on_apply=None, parent=None):
+                 unplanned=0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Production plan — Gantt")
         self.resize(1150, 700)
-        self._on_apply = on_apply
-
         lay = QVBoxLayout(self)
         legend = QHBoxLayout()
         for step, color in step_colors.items():
@@ -3105,43 +2956,22 @@ class GanttDialog(QDialog):
                                f"{color.blue()});")
             legend.addWidget(chip)
         legend.addSpacing(16)
-        legend.addWidget(QLabel("Drag = move · right edge = resize · "
-                                "double-click = revert · Ctrl+wheel = zoom"))
+        legend.addWidget(QLabel("Ctrl+wheel = zoom · edit dates in the Plan "
+                                "table."))
         legend.addStretch(1)
         if unplanned:
             legend.addWidget(QLabel(f"{unplanned} task(s) without a due date "
                                     f"not shown — run Auto-plan."))
         lay.addLayout(legend)
-
-        self.b_apply = QPushButton("Apply changes")
-        self.b_apply.setEnabled(False)
-
-        def on_changes(n):
-            self.b_apply.setEnabled(bool(n and self._on_apply))
-            self.b_apply.setText(f"Apply {n} change(s)" if n
-                                 else "Apply changes")
-
-        self.canvas = _GanttCanvas(planned, cfg, roster, step_colors,
-                                   shot_elements, on_changes, self)
+        canvas = _GanttCanvas(planned, cfg, roster, step_colors, self)
         scroll = QScrollArea()
-        scroll.setWidget(self.canvas)
+        scroll.setWidget(canvas)
         scroll.setWidgetResizable(True)
         lay.addWidget(scroll, 1)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        self.b_apply.clicked.connect(self._apply)
-        b_close = QPushButton("Close")
-        b_close.clicked.connect(self.reject)
-        buttons.addWidget(self.b_apply)
-        buttons.addWidget(b_close)
-        lay.addLayout(buttons)
-
-    def _apply(self):
-        changes = self.canvas.changes()
-        if changes and self._on_apply:
-            self._on_apply(changes)
-        self.accept()
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.clicked.connect(self.accept)
+        lay.addWidget(buttons)
 
 
 class UserPickerDialog(QDialog):
