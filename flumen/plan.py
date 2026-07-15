@@ -226,6 +226,23 @@ def reflow(tasks: list[dict], today: datetime.date, cfg: dict,
     return out
 
 
+def set_deadline(sftp, remote_root: str, deadline: str) -> dict:
+    """Read-modify-write planning.deadline in the SERVER project settings
+    (the copy the app loads). Returns the updated settings dict so callers
+    can refresh without a reload. NOTE: `flumen publish-config` uploads the
+    local pipeline_config file verbatim — keep it in sync or the next
+    publish reverts the deadline."""
+    import json as _json
+    if parse_date(deadline) is None:
+        raise ValueError(f"'{deadline}' is not a YYYY-MM-DD date")
+    path = remote_root.rstrip("/") + "/02_pipeline/project_settings.json"
+    settings = _json.loads(sftp.read_text(path) or "{}")
+    settings.setdefault("planning", {})["deadline"] = deadline
+    sftp.write_text(path, _json.dumps(settings, indent=2,
+                                      ensure_ascii=False) + "\n")
+    return settings
+
+
 def load_shot_elements(sftp, remote_root: str,
                        tasks: list[dict]) -> dict[str, list[str]]:
     """{shot_entity: [asset entities in its element list]} for every shot task,

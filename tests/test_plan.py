@@ -192,3 +192,42 @@ def test_reflow_same_artist_overlap_slides():
     out = P.reflow([t1, t2], MON, CFG)
     assert out["x-model"] == P.add_workdays(MON, 3).isoformat()
     assert out["x-model2"] == P.add_workdays(MON, 6).isoformat()  # after t1
+
+
+class _FakeSrv:
+    """In-memory read_text/write_text, enough for set_deadline."""
+    def __init__(self, files=None):
+        self.files = dict(files or {})
+
+    def read_text(self, p):
+        return self.files.get(p)
+
+    def write_text(self, p, t):
+        self.files[p] = t
+
+
+def test_set_deadline_writes_server_settings():
+    import json
+    path = "/root/02_pipeline/project_settings.json"
+    srv = _FakeSrv({path: json.dumps(
+        {"planning": {"deadline": "2026-09-01", "due_soon_days": 5},
+         "formats": [["16x9", 2560, 1440]]})})
+    out = P.set_deadline(srv, "/root/", "2026-09-15")
+    assert out["planning"]["deadline"] == "2026-09-15"
+    stored = json.loads(srv.files[path])
+    assert stored["planning"]["deadline"] == "2026-09-15"
+    assert stored["planning"]["due_soon_days"] == 5    # rest untouched
+    assert stored["formats"] == [["16x9", 2560, 1440]]
+
+
+def test_set_deadline_creates_planning_block_and_validates():
+    import json
+    import pytest
+    srv = _FakeSrv()                                   # no settings file yet
+    out = P.set_deadline(srv, "/root", "2026-09-15")
+    assert out["planning"]["deadline"] == "2026-09-15"
+    assert json.loads(
+        srv.files["/root/02_pipeline/project_settings.json"]
+    )["planning"]["deadline"] == "2026-09-15"
+    with pytest.raises(ValueError):
+        P.set_deadline(srv, "/root", "15/09/2026")

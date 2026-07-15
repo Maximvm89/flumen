@@ -16,7 +16,7 @@ import sys
 import threading
 import webbrowser
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QDate
 from PySide6.QtGui import QBrush, QColor, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QComboBox, QTableWidget, QTableWidgetItem, QDialog, QFormLayout,
     QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox, QSpinBox,
     QListWidget, QListWidgetItem, QProgressBar, QScrollArea,
+    QStyledItemDelegate, QDateEdit, QDoubleSpinBox, QCalendarWidget,
 )
 
 from flumen.config import (ProjectConfig, SFTPCredentials, CACHED_CONFIG,
@@ -130,6 +131,62 @@ class Job(QThread):
             self.done.emit(self._fn())
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
+
+
+class _DueDelegate(QStyledItemDelegate):
+    """In-place editor for the plan's Due column: double-click opens a
+    calendar-popup date field. Commits go through the owner's task write
+    (dependency check included) instead of the view model — the cell
+    refreshes when the server confirms."""
+
+    def __init__(self, owner):
+        super().__init__(owner.plan_table)
+        self._owner = owner
+
+    def createEditor(self, parent, option, index):
+        ed = QDateEdit(parent)
+        ed.setCalendarPopup(True)
+        ed.setDisplayFormat("yyyy-MM-dd")
+        return ed
+
+    def setEditorData(self, ed, index):
+        cur = (planmod.parse_date(index.data() or "")
+               or planmod.parse_date(
+                   self._owner._planning_cfg().get("deadline", ""))
+               or _dt.date.today())
+        ed.setDate(QDate(cur.year, cur.month, cur.day))
+
+    def setModelData(self, ed, model, index):
+        t = self._owner._plan_task_at(index.row())
+        if t:
+            self._owner._plan_commit_due(
+                [t], ed.date().toString("yyyy-MM-dd"))
+
+
+class _EstimateDelegate(QStyledItemDelegate):
+    """In-place editor for the plan's Est column: workdays spinbox,
+    0 = back to the step default."""
+
+    def __init__(self, owner):
+        super().__init__(owner.plan_table)
+        self._owner = owner
+
+    def createEditor(self, parent, option, index):
+        ed = QDoubleSpinBox(parent)
+        ed.setRange(0.0, 60.0)
+        ed.setDecimals(1)
+        ed.setSingleStep(0.5)
+        ed.setToolTip("Workdays; 0 = back to the step default")
+        return ed
+
+    def setEditorData(self, ed, index):
+        t = self._owner._plan_task_at(index.row())
+        ed.setValue(float((t or {}).get("estimate_days") or 0.0))
+
+    def setModelData(self, ed, model, index):
+        t = self._owner._plan_task_at(index.row())
+        if t:
+            self._owner._plan_write(estimate=ed.value(), tasks=[t])
 
 
 class MainWindow(QMainWindow):
@@ -676,6 +733,12 @@ class MainWindow(QMainWindow):
         self.ed_plan_search.setMinimumWidth(220)
         controls.addWidget(self.ed_plan_search, 1)
         controls.addStretch(0)
+        b_deadline = QPushButton("Deadline…")
+        b_deadline.setToolTip(
+            "Set the project deadline (supervisors) — written to the project "
+            "settings on the server, everyone picks it up on refresh")
+        b_deadline.clicked.connect(self._set_deadline)
+        controls.addWidget(b_deadline)
         self.b_autoplan = QPushButton("Auto-plan…")
         self.b_autoplan.setToolTip(
             "Propose due dates: spreads each artist's remaining tasks over the "
@@ -700,28 +763,38 @@ class MainWindow(QMainWindow):
             ["Health", "Due", "Entity", "Step", "Assignees", "Est (d)", "Status"])
         self.plan_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.plan_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.plan_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.plan_table.setEditTriggers(QAbstractItemView.DoubleClicked
+                                        | QAbstractItemView.EditKeyPressed)
         self.plan_table.setSortingEnabled(True)
         self.plan_table.setAlternatingRowColors(True)
         self.plan_table.setShowGrid(False)
         self.plan_table.verticalHeader().setDefaultSectionSize(26)
         self.plan_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.Stretch)
+        self.plan_table.setItemDelegateForColumn(1, _DueDelegate(self))
+        self.plan_table.setItemDelegateForColumn(5, _EstimateDelegate(self))
         pl.addWidget(self.plan_table, 1)
 
         rowops = QHBoxLayout()
         b_est = QPushButton("Set estimate…")
         b_est.clicked.connect(self._plan_set_estimate)
         b_due = QPushButton("Set due date…")
+        b_due.setToolTip("Pick one date from a calendar for every selected "
+                         "task")
         b_due.clicked.connect(self._plan_set_due)
+        b_shift = QPushButton("Shift dates…")
+        b_shift.setToolTip("Move the due dates of the selected tasks earlier "
+                           "or later by N workdays (weekends skipped)")
+        b_shift.clicked.connect(self._plan_shift_dates)
         b_clear = QPushButton("Clear dates")
         b_clear.clicked.connect(lambda: self._plan_write(due=""))
         rowops.addWidget(b_est)
         rowops.addWidget(b_due)
+        rowops.addWidget(b_shift)
         rowops.addWidget(b_clear)
         rowops.addStretch(1)
-        rowops.addWidget(QLabel("Assign + estimates live on the tasks — the "
-                                "Tasks tab assigns, statuses track progress."))
+        rowops.addWidget(QLabel("Double-click a Due or Est cell to edit it in "
+                                "place — the Tasks tab assigns."))
         pl.addLayout(rowops)
         return page
 
@@ -746,7 +819,7 @@ class MainWindow(QMainWindow):
                    if s["unassigned_days"] else ""))
         else:
             self.lb_plan_header.setText(
-                "No deadline set — add planning.deadline to project_settings.")
+                "No deadline set — use Deadline… (supervisors) to pick one.")
 
         # artist filter combo (rebuild, keep selection)
         current = self.cb_plan_artist.currentData()
@@ -799,6 +872,8 @@ class MainWindow(QMainWindow):
             ]
             for j, text in enumerate(cells):
                 item = QTableWidgetItem(text)
+                if j not in (1, 5):        # only Due + Est edit in place
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if j == 0:
                     item.setData(Qt.UserRole, t)
                     item.setForeground(QBrush(self._HEALTH_COLORS[h]))
@@ -811,11 +886,14 @@ class MainWindow(QMainWindow):
     def _plan_selected(self) -> list[dict]:
         out = []
         for idx in self.plan_table.selectionModel().selectedRows():
-            item = self.plan_table.item(idx.row(), 0)
-            t = item.data(Qt.UserRole) if item else None
+            t = self._plan_task_at(idx.row())
             if t:
                 out.append(t)
         return out
+
+    def _plan_task_at(self, row: int) -> dict | None:
+        item = self.plan_table.item(row, 0)
+        return item.data(Qt.UserRole) if item else None
 
     def _plan_set_estimate(self):
         chosen = self._plan_selected()
@@ -829,59 +907,112 @@ class MainWindow(QMainWindow):
         if ok:
             self._plan_write(estimate=val)
 
+    def _pick_date(self, title: str, initial: _dt.date) -> str | None:
+        """Calendar picker dialog -> 'YYYY-MM-DD', or None on cancel."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        lay = QVBoxLayout(dlg)
+        cal = QCalendarWidget()
+        cal.setFirstDayOfWeek(Qt.Monday)
+        cal.setSelectedDate(QDate(initial.year, initial.month, initial.day))
+        lay.addWidget(cal)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        cal.activated.connect(lambda _d: dlg.accept())  # double-click a day
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return cal.selectedDate().toString("yyyy-MM-dd")
+
     def _plan_set_due(self):
         chosen = self._plan_selected()
         if not chosen:
             QMessageBox.information(self, "No tasks selected",
                                     "Select tasks in the plan first.")
             return
-        text, ok = QInputDialog.getText(
-            self, "Set due date", "Due date (YYYY-MM-DD, empty clears):",
-            text=self._planning_cfg().get("deadline", ""))
-        if not ok:
-            return
-        text = text.strip()
-        if text and planmod.parse_date(text) is None:
+        start = (planmod.parse_date(chosen[0].get("due", ""))
+                 or planmod.parse_date(self._planning_cfg().get("deadline", ""))
+                 or _dt.date.today())
+        text = self._pick_date(f"Set due date — {len(chosen)} task(s)", start)
+        if text:
+            self._plan_commit_due(chosen, text)
+
+    def _plan_commit_due(self, chosen: list[dict], text: str):
+        """Validate + dependency-check `text`, then write it on `chosen`."""
+        new_due = planmod.parse_date(text)
+        if text and new_due is None:
             QMessageBox.warning(self, "Bad date",
                                 f"'{text}' is not a YYYY-MM-DD date.")
             return
-        # Starting earlier? Check the pipeline: list every unfinished
-        # prerequisite that lands AFTER the chosen date, so you know what has
-        # to publish early for this to hold. Warns, never blocks.
-        new_due = planmod.parse_date(text)
-        if new_due:
-            tasks = getattr(self, "_tasks", None) or []
-            deps = planmod.task_dependencies(
-                tasks, getattr(self, "_shot_elements", None))
-            by_id = {t["id"]: t for t in tasks}
-            conflicts = []
-            for t in chosen:
-                for d in deps.get(t["id"], []):
-                    dt_ = by_id.get(d)
-                    if not dt_ or dt_.get("status") in ("done", "omitted"):
-                        continue
-                    d_due = planmod.parse_date(dt_.get("due", ""))
-                    if d_due is None or d_due > new_due:
-                        conflicts.append(
-                            f"{t.get('entity')} · {t.get('step')}  needs  "
-                            f"{dt_.get('entity')} · {dt_.get('step')} "
-                            f"(due {dt_.get('due') or 'unplanned'})")
-            if conflicts:
-                box = QMessageBox(self)
-                box.setWindowTitle("Earlier than its prerequisites")
-                box.setText(
-                    f"{len(conflicts)} prerequisite(s) finish AFTER {text} — "
-                    f"this date only holds if they deliver early.\n\n"
-                    f"Set it anyway?")
-                box.setDetailedText("\n".join(conflicts))
-                box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-                if box.exec() != QMessageBox.Yes:
-                    return
-        self._plan_write(due=text)
+        if new_due and not self._confirm_due_conflicts(
+                [(t, new_due) for t in chosen]):
+            return
+        self._plan_write(due=text, tasks=chosen)
+
+    def _confirm_due_conflicts(self, pairs) -> bool:
+        """pairs = [(task, proposed due date)]. Lists every unfinished
+        prerequisite that lands AFTER the proposed date, so you know what has
+        to publish early for it to hold. Warns, never blocks; True = go."""
+        tasks = getattr(self, "_tasks", None) or []
+        deps = planmod.task_dependencies(
+            tasks, getattr(self, "_shot_elements", None))
+        by_id = {t["id"]: t for t in tasks}
+        conflicts = []
+        for t, new_due in pairs:
+            for d in deps.get(t["id"], []):
+                dt_ = by_id.get(d)
+                if not dt_ or dt_.get("status") in ("done", "omitted"):
+                    continue
+                d_due = planmod.parse_date(dt_.get("due", ""))
+                if d_due is None or d_due > new_due:
+                    conflicts.append(
+                        f"{t.get('entity')} · {t.get('step')}  needs  "
+                        f"{dt_.get('entity')} · {dt_.get('step')} "
+                        f"(due {dt_.get('due') or 'unplanned'})")
+        if not conflicts:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("Earlier than its prerequisites")
+        box.setText(
+            f"{len(conflicts)} prerequisite(s) finish AFTER the chosen "
+            f"date(s) — this only holds if they deliver early.\n\n"
+            f"Set it anyway?")
+        box.setDetailedText("\n".join(conflicts))
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        return box.exec() == QMessageBox.Yes
+
+    def _plan_shift_dates(self):
+        chosen = [t for t in self._plan_selected()
+                  if planmod.parse_date(t.get("due", ""))]
+        if not chosen:
+            QMessageBox.information(
+                self, "No dated tasks selected",
+                "Select tasks that already have a due date — shifting moves "
+                "existing dates.")
+            return
+        n, ok = QInputDialog.getInt(
+            self, "Shift due dates",
+            f"Workdays to shift {len(chosen)} task(s) by\n"
+            "(negative = earlier, weekends skipped):", 5, -60, 60)
+        if not ok or n == 0:
+            return
+        moved = {}
+        for t in chosen:
+            due = planmod.parse_date(t["due"])
+            nd = (planmod.add_workdays(due, n) if n > 0
+                  else planmod.sub_workdays(due, -n))
+            moved[t["id"]] = (t, nd)
+        if not self._confirm_due_conflicts(
+                [(t, nd) for t, nd in moved.values()]):
+            return
+        self._apply_due_map(
+            {tid: nd.isoformat() for tid, (_t, nd) in moved.items()},
+            f"{len(moved)} due date(s) shifted.")
 
     def _plan_write(self, estimate: float | None = None,
-                    due: str | None = None):
-        chosen = self._plan_selected()
+                    due: str | None = None, tasks: list[dict] | None = None):
+        chosen = tasks if tasks is not None else self._plan_selected()
         if not chosen or not self.cfg:
             return
         remote = self.cfg.remote_root
@@ -901,6 +1032,37 @@ class MainWindow(QMainWindow):
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating plan…")
 
+    def _set_deadline(self):
+        if not self.cfg:
+            return
+        if not self._can_delete_remote():
+            QMessageBox.information(self, "Supervisors only",
+                                    "The deadline lives in the project "
+                                    "settings on the server — ask your "
+                                    "supervisor to change it.")
+            return
+        cur = (planmod.parse_date(self._planning_cfg().get("deadline", ""))
+               or _dt.date.today())
+        iso = self._pick_date("Set project deadline", cur)
+        if not iso:
+            return
+        remote = self.cfg.remote_root
+
+        def work():
+            return self._conn_do(
+                lambda c: planmod.set_deadline(c, remote, iso))
+
+        def done(settings):
+            self._busy_buttons(False)
+            self._project_settings = settings
+            self._render_plan()
+            self.status.showMessage(
+                f"Deadline set to {iso} — mirror it in pipeline_config/"
+                f"project_settings.json before the next publish-config.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Writing deadline…")
+
     def _auto_plan(self):
         if not self.cfg:
             return
@@ -912,9 +1074,9 @@ class MainWindow(QMainWindow):
         cfg = self._planning_cfg()
         if not cfg.get("deadline"):
             QMessageBox.warning(self, "No deadline",
-                                "Set planning.deadline in project_settings "
-                                "first — the auto-plan spreads work over the "
-                                "days remaining to it.")
+                                "Set the deadline (Deadline… button) first — "
+                                "the auto-plan spreads work over the days "
+                                "remaining to it.")
             return
         tasks = getattr(self, "_tasks", None) or []
         proposal, warns = planmod.propose_schedule(
@@ -941,19 +1103,25 @@ class MainWindow(QMainWindow):
         box.setStandardButtons(QMessageBox.Apply | QMessageBox.Cancel)
         if box.exec() != QMessageBox.Apply:
             return
+        self._apply_due_map(proposal,
+                            f"Auto-plan applied to {len(proposal)} task(s).")
+
+    def _apply_due_map(self, mapping: dict[str, str], done_msg: str):
+        """Write per-task due dates {task_id: 'YYYY-MM-DD'} on the Job thread."""
+        if not self.cfg or not mapping:
+            return
         remote = self.cfg.remote_root
         actor = self._creds_user_safe()
 
         def work():
             return [self._conn_do(lambda c, x=tid, d=due: tasksmod.set_plan(
                 c, remote, x, due=d, actor=actor))
-                for tid, due in proposal.items()]
+                for tid, due in mapping.items()]
 
         def done(updated):
             self._busy_buttons(False)
             self._merge_tasks(updated)
-            self.status.showMessage(
-                f"Auto-plan applied to {len(proposal)} task(s).")
+            self.status.showMessage(done_msg)
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Applying plan…")
@@ -2814,8 +2982,8 @@ class _GanttCanvas(QWidget):
     """Read-only timeline: per-artist lanes, one bar per task from start (due
     minus estimate at the artist's pace) to due date. Weekends shaded, today
     and the deadline as vertical lines, late bars outlined red. Ctrl+wheel
-    zooms. Editing happens in the Plan table (Set due date… checks the
-    pipeline dependencies)."""
+    zooms. Editing happens in the Plan table (double-click a Due cell, or
+    Set due date… / Shift dates… — all check the pipeline dependencies)."""
     ROW_H = 24
     HEADER_H = 28
     LEFT_W = 250
