@@ -65,6 +65,13 @@ def parallel_walk(list_dir: "Callable[[str], list[dict]]", root: str,
     return results
 
 
+def _close_quietly(sock) -> None:
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
 def _owner_from_attr(entry) -> str:
     """Extract the owner name from an SFTP entry's `ls -l` style longname.
     e.g. '-rw-r--r-- 1 marco.parisi staff 1234 ... name' -> 'marco.parisi'.
@@ -96,6 +103,7 @@ class SFTPClient:
         if self.dry_run:
             return
         import paramiko  # imported lazily so dry-run needs no paramiko install
+        import socket
 
         pkey = None
         if self.creds.key_file:
@@ -105,12 +113,38 @@ class SFTPClient:
                 self.creds.key_file, password=self.creds.key_passphrase
             )
 
-        self._transport = paramiko.Transport((self.creds.host, self.creds.port))
-        self._transport.connect(
-            username=self.creds.user,
-            password=self.creds.password if not pkey else None,
-            pkey=pkey,
-        )
+        # Open the TCP socket ourselves with a bounded timeout: a firewalled or
+        # unreachable host must fail in seconds with a clear message, not hang
+        # a publish indefinitely with no output (paramiko's own connect has no
+        # timeout). Paramiko's packetizer copes with the recv timeout staying
+        # on the socket, so long transfers are unaffected.
+        timeout = float(os.environ.get("FLUMEN_CONNECT_TIMEOUT", "20"))
+        where = f"{self.creds.host}:{self.creds.port}"
+        try:
+            sock = socket.create_connection((self.creds.host, self.creds.port),
+                                            timeout=timeout)
+        except OSError as exc:
+            raise ConnectionError(
+                f"cannot reach {where} ({exc}) — check your network/VPN and "
+                f"the host/port in .env") from exc
+        try:
+            self._transport = paramiko.Transport(sock)
+            self._transport.connect(
+                username=self.creds.user,
+                password=self.creds.password if not pkey else None,
+                pkey=pkey,
+            )
+        except paramiko.AuthenticationException as exc:
+            self.close()
+            _close_quietly(sock)
+            raise ConnectionError(
+                f"login failed for user '{self.creds.user}' on {where} — "
+                f"check the credentials in .env") from exc
+        except paramiko.SSHException as exc:
+            self.close()
+            _close_quietly(sock)
+            raise ConnectionError(
+                f"SSH handshake with {where} failed: {exc}") from exc
         self._sftp = paramiko.SFTPClient.from_transport(self._transport)
 
     def close(self) -> None:

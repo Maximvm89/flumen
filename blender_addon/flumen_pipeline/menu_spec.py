@@ -60,13 +60,14 @@ ACTIONS = {
     "flumen.apply_project_settings": {"icon": "CHECKMARK"},
     "flumen.verify_ocio": {"icon": "COLOR"},
     "flumen.pull_settings": {"icon": "IMPORT"},
+    "flumen.test_connection": {"icon": "URL"},
     "flumen.show_log": {"icon": "TEXT"},
 }
 
 # pull_settings stays in ACTIONS (a project can re-add it via menu.json) but is
 # not in any default menu — config refreshes at every launch anyway.
 _TAIL = [SEPARATOR, "flumen.apply_project_settings", "flumen.verify_ocio",
-         SEPARATOR, "flumen.show_log"]
+         SEPARATOR, "flumen.test_connection", "flumen.show_log"]
 _TASK_CORE = ["flumen.add_review_camera", "flumen.render_review",
               "flumen.save_to_task", "flumen.run_checks", "flumen.auto_fix",
               "flumen.publish"]

@@ -45,6 +45,67 @@ def _toolkit_cmd(args):
     return prefix + list(args), td
 
 
+# Every publish/upload writes a trace here, no matter how Blender was started.
+# The console is invisible on Windows GUI Blender, and ~/.flumen/blender.log
+# only exists when launched from the Workspace app — this file is the one
+# place a failed publish is guaranteed to leave evidence.
+PUBLISH_LOG = os.path.join(os.path.expanduser("~"), ".flumen", "publish.log")
+
+
+def _publog(msg, echo=True):
+    """Append a timestamped line to ~/.flumen/publish.log (and echo it to the
+    console). Best-effort: logging must never break a publish."""
+    import datetime
+    if echo:
+        print("[Flumen]", msg)
+    try:
+        os.makedirs(os.path.dirname(PUBLISH_LOG), exist_ok=True)
+        if (os.path.exists(PUBLISH_LOG)
+                and os.path.getsize(PUBLISH_LOG) > 2_000_000):
+            os.replace(PUBLISH_LOG, PUBLISH_LOG + ".1")
+        with open(PUBLISH_LOG, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+    except OSError:
+        pass
+
+
+def _no_window():
+    """Extra Popen kwargs so toolkit subprocesses don't flash a console window
+    on Windows (GUI Blender has no console for them to attach to)."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def _preflight_server(timeout=45.0):
+    """End-to-end server test via the toolkit (`flumen test-connection`):
+    reaches the host, logs in, and checks the project's remote_root exists.
+    Returns (ok, message); ok is None when the toolkit itself is missing."""
+    cmd, td = _toolkit_cmd(["test-connection"])
+    if cmd is None:
+        return None, ("Toolkit not available — launch Blender from the "
+                      "Workspace app ('Open in Blender').")
+    _publog("preflight: " + " ".join(str(c) for c in cmd), echo=False)
+    try:
+        p = subprocess.run(cmd, cwd=td, capture_output=True, text=True,
+                           timeout=timeout, **_no_window())
+    except subprocess.TimeoutExpired:
+        msg = (f"Server test timed out after {int(timeout)}s — "
+               f"check your network/VPN.")
+        _publog("preflight: " + msg, echo=False)
+        return False, msg
+    except Exception as exc:  # noqa: BLE001 — toolkit present but unrunnable
+        _publog(f"preflight: could not run the toolkit: {exc}", echo=False)
+        return False, f"Could not run the toolkit: {exc}"
+    out = ((p.stdout or "") + (p.stderr or "")).strip()
+    for line in out.splitlines():
+        _publog("  " + line, echo=False)
+    if p.returncode != 0:
+        tail = out.splitlines()[-1] if out else f"exit code {p.returncode}"
+        return False, tail
+    return True, (out.splitlines()[-1] if out else "Connection OK.")
+
+
 def _shell_toolkit(args, report):
     """Run an flumen CLI command via the toolkit the launcher exposed."""
     cmd, td = _toolkit_cmd(args)
@@ -52,9 +113,10 @@ def _shell_toolkit(args, report):
         report({"ERROR"}, "Toolkit not available — launch from the Workspace app.")
         return False
     try:
-        subprocess.check_call(cmd, cwd=td)
+        subprocess.check_call(cmd, cwd=td, **_no_window())
         return True
     except Exception as exc:  # noqa: BLE001
+        _publog(f"toolkit command failed: {' '.join(map(str, cmd))}: {exc}")
         report({"ERROR"}, f"Command failed: {exc}")
         return False
 
@@ -690,11 +752,19 @@ def _server_next_version(task_id: str, base: str) -> int | None:
     toolkit). None if the toolkit/server isn't reachable, so we fall back to local."""
     cmd, td = _toolkit_cmd(["next-version", "--task", task_id, "--base", base])
     if cmd is None:
+        _publog("next-version: toolkit not available — launch Blender from "
+                "the Workspace app")
         return None
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True).strip()
-        return int(out.splitlines()[-1])
-    except Exception:  # noqa: BLE001
+        p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+                           **_no_window())
+        if p.returncode != 0:
+            _publog(f"next-version failed (rc {p.returncode}): "
+                    f"{(p.stderr or p.stdout or '').strip()}")
+            return None
+        return int((p.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:  # noqa: BLE001
+        _publog(f"next-version failed: {exc}")
         return None
 
 
@@ -760,30 +830,63 @@ def _units_ok(scene):
             and abs(float(getattr(us, "scale_length", 1.0)) - 1.0) <= 1e-6)
 
 
+class FLUMEN_OT_test_connection(bpy.types.Operator):
+    bl_idname = "flumen.test_connection"
+    bl_label = "Test server connection"
+    bl_description = ("Verify the server login and project folder that publishes "
+                      "upload to — run this first when a publish or turntable "
+                      "never arrives on the server")
+
+    def execute(self, context):
+        self.report({"INFO"}, "Testing the server connection…")
+        ok, note = _preflight_server()
+        _publog(f"test connection: {'OK' if ok else 'FAILED'} — {note}")
+        icon = "CHECKMARK" if ok else "ERROR"
+        title = "Server connection OK" if ok else "Server connection FAILED"
+        import textwrap
+        lines = textwrap.wrap(note, 64)
+        if not ok:
+            lines += ["", f"Details: {PUBLISH_LOG}"]
+
+        def _draw(popup, _ctx):
+            for chunk in lines:
+                popup.layout.label(text=chunk)
+        context.window_manager.popup_menu(_draw, title=title, icon=icon)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
+
 class FLUMEN_OT_show_log(bpy.types.Operator):
     bl_idname = "flumen.show_log"
     bl_label = "Show pipeline log"
-    bl_description = ("Load the tail of ~/.flumen/blender.log (this Blender's "
-                      "console output) into Blender's Text Editor. Run again to "
-                      "refresh")
-    _TEXT_NAME = "blender.log (tail)"
+    bl_description = ("Load the tails of ~/.flumen/publish.log (publish/upload "
+                      "trace) and ~/.flumen/blender.log (this Blender's console "
+                      "output) into Blender's Text Editor. Run again to refresh")
+    _TEXT_NAME = "pipeline logs (tail)"
     _LINES = 400
 
     def execute(self, context):
-        path = os.path.join(os.path.expanduser("~"), ".flumen", "blender.log")
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                tail = "".join(fh.readlines()[-self._LINES:])
-        except OSError:
-            self.report({"WARNING"}, f"No log yet at {path} — launch Blender via "
-                                     f"the Workspace app to capture output.")
+        blender_log = os.path.join(os.path.expanduser("~"), ".flumen",
+                                   "blender.log")
+        sections = []
+        for path in (PUBLISH_LOG, blender_log):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    tail = "".join(fh.readlines()[-self._LINES:])
+                sections.append(f"#### {path} — last {self._LINES} lines\n\n"
+                                + tail)
+            except OSError:
+                continue
+        if not sections:
+            self.report({"WARNING"}, f"No logs yet under ~/.flumen — publish "
+                                     f"once, or launch Blender via the "
+                                     f"Workspace app to capture output.")
             return {"CANCELLED"}
         txt = bpy.data.texts.get(self._TEXT_NAME)
         if txt is None:
             txt = bpy.data.texts.new(self._TEXT_NAME)
         txt.clear()
-        txt.write(f"# {path} — last {self._LINES} lines "
-                  f"(Flumen menu > Show pipeline log to refresh)\n\n" + tail)
+        txt.write("# Flumen menu > Show pipeline log to refresh\n\n"
+                  + "\n\n".join(sections))
         txt.cursor_set(max(0, len(txt.lines) - 1))   # jump to the end (newest)
         # Show it: reuse an open Text Editor if there is one.
         shown = False
@@ -983,9 +1086,16 @@ def _shell_json(args):
     if cmd is None:
         return None
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+        p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+                           **_no_window())
+        if p.returncode != 0:
+            _publog(f"{args[0]} failed (rc {p.returncode}): "
+                    f"{(p.stderr or p.stdout or '').strip()}")
+            return None
+        out = (p.stdout or "").strip()
         return json.loads(out.splitlines()[-1]) if out else None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _publog(f"{args[0]} failed: {exc}")
         return None
 
 
@@ -1050,12 +1160,23 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                       "this task's publish/ folder, upload, and set status to Review")
 
     _issues: list = []
+    _server_note: str = ""
 
     def invoke(self, context, event):
         task = active_task()
         if not task or not task["work_dir"]:
             self.report({"ERROR"}, "No active task. Open this scene from the "
                                    "Workspace app's 'Open in Blender'.")
+            return {"CANCELLED"}
+        # Preflight the server BEFORE anything else: a publish that can't
+        # upload should fail loudly now, not silently after the files are
+        # written. Also catches wrong credentials / missing remote_root.
+        ok, note = _preflight_server()
+        self._server_note = note
+        if not ok:
+            _publog(f"publish blocked by preflight: {note}")
+            self.report({"ERROR"}, f"Publish blocked — {note}  "
+                                   f"(details: {PUBLISH_LOG})")
             return {"CANCELLED"}
         self._issues = _run_task_checks(task["step"], context, task.get("type"),
                                         task.get("entity", ""))
@@ -1105,6 +1226,8 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         col.separator()
         _draw_checks(col, self._issues)
         col.separator()
+        if self._server_note:
+            col.label(text=self._server_note, icon="URL")
         if checks.has_errors(self._issues):
             col.label(text="Errors must be fixed — publish is blocked.", icon="CANCEL")
         else:
@@ -1115,6 +1238,8 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         if not task or not task["work_dir"]:
             self.report({"ERROR"}, "No active task.")
             return {"CANCELLED"}
+        _publog(f"publish: task {task['id']} step {task.get('step')} "
+                f"type {task.get('type')}", echo=False)
 
         # FIRST, before any publish scripting touches the scene: snapshot the
         # artist's session AS-IS into the work folder. Every publish then has
@@ -1156,9 +1281,11 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         version = _server_next_version(task["id"], base)
         if not version:
             self.report({"ERROR"}, "Couldn't reach the server to determine the next "
-                        "version — publish aborted. Check your connection and retry.")
+                        f"version — publish aborted. Check your connection and "
+                        f"retry (details: {PUBLISH_LOG}).")
             return {"CANCELLED"}
         pub_path = os.path.join(publish_dir, f"{base}_v{version:03d}.blend")
+        _publog(f"publish: {base}_v{version:03d} -> {pub_path}", echo=False)
 
         texture_files = []
         if task["step"] == "surface":
@@ -1393,6 +1520,8 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                          os.path.join(publish_dir, "textures")]
         pub_cmd, td = _toolkit_cmd(pub_args)
         if pub_cmd is None:
+            _publog("publish: toolkit not available — files saved locally, "
+                    "nothing uploaded")
             self.report({"WARNING"},
                         f"Saved {len(files)} file(s) to publish/, but the toolkit "
                         f"wasn't found to upload — push via the Workspace app.")
@@ -1530,12 +1659,14 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         False if the process couldn't be launched."""
         import queue
         import threading
+        _publog(f"{phase}: {' '.join(str(c) for c in cmd)} (cwd {cwd})",
+                echo=False)
         try:
             self._proc = subprocess.Popen(
                 cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
+                text=True, bufsize=1, **_no_window())
         except Exception as exc:  # noqa: BLE001
-            print("[Flumen] could not start", phase, ":", exc)
+            _publog(f"could not start {phase}: {exc}")
             return False
         self._queue = queue.Queue()
 
@@ -1565,7 +1696,9 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
             if line is None:
                 eof = True
                 break
-            print(line)  # keep full toolkit output in blender.log
+            print(line)              # full toolkit output -> blender.log
+            if not line.startswith(_PROGRESS_PREFIX):
+                _publog("  " + line, echo=False)   # and -> publish.log
             parsed = _parse_progress(line)
             if parsed:
                 self._pct, self._eta, _ = parsed
@@ -1587,6 +1720,7 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
 
     def _phase_done(self, context):
         rc = self._proc.poll()
+        _publog(f"phase '{self._phase}' finished (rc {rc})", echo=False)
         if self._phase == "post":
             if rc not in (0, None):
                 return self._teardown(
@@ -1614,6 +1748,8 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
             # No render (or it wouldn't start): we're done after the upload.
             return self._teardown(context, msg=self._data.get("success", "Published."))
         # Phase 2 (render) finished — publish already succeeded regardless.
+        if rc not in (0, None):
+            _publog(f"review render failed (rc {rc}) — publish itself succeeded")
         tail = (getattr(self, "_note", "") if rc in (0, None)
                 else "  (review render failed — see blender.log)")
         return self._teardown(context, msg=self._data.get("success", "Published.") + tail)
@@ -1632,7 +1768,25 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
             pass
         wm.progress_end()
         self._status(context, None)  # clear the status bar
+        _publog(("publish FAILED: " if cancelled else "publish done: ") + msg,
+                echo=False)
         self.report({"ERROR"} if cancelled else {"INFO"}, msg)
+        if cancelled:
+            # Reports from a modal operator don't pop up like normal ones — an
+            # artist watching the viewport can miss the failure entirely. Show
+            # an unmissable dialog with where to read the details.
+            import textwrap
+            lines = textwrap.wrap(msg, 64) + [
+                "Details: Flumen > Show pipeline log,",
+                f"or {PUBLISH_LOG}"]
+
+            def _draw(popup, _ctx):
+                for chunk in lines:
+                    popup.layout.label(text=chunk)
+            try:
+                wm.popup_menu(_draw, title="Publish failed", icon="ERROR")
+            except Exception:  # noqa: BLE001 — headless/background session
+                pass
         return {"CANCELLED"} if cancelled else {"FINISHED"}
 
     def _render_plan(self):
@@ -1655,6 +1809,8 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         cmd += d.get("extra_args") or []
         full, td = _toolkit_cmd(cmd)
         if not full:
+            _publog("review render skipped — toolkit not available to run "
+                    + " ".join(cmd))
             return None
         return full, td, label, note
 
@@ -1760,7 +1916,7 @@ def _fetch_existing_looks(task_id):
     if cmd is None:
         return []
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True)
+        out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window())
         return [l["look"] for l in json.loads(out.splitlines()[-1])]
     except Exception:  # noqa: BLE001
         return []
@@ -1898,7 +2054,7 @@ class FLUMEN_OT_load_model(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
             return out.splitlines()[-1] if out else None
         except Exception:  # noqa: BLE001
             return None
@@ -2047,7 +2203,7 @@ class FLUMEN_OT_apply_look(bpy.types.Operator):
         if cmd is None:
             return []
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True)
+            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window())
             return json.loads(out.splitlines()[-1])
         except Exception:  # noqa: BLE001
             return []
@@ -2058,7 +2214,7 @@ class FLUMEN_OT_apply_look(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
             return out.splitlines()[-1] if out else None
         except Exception:  # noqa: BLE001
             return None
@@ -2133,7 +2289,7 @@ class FLUMEN_OT_preview_turntable(bpy.types.Operator):
             self.report({"ERROR"}, "Toolkit not available — launch from the Workspace app.")
             return {"CANCELLED"}
         try:
-            subprocess.Popen(cmd, cwd=td)   # non-blocking: keep working here
+            subprocess.Popen(cmd, cwd=td, **_no_window())   # non-blocking: keep working here
             self.report({"INFO"}, "Opening turntable preview… (close that window when done)")
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, f"Could not start preview: {exc}")
@@ -2420,7 +2576,7 @@ def _fetch_publish_path(task_id, step):
     if cmd is None:
         return None
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+        out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
         return out.splitlines()[-1] if out else None
     except Exception:  # noqa: BLE001
         return None
@@ -3013,7 +3169,7 @@ def _review_render_finish(cancelled):
               f"available to upload.")
         return
     try:
-        subprocess.Popen(cmd, cwd=td)
+        subprocess.Popen(cmd, cwd=td, **_no_window())
         print(f"[Flumen] review: uploading {os.path.basename(out)} "
               f"to dailies in background.")
     except Exception as exc:  # noqa: BLE001
@@ -3511,7 +3667,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
             return json.loads(out.splitlines()[-1]) if out else []
         except Exception:  # noqa: BLE001
             return None
@@ -3638,7 +3794,7 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True).strip()
+            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
             return json.loads(out.splitlines()[-1]) if out else []
         except Exception:  # noqa: BLE001
             return None
@@ -3657,6 +3813,7 @@ CLASSES = (
     FLUMEN_OT_build_dressing,
     FLUMEN_OT_add_prop,
     FLUMEN_OT_auto_fix,
+    FLUMEN_OT_test_connection,
     FLUMEN_OT_show_log,
     FLUMEN_OT_add_review_camera,
     FLUMEN_OT_render_review,

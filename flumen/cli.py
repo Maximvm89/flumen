@@ -46,11 +46,32 @@ def _client(args) -> SFTPClient:
 
 
 def cmd_test_connection(args) -> int:
+    import time as _time
     creds = SFTPCredentials.from_env(args.env)
-    print(f"Connecting to {creds.user}@{creds.host}:{creds.port} ...")
+    print(f"Connecting to {creds.user}@{creds.host}:{creds.port} ...", flush=True)
+    t0 = _time.monotonic()
     with SFTPClient(creds, dry_run=False) as client:
         ok = client.exists(".")
-    print("Connection OK." if ok else "Connected, but home dir not readable.")
+        # Also verify the project folder the publishes go into, when a config
+        # is present — logging in to the wrong server "works" but every upload
+        # would land nowhere useful.
+        root_missing = None
+        try:
+            cfg = ProjectConfig.load(args.config)
+        except Exception:  # noqa: BLE001 — no config here: credentials-only test
+            cfg = None
+        if cfg and cfg.remote_root:
+            root_missing = None if client.exists(cfg.remote_root) else cfg.remote_root
+    dt = _time.monotonic() - t0
+    if root_missing:
+        print(f"error: connected, but remote_root not found on the server: "
+              f"{root_missing} — check remote_root in config.yaml", file=sys.stderr)
+        return 1
+    if not ok:
+        print("error: connected, but the home directory is not readable",
+              file=sys.stderr)
+        return 1
+    print(f"Connection OK — {creds.user}@{creds.host} ({dt:.1f}s)")
     return 0
 
 

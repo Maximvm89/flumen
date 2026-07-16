@@ -579,3 +579,59 @@ def test_fetch_publish_pulls_sidecar_textures(monkeypatch, capsys, tmp_path):
     tex = [(r, l) for r, l in srv.downloads
            if r.endswith("/publish/textures/*")]
     assert tex and tex[0][1] == str(tmp_path / "textures")
+
+
+class _ConnSrv(FakeSrv):
+    """FakeSrv + exists()/context manager, for test-connection."""
+    def __init__(self, existing=(".",)):
+        super().__init__()
+        self.existing = set(existing)
+
+    def exists(self, p):
+        return p in self.existing
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _patch_conn(monkeypatch, srv, remote_root="/r"):
+    import types as _t
+    monkeypatch.setattr(cli, "ProjectConfig",
+                        _t.SimpleNamespace(load=lambda _c: _t.SimpleNamespace(
+                            remote_root=remote_root)))
+    monkeypatch.setattr(cli, "SFTPCredentials",
+                        _t.SimpleNamespace(from_env=lambda _e: _t.SimpleNamespace(
+                            user="marco", host="ftp.example.com", port=22)))
+    monkeypatch.setattr(cli, "SFTPClient",
+                        lambda creds, dry_run=False: srv)
+
+
+def test_test_connection_ok_checks_remote_root(monkeypatch, capsys):
+    _patch_conn(monkeypatch, _ConnSrv(existing=(".", "/r")))
+    assert cli.cmd_test_connection(_args()) == 0
+    out = capsys.readouterr().out
+    assert "Connection OK" in out and "marco@ftp.example.com" in out
+
+
+def test_test_connection_fails_when_remote_root_missing(monkeypatch, capsys):
+    # Logged in fine, but the project folder isn't on this server -> a publish
+    # would go nowhere. Must fail loudly, not report success.
+    _patch_conn(monkeypatch, _ConnSrv(existing=(".",)))
+    assert cli.cmd_test_connection(_args()) == 1
+    err = capsys.readouterr().err
+    assert "remote_root" in err and "/r" in err
+
+
+def test_test_connection_no_config_is_credentials_only(monkeypatch, capsys):
+    # No config.yaml here (e.g. bare credentials test): connection alone passes.
+    import types as _t
+    _patch_conn(monkeypatch, _ConnSrv(existing=(".",)))
+
+    def _boom(_c):
+        raise FileNotFoundError("no config.yaml")
+    monkeypatch.setattr(cli, "ProjectConfig", _t.SimpleNamespace(load=_boom))
+    assert cli.cmd_test_connection(_args()) == 0
+    assert "Connection OK" in capsys.readouterr().out
