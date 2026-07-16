@@ -1019,7 +1019,7 @@ def cmd_resolve_assembly(args) -> int:
         # element's blend may differ. Skipped for --list (the dialog doesn't need it).
         anim = {}
         if not args.list:
-            ra = E.resolved_animation(client, rr, shot_entity, step)
+            ra = E.resolved_animation(client, rr, shot_entity, step, settings)
             if ra:
                 elems, blends = {}, {}
                 for eid, info in ra["elements"].items():
@@ -1047,9 +1047,10 @@ def cmd_list_animations(args) -> int:
     import json
     cfg = ProjectConfig.load(args.config)
     creds = SFTPCredentials.from_env(args.env)
-    from . import tasks as T, elements as E
+    from . import tasks as T, elements as E, turntable
     rr = cfg.remote_root.rstrip("/")
     local_root = cfg.resolved_local_root() or os.getcwd()
+    settings = turntable._load_project_settings(local_root)
     with SFTPClient(creds) as client:
         if args.task:
             t = T.get_task(client, rr, args.task)
@@ -1062,7 +1063,7 @@ def cmd_list_animations(args) -> int:
         else:
             print("error: give --task, or both --shot and --step", file=sys.stderr)
             return 1
-        anims = E.published_animations(client, rr, shot_entity, step)
+        anims = E.published_animations(client, rr, shot_entity, step, settings)
         if not args.no_fetch:                    # --no-fetch: metadata + hashes only
             for a in anims:
                 local = os.path.join(local_root, *a["blend_rel"].split("/"))

@@ -44,6 +44,17 @@ DEFAULT_REPRESENTATIONS = {
 # to this step's newest publish). Overridable via assembly.camera_step.
 DEFAULT_CAMERA_STEP = "layout"
 
+# Which steps' published animation a shot step consumes, in precedence order —
+# the own step always wins, then upstream. This is what hands the layout's
+# camera move + character placements to a fresh animation scene: an animation
+# task with no publishes of its own resolves them from layout. Overridable via
+# project_settings.json "assembly":{"anim_sources":{...}}; steps not listed
+# read only their own publishes.
+DEFAULT_ANIM_SOURCES = {
+    "animation": ["animation", "layout"],
+    "lighting": ["lighting", "animation", "layout"],
+}
+
 
 # ---- pure: paths & ids -----------------------------------------------------
 
@@ -161,6 +172,16 @@ def representations(settings: dict | None) -> dict:
 def camera_step(settings: dict | None) -> str:
     return ((settings or {}).get("assembly") or {}).get("camera_step") \
         or DEFAULT_CAMERA_STEP
+
+
+def anim_sources(step: str, settings: dict | None = None) -> list[str]:
+    """The steps whose published animation `step` consumes, precedence order.
+    The step's own publishes always come first (an animator's own versions beat
+    the layout they started from), then the configured upstream chain."""
+    override = ((settings or {}).get("assembly") or {}).get("anim_sources") or {}
+    chain = list(override.get(step) or DEFAULT_ANIM_SOURCES.get(step) or [])
+    chain = [s for s in chain if s and s != step]
+    return [step] + chain
 
 
 def resolve_element(element: dict, step: str,
@@ -293,16 +314,19 @@ def newest_dressing(sftp, remote_root: str, asset_entity: str,
 ANIM_BLEND_SUFFIX = "_anim.blend"
 
 
-def resolved_animation(sftp, remote_root: str, shot_entity: str,
-                       step: str) -> dict | None:
+def resolved_animation(sftp, remote_root: str, shot_entity: str, step: str,
+                       settings: dict | None = None) -> dict | None:
     """The animation to re-apply on Build shot, resolved PER ELEMENT to the newest
     published version that actually contains it: {elements: {id: {blend_rel,
     objects:{obj:action}, version}}} or None. Per-element (not just the single latest
     publish) so an element that wasn't re-published in the most recent version — e.g.
-    its animation was unchanged — still resolves from the version that has it."""
-    anims = published_animations(sftp, remote_root, shot_entity, step)  # newest first
+    its animation was unchanged — still resolves from the version that has it.
+    The publish list is precedence-ordered across the step's anim_sources chain
+    (own step first), so a fresh animation shot inherits the layout's camera move
+    and character placements until it publishes versions of its own."""
+    anims = published_animations(sftp, remote_root, shot_entity, step, settings)
     elements = {}
-    for a in anims:
+    for a in anims:                                  # precedence order
         for eid, objs in (a.get("elements") or {}).items():
             if eid not in elements:
                 elements[eid] = {"blend_rel": a["blend_rel"], "objects": objs,
@@ -320,42 +344,55 @@ def anim_version_label(name: str) -> str:
     return f"v{int(m.group(1)):03d}" if m else _os.path.splitext(name or "")[0]
 
 
-def published_animations(sftp, remote_root: str, shot_entity: str,
-                         step: str) -> list[dict]:
-    """Every published animation for the shot step (newest first): a list of
-    {version, blend_rel, by, description, time, elements:{id:{obj:action}}}. Feeds
-    the 'Load animation' picker so the artist can choose a version per element."""
+def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
+                         settings: dict | None = None) -> list[dict]:
+    """Every published animation the shot step can consume, in PRECEDENCE order:
+    the step's own publishes first (newest first), then each upstream step of its
+    anim_sources chain — so an animation task sees the layout's camera move and
+    placements until it has versions of its own. A list of {version, step,
+    blend_rel, by, description, time, elements:{id:{obj:action}}, hashes}. The
+    version label is unique across steps ('v003' for the own step, 'layout v007'
+    for upstream); it keys the 'Load animation' picker and feeds the publish
+    dialog's changed/unchanged detection."""
     import json as _json
     from . import tasks
-    t = tasks.get_task(sftp, remote_root, tasks.make_id("shot", shot_entity, step))
-    if not t:
-        return []
     rr = remote_root.rstrip("/")
     out = []
-    for p in tasks.published_files(t):                 # newest name first
-        if not p["name"].endswith(ANIM_BLEND_SUFFIX):
+    for st in anim_sources(step, settings):
+        t = tasks.get_task(sftp, rr, tasks.make_id("shot", shot_entity, st))
+        if not t:
             continue
-        blend_rel = p["rel"]
-        manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
-        elements, hashes = {}, {}
-        txt = sftp.read_text(rr + "/" + manifest_rel)
-        if txt:
-            try:
-                m = _json.loads(txt) or {}
-                elements = m.get("elements") or {}
-                hashes = m.get("hashes") or {}
-            except ValueError:
-                elements, hashes = {}, {}
-        out.append({"version": anim_version_label(p["name"]),
-                    "blend_rel": blend_rel, "by": p.get("by"),
-                    "description": p.get("description", ""), "time": p.get("time"),
-                    "elements": elements, "hashes": hashes})
+        for p in tasks.published_files(t):             # newest name first
+            if not p["name"].endswith(ANIM_BLEND_SUFFIX):
+                continue
+            blend_rel = p["rel"]
+            manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
+            elements, hashes = {}, {}
+            txt = sftp.read_text(rr + "/" + manifest_rel)
+            if txt:
+                try:
+                    m = _json.loads(txt) or {}
+                    elements = m.get("elements") or {}
+                    hashes = m.get("hashes") or {}
+                except ValueError:
+                    elements, hashes = {}, {}
+            label = anim_version_label(p["name"])
+            if st != step:
+                label = f"{st} {label}"
+            out.append({"version": label, "step": st,
+                        "blend_rel": blend_rel, "by": p.get("by"),
+                        "description": p.get("description", ""),
+                        "time": p.get("time"),
+                        "elements": elements, "hashes": hashes})
     return out
 
 
 def latest_anim_hashes(anims: list[dict]) -> dict:
-    """The newest published content hash per element, from a published_animations()
-    list (newest first). Drives the publish dialog's changed/unchanged detection."""
+    """The effective published content hash per element, from a
+    published_animations() list (precedence order: own step's newest first, then
+    upstream). Drives the publish dialog's changed/unchanged detection — an
+    animation scene freshly built from layout shows 'unchanged (= layout vNNN)'
+    instead of re-publishing identical data."""
     out = {}
     for a in anims:
         for eid, h in (a.get("hashes") or {}).items():

@@ -318,3 +318,89 @@ def test_newest_dressing_resolves_named_version():
     assert d["manifest_rel"].endswith("_v002.manifest.json")
     assert E.newest_dressing(srv, "/r", "environments/market_square", "nope") is None
     assert E.newest_dressing(srv, "/r", "environments/other", "day") is None
+
+
+# ---- anim source chain (animation step inherits layout) ---------------------
+
+def _publish_anim(s, shot, step, version, manifest_json):
+    """Register one anim publish (blend + manifest) on a shot step's task."""
+    tid = tasks.make_id("shot", shot, step)
+    if not tasks.get_task(s, "/r", tid):
+        tasks.save_task(s, "/r", tasks.new_task("shot", shot, step))
+    t = tasks.get_task(s, "/r", tid)
+    pub = f"04_sequences/{shot}/{step}/publish/anim"
+    stem = f"{shot.split('/')[-1]}_{step}_v{version:03d}_anim"
+    man = pub + f"/{stem}.manifest.json"
+    t["publishes"] = (t.get("publishes") or []) + [{
+        "files": [pub + f"/{stem}.blend", man],
+        "time": version, "by": "marco"}]
+    tasks.save_task(s, "/r", t)
+    s.files["/r/" + man] = manifest_json
+
+
+def test_anim_sources_default_chain_and_override():
+    assert E.anim_sources("layout") == ["layout"]
+    assert E.anim_sources("animation") == ["animation", "layout"]
+    assert E.anim_sources("lighting") == ["lighting", "animation", "layout"]
+    # project override; the step's own publishes always stay first
+    cfg = {"assembly": {"anim_sources": {"animation": ["layout", "previz"]}}}
+    assert E.anim_sources("animation", cfg) == ["animation", "layout", "previz"]
+
+
+def test_resolved_animation_falls_back_to_layout():
+    # THE animation-step workflow: a fresh animation task has no publishes of
+    # its own — Build shot must inherit the layout's camera move + placements.
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    tasks.save_task(s, "/r", tasks.new_task("shot", shot, "animation"))
+    _publish_anim(s, shot, "layout", 7,
+                  '{"version":7,"elements":{"camera":{"SEQ010_SH0010":"CamL"},'
+                  '"skeleton":{"skel_rig":"SkelL"}}}')
+    ra = E.resolved_animation(s, "/r", shot, "animation")
+    assert ra["elements"]["camera"]["objects"] == {"SEQ010_SH0010": "CamL"}
+    assert ra["elements"]["camera"]["version"] == "layout v007"
+    assert ra["elements"]["skeleton"]["blend_rel"].endswith(
+        "layout/publish/anim/SH0010_layout_v007_anim.blend")
+
+
+def test_resolved_animation_own_step_wins_over_layout():
+    # Once the animator publishes, their camera beats layout's — but elements
+    # they never touched still resolve from layout.
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    _publish_anim(s, shot, "layout", 7,
+                  '{"version":7,"elements":{"camera":{"SEQ010_SH0010":"CamL"},'
+                  '"skeleton":{"skel_rig":"SkelL"}}}')
+    _publish_anim(s, shot, "animation", 1,
+                  '{"version":1,"elements":{"camera":{"SEQ010_SH0010":"CamA"}}}')
+    ra = E.resolved_animation(s, "/r", shot, "animation")
+    assert ra["elements"]["camera"]["objects"] == {"SEQ010_SH0010": "CamA"}
+    assert ra["elements"]["camera"]["version"] == "v001"
+    assert ra["elements"]["skeleton"]["objects"] == {"skel_rig": "SkelL"}
+    assert ra["elements"]["skeleton"]["version"] == "layout v007"
+
+
+def test_published_animations_chain_order_and_labels():
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    _publish_anim(s, shot, "layout", 1, '{"version":1,"elements":{}}')
+    _publish_anim(s, shot, "layout", 2, '{"version":2,"elements":{}}')
+    _publish_anim(s, shot, "animation", 1, '{"version":1,"elements":{}}')
+    anims = E.published_animations(s, "/r", shot, "animation")
+    # own step first (newest first), then upstream; labels unique across steps
+    assert [a["version"] for a in anims] == ["v001", "layout v002", "layout v001"]
+    assert [a["step"] for a in anims] == ["animation", "layout", "layout"]
+    # the layout step itself is unaffected: no chain, plain labels
+    lay = E.published_animations(s, "/r", shot, "layout")
+    assert [a["version"] for a in lay] == ["v002", "v001"]
+
+
+def test_latest_anim_hashes_prefers_own_step():
+    # Dedup baseline for the publish dialog: an untouched element hashes against
+    # layout, an already-republished one against the animation step's newest.
+    anims = [
+        {"version": "v001", "step": "animation", "hashes": {"camera": "cA"}},
+        {"version": "layout v007", "step": "layout",
+         "hashes": {"camera": "cL", "skeleton": "sL"}},
+    ]
+    assert E.latest_anim_hashes(anims) == {"camera": "cA", "skeleton": "sL"}
