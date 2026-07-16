@@ -360,7 +360,11 @@ class SFTPClient:
             fh.write(text.encode("utf-8"))
 
     def upload(self, local_path: str, remote_path: str, callback=None) -> None:
-        """Upload a file, creating parents and preserving mtime (clean diffs).
+        """Upload a file ATOMICALLY, creating parents and preserving mtime
+        (clean diffs): the bytes go to '<name>.part' and are renamed into place
+        only once the transfer completed and the server confirmed the size —
+        a connection that dies mid-file can never leave a truncated file under
+        the real name for someone to download.
         `callback(bytes_so_far, total_bytes)` (paramiko's put callback) fires during
         transfer so callers can show progress."""
         parent = posixpath.dirname(remote_path)
@@ -368,7 +372,21 @@ class SFTPClient:
             self.makedirs(parent)
         if self.dry_run:
             return
-        self._sftp.put(local_path, remote_path, callback=callback)
+        part = remote_path + ".part"
+        # put(confirm=True) stats the uploaded file and raises if the size
+        # doesn't match what we sent — the rename below only happens for
+        # complete, verified transfers.
+        self._sftp.put(local_path, part, callback=callback, confirm=True)
+        try:
+            # POSIX rename overwrites the target atomically; plain SFTP rename
+            # fails if the target exists on many servers, so drop it first.
+            self._sftp.posix_rename(part, remote_path)
+        except (AttributeError, IOError):
+            try:
+                self._sftp.remove(remote_path)
+            except IOError:
+                pass
+            self._sftp.rename(part, remote_path)
         st = os.stat(local_path)
         try:
             self._sftp.utime(remote_path, (st.st_atime, st.st_mtime))

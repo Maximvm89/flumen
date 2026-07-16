@@ -1662,9 +1662,13 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         _publog(f"{phase}: {' '.join(str(c) for c in cmd)} (cwd {cwd})",
                 echo=False)
         try:
+            # encoding/errors pinned: with bare text=True Windows decodes the
+            # pipe as cp1252, and one non-decodable byte in the toolkit's
+            # output kills the reader thread — after which the subprocess
+            # blocks forever on a full pipe, mid-upload.
             self._proc = subprocess.Popen(
                 cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, **_no_window())
+                encoding="utf-8", errors="replace", bufsize=1, **_no_window())
         except Exception as exc:  # noqa: BLE001
             _publog(f"could not start {phase}: {exc}")
             return False
@@ -1719,10 +1723,25 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         return {"PASS_THROUGH"}
 
     def _phase_done(self, context):
+        # The reader thread saw EOF, but the process may not be reaped yet —
+        # poll() can still say None here (seen on Windows). None used to be
+        # treated as SUCCESS, which let a failed upload look published and
+        # even run the turntable phase. Get the real exit code.
         rc = self._proc.poll()
+        if rc is None:
+            try:
+                rc = self._proc.wait(timeout=15)
+            except Exception:  # noqa: BLE001 — still running: output ended early
+                _publog(f"phase '{self._phase}': output ended but the process "
+                        f"never exited — killing it and treating as failure")
+                try:
+                    self._proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                rc = -1
         _publog(f"phase '{self._phase}' finished (rc {rc})", echo=False)
         if self._phase == "post":
-            if rc not in (0, None):
+            if rc != 0:
                 return self._teardown(
                     context, cancelled=True,
                     msg="Publish aborted — the clean/bake post-process failed "
@@ -1734,10 +1753,11 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
             return self._teardown(context, cancelled=True,
                                   msg="Could not start upload.")
         if self._phase == "upload":
-            if rc not in (0, None):
+            if rc != 0:
                 return self._teardown(
                     context, cancelled=True,
-                    msg="Publish upload failed — see the console / blender.log.")
+                    msg="Publish upload failed — the files did NOT reach the "
+                        "server. See the log for the exact error.")
             plan = self._render_plan()
             if plan:
                 cmd, cwd, label, note = plan
@@ -1748,9 +1768,9 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
             # No render (or it wouldn't start): we're done after the upload.
             return self._teardown(context, msg=self._data.get("success", "Published."))
         # Phase 2 (render) finished — publish already succeeded regardless.
-        if rc not in (0, None):
+        if rc != 0:
             _publog(f"review render failed (rc {rc}) — publish itself succeeded")
-        tail = (getattr(self, "_note", "") if rc in (0, None)
+        tail = (getattr(self, "_note", "") if rc == 0
                 else "  (review render failed — see blender.log)")
         return self._teardown(context, msg=self._data.get("success", "Published.") + tail)
 
