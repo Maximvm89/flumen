@@ -1,3 +1,3 @@
 """flumen — SFTP folder-structure publisher tools for a 3D animation pipeline."""
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
