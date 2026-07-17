@@ -322,11 +322,15 @@ def test_resolve_assembly_includes_animation(monkeypatch, capsys, tmp_path):
     assert fr["blend_local"].endswith("SH0010_layout_v001_anim.blend")
     assert any(r.endswith("SH0010_layout_v001_anim.blend") for r, _ in srv.downloads)
 
-    # --list previews without the (downloaded) animation
+    # --list previews the anim METADATA (dialog shows versions) but must not
+    # download the blends — no blend_local, no new downloads.
+    srv.downloads.clear()
     rc = cli.cmd_resolve_assembly(_args(task=st["id"], shot=None, step=None,
                                         list=True, only=[], pick=[]))
     res2 = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert "anim" not in res2
+    fr2 = res2["anim"]["elements"]["frankenstein"]
+    assert fr2["version"] == "v001" and "blend_local" not in fr2
+    assert srv.downloads == []
 
 
 def test_list_animations_downloads_and_prints(monkeypatch, capsys, tmp_path):
@@ -635,3 +639,43 @@ def test_test_connection_no_config_is_credentials_only(monkeypatch, capsys):
     monkeypatch.setattr(cli, "ProjectConfig", _t.SimpleNamespace(load=_boom))
     assert cli.cmd_test_connection(_args()) == 0
     assert "Connection OK" in capsys.readouterr().out
+
+
+def test_resolve_assembly_list_includes_anim_metadata(monkeypatch, capsys,
+                                                      tmp_path):
+    # --list feeds the Build-shot dialog: it must say which anim version each
+    # element would get (so the artist can see the scene is behind) WITHOUT
+    # downloading anything.
+    import json
+    from flumen import turntable, elements as E
+    monkeypatch.setattr(turntable, "_load_project_settings", lambda _r: {})
+    srv = _DownloadSrv()
+    ent = "characters/frankenstein"
+    tasks.save_task(srv, "/r", tasks.new_task("asset", ent, "model"))
+    tasks.publish_task(srv, "/r", "marco", ["/tmp/frankenstein_model_v001.blend"],
+                       tasks.make_id("asset", ent, "model"))
+    shot = "SEQ010/SH0010"
+    lt = tasks.make_id("shot", shot, "layout")
+    st = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    asm = E.empty_assembly(shot)
+    E.add_element(asm, E.new_element(ent))
+    E.save_assembly(srv, "/r", shot, asm)
+    pub = "04_sequences/SEQ010/SH0010/layout/publish"
+    t = tasks.get_task(srv, "/r", lt)
+    t["publishes"] = [{"files": [pub + "/SH0010_layout_v001.blend",
+                                 pub + "/anim/SH0010_layout_v001_anim.blend",
+                                 pub + "/anim/SH0010_layout_v001_anim.manifest.json"],
+                       "time": 1, "by": "marco"}]
+    tasks.save_task(srv, "/r", t)
+    srv.files["/r/" + pub + "/anim/SH0010_layout_v001_anim.manifest.json"] = \
+        '{"version":1,"elements":{"frankenstein":{"frank_rig":"A"}}}'
+
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    rc = cli.cmd_resolve_assembly(_args(task=st["id"], shot=None, step=None,
+                                        list=True, only=[], pick=[]))
+    assert rc == 0
+    res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    fr = res["anim"]["elements"]["frankenstein"]
+    assert fr["version"] == "v001" and fr["objects"] == {"frank_rig": "A"}
+    assert "blend_local" not in fr                       # metadata only
+    assert srv.downloads == []                           # nothing fetched

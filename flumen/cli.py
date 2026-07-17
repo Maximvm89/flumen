@@ -1016,23 +1016,27 @@ def cmd_resolve_assembly(args) -> int:
 
         # The shot's published animation (Actions) — Build shot re-applies it onto the
         # freshly-linked rigs. Resolved PER ELEMENT to its newest version, so each
-        # element's blend may differ. Skipped for --list (the dialog doesn't need it).
+        # element's blend may differ. In --list mode only the metadata rides along
+        # (the dialog shows which anim version each element would get, and whether
+        # the scene is behind); the blends download when the build actually runs.
         anim = {}
-        if not args.list:
-            ra = E.resolved_animation(client, rr, shot_entity, step, settings)
-            if ra:
-                elems, blends = {}, {}
-                for eid, info in ra["elements"].items():
+        ra = E.resolved_animation(client, rr, shot_entity, step, settings)
+        if ra:
+            elems, blends = {}, {}
+            for eid, info in ra["elements"].items():
+                entry = {"objects": info["objects"],
+                         "version": info.get("version", ""),
+                         "blend_rel": info["blend_rel"]}
+                if not args.list:
                     brel = info["blend_rel"]
                     if brel not in blends:
                         local = os.path.join(local_root, *brel.split("/"))
                         client.download(rr + "/" + brel, local)
                         blends[brel] = local
-                    elems[eid] = {"blend_local": blends[brel],
-                                  "objects": info["objects"],
-                                  "version": info.get("version", "")}
-                if elems:
-                    anim = {"elements": elems}
+                    entry["blend_local"] = blends[brel]
+                elems[eid] = entry
+            if elems:
+                anim = {"elements": elems}
     result = {"frame_start": fs, "frame_end": fe, "elements": out}
     if anim:
         result["anim"] = anim

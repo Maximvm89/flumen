@@ -3446,6 +3446,70 @@ def _element_detail(el, present):
     return detail
 
 
+def _publish_version_label(name):
+    """'orso_rig_v004.blend' -> 'v004'; '' when the name carries no version."""
+    import re
+    m = re.search(r"_v(\d+)\.blend$", os.path.basename(name or ""))
+    return f"v{int(m.group(1)):03d}" if m else ""
+
+
+def _element_loaded_file(holder):
+    """Basename of the publish .blend an element's content links from, or ''
+    for appended content (the camera rig) which has no library."""
+    for o in holder.all_objects:
+        lib = getattr(o, "library", None)
+        if lib is None:
+            ov = getattr(o, "override_library", None)
+            ref = getattr(ov, "reference", None) if ov else None
+            lib = getattr(ref, "library", None) if ref else None
+        if lib is not None:
+            try:
+                return os.path.basename(bpy.path.abspath(lib.filepath))
+            except Exception:  # noqa: BLE001
+                return os.path.basename(lib.filepath or "")
+    return ""
+
+
+def _element_update_notes(el, holder, anim_meta):
+    """(detail text, update_available) for a Build-shot row: compares what the
+    scene HAS against what the server would deliver — the loaded publish vs the
+    newest one, and the applied animation version vs the newest published one
+    (which, on an animation task, is the layout's until the animator publishes).
+    `anim_meta` is resolve-assembly's per-element anim info ({id: {version,…}})."""
+    eid = str(el.get("id", ""))
+    avail = (anim_meta.get(eid) or {}).get("version", "")
+    if holder is None:                       # not in the scene yet
+        base = _element_detail(el, False)
+        if avail:
+            base += f"  ·  anim {avail} will apply"
+        return base, False
+    notes, update = [], False
+    if el.get("kind") != "camera" and el.get("blend_rel"):
+        latest = os.path.basename(el["blend_rel"])
+        loaded = _element_loaded_file(holder)
+        if loaded and loaded != latest:
+            lv = _publish_version_label(loaded)
+            nv = _publish_version_label(latest) or latest
+            step = el.get("source_step", "publish")
+            notes.append(f"new {step} {nv}" + (f" (scene has {lv})" if lv else ""))
+            update = True
+        elif loaded:
+            v = _publish_version_label(loaded)
+            step = el.get("source_step", "")
+            notes.append(f"{step} {v} ✓".strip())
+    applied = str(holder.get("flumen_anim", "") or "")
+    if avail:
+        if applied == avail:
+            notes.append(f"anim {avail} ✓")
+        elif applied:
+            notes.append(f"new anim {avail} (scene has {applied})")
+            update = True
+        else:
+            notes.append(f"anim {avail} available")
+            update = True
+    return ("  ·  ".join(notes) if notes else "already in scene"), update
+
+
 # Dynamic per-row step dropdown. The enum items are derived from each row's
 # steps_csv; we cache the built lists (keyed by the csv) so the strings stay alive
 # — Blender crashes if an items callback returns lists it can garbage-collect.
@@ -3470,6 +3534,7 @@ class FLUMEN_AssemblyItem(bpy.types.PropertyGroup):
     detail: bpy.props.StringProperty()
     present: bpy.props.BoolProperty(default=False)
     broken: bpy.props.BoolProperty(default=False)   # in scene but content missing
+    update: bpy.props.BoolProperty(default=False)   # newer publish/anim available
     steps_csv: bpy.props.StringProperty()    # available steps, comma-separated
     step: bpy.props.EnumProperty(name="Step", items=_step_enum_items,
                                  description="Which published step to bring in")
@@ -3517,6 +3582,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             return {"FINISHED"} if msg else {"CANCELLED"}
 
         missing_libs = _missing_libraries()
+        anim_meta = ((data.get("anim") or {}).get("elements")) or {}
         rows = context.window_manager.flumen_build_items
         rows.clear()
         for el in listed:
@@ -3532,43 +3598,51 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             it.broken = (holder is not None
                          and _element_content_broken(holder, missing_libs))
             it.enabled = (not it.present) or it.broken
-            it.detail = _element_detail(el, it.present)
+            it.detail, it.update = _element_update_notes(el, holder, anim_meta)
             steps = el.get("available_steps") or []
             it.steps_csv = ",".join(steps)
             if steps and el.get("source_step") in steps:
                 it.step = el["source_step"]      # default to the resolved step
         return context.window_manager.invoke_props_dialog(
-            self, width=480, title="Build shot", confirm_text="Build")
+            self, width=620, title="Build shot", confirm_text="Build")
 
     def draw(self, context):
         col = self.layout.column()
-        col.label(text="Bring these elements into the shot:")
+        col.label(text="Bring these elements into the shot — tick an in-scene "
+                       "row to update it:")
         box = col.box()
         for it in context.window_manager.flumen_build_items:
             row = box.row(align=True)
             cb = row.row()
             # Any asset element can be re-ticked to UPDATE to the latest
-            # publish (placement is captured and re-applied). Only a healthy
-            # camera stays locked — rebuilding it would lose the camera move.
-            cb.enabled = it.broken or not it.present or it.kind != "camera"
+            # publish (placement is captured and re-applied). A healthy camera
+            # stays locked — rebuilding it would lose the camera move — EXCEPT
+            # when a newer published animation exists to bring it back.
+            cb.enabled = (it.broken or not it.present or it.kind != "camera"
+                          or it.update)
             cb.prop(it, "enabled", text="")
             icon = ("ERROR" if it.broken
+                    else "FILE_REFRESH" if it.present and it.update
                     else "CHECKMARK" if it.present
                     else "OUTLINER_OB_CAMERA" if it.kind == "camera"
                     else "OUTLINER_OB_ARMATURE")
             row.label(text=it.label, icon=icon)
-            if it.present and not it.broken and not it.enabled:
-                row.label(text="already in scene — tick to update")
-            elif it.broken:
+            if it.broken:
                 row.label(text="missing on disk — rebuild")
             elif it.present and it.enabled and it.kind != "camera":
-                # updating: pick which step to bring back in
+                # updating: what's new, and which step to bring back in
+                row.label(text=it.detail)
                 sub = row.row()
                 sub.prop(it, "step", text="")
+            elif it.present:
+                # in scene: version state (publish + anim), up to date or behind
+                row.label(text=it.detail)
             elif it.kind == "camera":
                 row.label(text=it.detail)
             else:
-                # asset: a step dropdown (rig/model/…) so you control what's linked.
+                # asset not in scene yet: what will come in (incl. which anim
+                # applies) + a step dropdown (rig/model/…) to control the link.
+                row.label(text=it.detail)
                 sub = row.row()
                 sub.enabled = it.enabled
                 sub.prop(it, "step", text="")
