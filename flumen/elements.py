@@ -344,8 +344,21 @@ def anim_version_label(name: str) -> str:
     return f"v{int(m.group(1)):03d}" if m else _os.path.splitext(name or "")[0]
 
 
+def browse_anim_sources(step: str, settings: dict | None = None) -> list[str]:
+    """Every step whose published animation the Load-animation PICKER should
+    offer: the step's own chain first, then every other step that can carry
+    animation (e.g. the animation step's versions while browsing from layout).
+    Explicit user choice — the automatic flows (Build shot, publish dedup)
+    stay on the directional anim_sources chain."""
+    chain = anim_sources(step, settings)
+    extra = [s for s, spec in representations(settings).items()
+             if spec is not None and s not in chain]
+    return chain + extra
+
+
 def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
-                         settings: dict | None = None) -> list[dict]:
+                         settings: dict | None = None,
+                         sources: list[str] | None = None) -> list[dict]:
     """Every published animation the shot step can consume, in PRECEDENCE order:
     the step's own publishes first (newest first), then each upstream step of its
     anim_sources chain — so an animation task sees the layout's camera move and
@@ -353,12 +366,14 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
     blend_rel, by, description, time, elements:{id:{obj:action}}, hashes}. The
     version label is unique across steps ('v003' for the own step, 'layout v007'
     for upstream); it keys the 'Load animation' picker and feeds the publish
-    dialog's changed/unchanged detection."""
+    dialog's changed/unchanged detection. `sources` overrides the step chain
+    (browse_anim_sources for the picker's all-steps view)."""
     import json as _json
     from . import tasks
     rr = remote_root.rstrip("/")
     out = []
-    for st in anim_sources(step, settings):
+    for st in (sources if sources is not None
+               else anim_sources(step, settings)):
         t = tasks.get_task(sftp, rr, tasks.make_id("shot", shot_entity, st))
         if not t:
             continue

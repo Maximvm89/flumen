@@ -3922,7 +3922,10 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
         return {"FINISHED"} if els else {"CANCELLED"}
 
     def _list(self, task):
-        cmd, td = _toolkit_cmd(["list-animations", "--task", task["id"]])
+        # --all-steps: the picker is a browser — show every step's publishes
+        # (layout AND animation and…), labelled per step, newest first.
+        cmd, td = _toolkit_cmd(["list-animations", "--task", task["id"],
+                                "--all-steps"])
         if cmd is None:
             return None
         try:

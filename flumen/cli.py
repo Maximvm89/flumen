@@ -1067,7 +1067,10 @@ def cmd_list_animations(args) -> int:
         else:
             print("error: give --task, or both --shot and --step", file=sys.stderr)
             return 1
-        anims = E.published_animations(client, rr, shot_entity, step, settings)
+        sources = (E.browse_anim_sources(step, settings)
+                   if getattr(args, "all_steps", False) else None)
+        anims = E.published_animations(client, rr, shot_entity, step, settings,
+                                       sources=sources)
         if not args.no_fetch:                    # --no-fetch: metadata + hashes only
             for a in anims:
                 local = os.path.join(local_root, *a["blend_rel"].split("/"))
@@ -1372,6 +1375,9 @@ def build_parser() -> argparse.ArgumentParser:
     lan.add_argument("--step", help="shot step; default: the task's step")
     lan.add_argument("--no-fetch", action="store_true",
                      help="metadata + hashes only, don't download the anim blends")
+    lan.add_argument("--all-steps", action="store_true",
+                     help="browse mode: every shot step's publishes (not just "
+                          "the step's anim_sources chain), labelled per step")
     lan.set_defaults(func=cmd_list_animations)
 
     return p

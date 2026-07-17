@@ -404,3 +404,29 @@ def test_latest_anim_hashes_prefers_own_step():
          "hashes": {"camera": "cL", "skeleton": "sL"}},
     ]
     assert E.latest_anim_hashes(anims) == {"camera": "cA", "skeleton": "sL"}
+
+
+def test_browse_anim_sources_covers_every_step():
+    # the picker browses everything; own chain first, comp (no scene elements)
+    # excluded
+    assert E.browse_anim_sources("layout") == ["layout", "animation", "lighting"]
+    assert E.browse_anim_sources("animation") == ["animation", "layout",
+                                                  "lighting"]
+
+
+def test_published_animations_sources_override_browses_downstream():
+    # From the LAYOUT task, the picker must also offer the animation step's
+    # publishes (e.g. a teammate's), labelled per step.
+    s = FakeSrv()
+    shot = "SEQ999/SH0000"
+    _publish_anim(s, shot, "layout", 1,
+                  '{"version":1,"elements":{"skeleton":{"rig":"L1"}}}')
+    _publish_anim(s, shot, "animation", 2,
+                  '{"version":2,"elements":{"skeleton":{"rig":"A2"}}}')
+    browse = E.published_animations(s, "/r", shot, "layout",
+                                    sources=E.browse_anim_sources("layout"))
+    assert [a["version"] for a in browse] == ["v001", "animation v002"]
+    # default (no override) stays chain-only: layout never auto-consumes
+    # downstream animation
+    chain = E.published_animations(s, "/r", shot, "layout")
+    assert [a["version"] for a in chain] == ["v001"]
