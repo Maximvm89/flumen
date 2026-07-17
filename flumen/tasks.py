@@ -461,6 +461,18 @@ def assign(sftp, remote_root: str, task_id: str, username: str,
     return save_task(sftp, remote_root, t, actor or username)
 
 
+def set_assignees(sftp, remote_root: str, task_id: str, usernames,
+                  actor: str = "") -> dict | None:
+    """Replace a task's whole assignee list in ONE write — the plan's in-place
+    assignee editor commits the checked set atomically instead of one
+    add/remove round-trip per name."""
+    t = _load_one(sftp, remote_root, task_id)
+    if not t:
+        return None
+    t["assignees"] = sorted(set(usernames or []))
+    return save_task(sftp, remote_root, t, actor)
+
+
 def set_plan(sftp, remote_root: str, task_id: str,
              estimate_days: float | None = None, due: str | None = None,
              actor: str = "") -> dict | None:

@@ -474,3 +474,16 @@ def test_publish_task_refuses_corrupt_blend(tmp_path):
     bad.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 4096)   # broken zstd
     with pytest.raises(ValueError, match="publish aborted"):
         tasks.publish_task(s, "/r", "elisa", [str(bad)], t["id"])
+
+
+def test_set_assignees_replaces_list_atomically():
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "characters/hero", "rig"))
+    tasks.assign(s, "/r", t["id"], "marco")
+    out = tasks.set_assignees(s, "/r", t["id"], ["elena", "nicola", "elena"],
+                              actor="marco")
+    assert out["assignees"] == ["elena", "nicola"]      # deduped + sorted
+    assert tasks.get_task(s, "/r", t["id"])["assignees"] == ["elena", "nicola"]
+    # empty list = unassigned; unknown task = None
+    assert tasks.set_assignees(s, "/r", t["id"], [])["assignees"] == []
+    assert tasks.set_assignees(s, "/r", "nope", ["x"]) is None

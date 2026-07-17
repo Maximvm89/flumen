@@ -805,6 +805,9 @@ class MainWindow(QMainWindow):
         self.plan_table.setItemDelegateForColumn(1, _DueDelegate(self))
         self.plan_table.setItemDelegateForColumn(5, _EstimateDelegate(self))
         self.plan_table.setItemDelegateForColumn(6, _StatusDelegate(self))
+        # Assignees hold a LIST — a cell editor can't multi-select, so a
+        # double-click there opens a checkable roster dialog instead.
+        self.plan_table.cellDoubleClicked.connect(self._plan_edit_assignees)
         pl.addWidget(self.plan_table, 1)
 
         rowops = QHBoxLayout()
@@ -825,8 +828,8 @@ class MainWindow(QMainWindow):
         rowops.addWidget(b_shift)
         rowops.addWidget(b_clear)
         rowops.addStretch(1)
-        rowops.addWidget(QLabel("Double-click a Due, Est or Status cell to edit "
-                                "it in place — the Tasks tab assigns."))
+        rowops.addWidget(QLabel("Double-click a Due, Est, Status or Assignees "
+                                "cell to edit it in place."))
         pl.addLayout(rowops)
         return page
 
@@ -1063,6 +1066,59 @@ class MainWindow(QMainWindow):
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating plan…")
+
+    def _plan_edit_assignees(self, row: int, col: int):
+        """Double-click on the plan's Assignees cell: a checkable roster dialog
+        (multi-assignee), written to the server as one atomic list replace."""
+        if col != 4 or not self.cfg:
+            return
+        t = self._plan_task_at(row)
+        if not t:
+            return
+        current = set(t.get("assignees") or [])
+        roster = sorted(a.get("username", "") for a in
+                        (getattr(self, "_roster", []) or []) if a.get("active"))
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Assignees — {t.get('entity', '')} · "
+                           f"{t.get('step', '')}")
+        lay = QVBoxLayout(dlg)
+        lst = QListWidget()
+        # Roster + any already-assigned name no longer on the roster (departed
+        # artist stays visible so unticking them is possible).
+        for u in sorted(set(roster) | current):
+            it = QListWidgetItem(usersmod.display_name(self._roster, u))
+            it.setData(Qt.UserRole, u)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if u in current else Qt.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        chosen = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                  if lst.item(i).checkState() == Qt.Checked]
+        if set(chosen) == current:
+            return
+        remote = self.cfg.remote_root
+        actor = self._creds_user_safe()
+        tid = t["id"]
+
+        def work():
+            return [self._conn_do(lambda c: tasksmod.set_assignees(
+                c, remote, tid, chosen, actor=actor))]
+
+        def done(updated):
+            self._busy_buttons(False)
+            self._merge_tasks(updated)
+            self.status.showMessage(
+                f"{t.get('entity', '')} · {t.get('step', '')} → "
+                + (", ".join(chosen) if chosen else "unassigned") + ".")
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Updating assignees…")
 
     def _plan_write_status(self, chosen: list[dict], status: str):
         """Write a status from the plan's in-place editor — same server path as
