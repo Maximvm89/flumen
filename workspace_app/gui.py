@@ -189,6 +189,37 @@ class _EstimateDelegate(QStyledItemDelegate):
             self._owner._plan_write(estimate=ed.value(), tasks=[t])
 
 
+class _StatusDelegate(QStyledItemDelegate):
+    """In-place editor for the plan's Status column: double-click opens the
+    status dropdown; picking an entry writes it to the server straight away
+    (same path as the Tasks tab) and the plan math re-renders on confirm."""
+
+    def __init__(self, owner):
+        super().__init__(owner.plan_table)
+        self._owner = owner
+
+    def createEditor(self, parent, option, index):
+        ed = QComboBox(parent)
+        for s in tasksmod.STATUSES:
+            ed.addItem(tasksmod.STATUS_LABELS[s], s)
+        # Picking an entry commits immediately — no click-away needed.
+        ed.activated.connect(lambda _i, e=ed: (self.commitData.emit(e),
+                                               self.closeEditor.emit(e)))
+        return ed
+
+    def setEditorData(self, ed, index):
+        t = self._owner._plan_task_at(index.row())
+        i = ed.findData((t or {}).get("status", ""))
+        if i >= 0:
+            ed.setCurrentIndex(i)
+
+    def setModelData(self, ed, model, index):
+        t = self._owner._plan_task_at(index.row())
+        status = ed.currentData()
+        if t and status and status != t.get("status"):
+            self._owner._plan_write_status([t], status)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, config_path="config.yaml"):
         super().__init__()
@@ -773,6 +804,7 @@ class MainWindow(QMainWindow):
             2, QHeaderView.Stretch)
         self.plan_table.setItemDelegateForColumn(1, _DueDelegate(self))
         self.plan_table.setItemDelegateForColumn(5, _EstimateDelegate(self))
+        self.plan_table.setItemDelegateForColumn(6, _StatusDelegate(self))
         pl.addWidget(self.plan_table, 1)
 
         rowops = QHBoxLayout()
@@ -793,8 +825,8 @@ class MainWindow(QMainWindow):
         rowops.addWidget(b_shift)
         rowops.addWidget(b_clear)
         rowops.addStretch(1)
-        rowops.addWidget(QLabel("Double-click a Due or Est cell to edit it in "
-                                "place — the Tasks tab assigns."))
+        rowops.addWidget(QLabel("Double-click a Due, Est or Status cell to edit "
+                                "it in place — the Tasks tab assigns."))
         pl.addLayout(rowops)
         return page
 
@@ -872,7 +904,7 @@ class MainWindow(QMainWindow):
             ]
             for j, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                if j not in (1, 5):        # only Due + Est edit in place
+                if j not in (1, 5, 6):     # Due, Est + Status edit in place
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if j == 0:
                     item.setData(Qt.UserRole, t)
@@ -1031,6 +1063,30 @@ class MainWindow(QMainWindow):
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg="Updating plan…")
+
+    def _plan_write_status(self, chosen: list[dict], status: str):
+        """Write a status from the plan's in-place editor — same server path as
+        the Tasks tab; _merge_tasks re-renders the plan math (remaining days,
+        health, fits/over) once the server confirms."""
+        if not chosen or not self.cfg:
+            return
+        remote = self.cfg.remote_root
+        actor = self._creds_user_safe()
+        ids = [t["id"] for t in chosen]
+
+        def work():
+            return [self._conn_do(lambda c, x=tid: tasksmod.set_status(
+                c, remote, x, status, actor=actor)) for tid in ids]
+
+        def done(updated):
+            self._busy_buttons(False)
+            self._merge_tasks(updated)
+            self.status.showMessage(
+                f"{len(ids)} task(s) → "
+                f"{tasksmod.STATUS_LABELS.get(status, status)}.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg="Updating status…")
 
     def _set_deadline(self):
         if not self.cfg:
