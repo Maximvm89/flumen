@@ -228,20 +228,28 @@ def _has_material(obj):
     return False
 
 
-def check_surface(objects, locator_name, textures):
-    """Surface (shading/texturing) publish gate. The safety-critical rule: no
-    published look may carry a dead texture path, so every used image must resolve
-    to a file on disk (or be packed). Also flags geometry under the locator with no
-    material — an empty look. `textures` is a list of records duck-typed with
-    `.name` and `.is_missing` (the operator builds these from bpy.data.images so
-    this stays bpy-free and testable)."""
+def check_textures(textures):
+    """Missing-texture gate, shared by EVERY asset step: no publish may carry a
+    dead texture path. Work files sync between Mac and Windows machines, so an
+    absolute path from one machine (C:\\Users\\… on a Mac) is a dead path on the
+    next — and with auto-pack enabled it hard-fails the publish save. `textures`
+    is a list of records duck-typed with `.name` and `.is_missing` (the operator
+    builds these from bpy.data.images so this stays bpy-free and testable)."""
     issues = []
     for tex in textures or []:
         if getattr(tex, "is_missing", False):
             issues.append((ERROR,
                            f"Texture '{getattr(tex, 'name', '?')}' has no file on "
-                           f"disk — fix or reload it; publishing would ship a dead "
-                           f"texture path."))
+                           f"disk — fix it (File ▸ External Data ▸ Find "
+                           f"Missing Files) or reload it; publishing would ship a "
+                           f"dead texture path."))
+    return issues
+
+
+def check_surface(objects, locator_name, textures):
+    """Surface (shading/texturing) publish gate: the shared missing-texture rule,
+    plus geometry under the locator with no material — an empty look."""
+    issues = check_textures(textures)
     # Material coverage on the geometry that actually gets published.
     loc = None
     for o in objects:
@@ -292,16 +300,19 @@ def run_checks(step, scene, objects, locator="PUBLISH", textures=None,
         # A dressing scene has no PUBLISH locator — everything in it is linked.
         # Its gate (an environment holder must exist) lives in the publish
         # operator, which owns the collection data this module never sees.
-        issues = check_units(scene)
+        # Textures still gate: local extras may carry inline shading.
+        issues = check_units(scene) + check_textures(textures)
     elif step == "model":
-        issues = check_model(scene, objects)
+        issues = check_model(scene, objects) + check_textures(textures)
         issues += check_publish_locator(objects, locator, collections)
     elif step == "surface":
         issues = check_units(scene)
         issues += check_surface(objects, locator, textures)
         issues += check_publish_locator(objects, locator, collections)
     else:
-        issues = check_units(scene)
+        # Every other asset step (rig, and project-specific ones): same
+        # missing-texture gate — a rig ships its model's shading with it.
+        issues = check_units(scene) + check_textures(textures)
         issues += check_publish_locator(objects, locator, collections)
     if profile_stats is not None:
         issues += check_profile(profile_stats, profiling)

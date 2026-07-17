@@ -317,3 +317,31 @@ def test_fixable_scale_objects_triage():
     assert [o.name for o in shared] == ["glass_instance"]
     assert [o.name for o in animated] == ["pulsing_light"]
     assert [o.name for o in linked] == ["env_prop"]
+
+
+# --- missing textures gate on every asset step -------------------------------
+
+def test_missing_texture_blocks_model_and_rig_steps():
+    # A dead texture path (e.g. another machine's absolute path) must block
+    # ANY asset publish, not just surface — a rig ships its model's shading.
+    loc = _empty("PUBLISH")
+    geo = _mesh("Body", parent=loc)
+    for step in ("model", "rig"):
+        issues = checks.run_checks(step, _scene(), [loc, geo],
+                                   textures=[_tex("BaseColor.1002", True)])
+        assert checks.has_errors(issues), step
+        assert any("BaseColor.1002" in m for lvl, m in issues
+                   if lvl == checks.ERROR), step
+    # dressing has no locator but still gates on textures (local extras)
+    issues = checks.run_checks("dressing", _scene(), [],
+                               textures=[_tex("BaseColor.1002", True)])
+    assert checks.has_errors(issues)
+
+
+def test_healthy_textures_pass_on_model_and_rig_steps():
+    loc = _empty("PUBLISH")
+    geo = _mesh("Body", parent=loc)
+    for step in ("model", "rig"):
+        issues = checks.run_checks(step, _scene(), [loc, geo],
+                                   textures=[_tex("diffuse", False)])
+        assert not checks.has_errors(issues), step

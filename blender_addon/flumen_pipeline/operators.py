@@ -366,10 +366,31 @@ class FLUMEN_OT_save_to_task(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _absolute_externals():
+    """Local datablocks (images, linked libraries) whose file path is absolute.
+    An absolute path is one machine's disk layout — dead the moment the work
+    file syncs to a teammate on another OS (C:\\Users\\… read on a Mac)."""
+    out = []
+    for coll in (bpy.data.images, bpy.data.libraries):
+        for d in coll:
+            if getattr(d, "library", None) is not None:
+                continue                     # owned by a linked file, not ours
+            fp = getattr(d, "filepath", "") or ""
+            if fp and not fp.startswith("//"):
+                out.append(d)
+    return out
+
+
 def _save_work_version(task) -> str | None:
     """Save the current session AS-IS into the task's work/ folder with the
     next version number. Returns the saved path, or None on failure. The
-    session's file path becomes the new work file."""
+    session's file path becomes the new work file.
+
+    After the save (the file now has a location to be relative TO), any
+    absolute texture/library paths are converted to '//' relative and the file
+    re-saved — absolute paths are the classic way a work file authored on one
+    machine breaks on the next (typically: the model was appended before the
+    file was ever saved, which bakes in absolute paths)."""
     try:
         work_dir = task["work_dir"]
         os.makedirs(work_dir, exist_ok=True)
@@ -379,10 +400,19 @@ def _save_work_version(task) -> str | None:
         version = len(existing) + 1
         path = os.path.join(work_dir, f"{base}_v{version:03d}.blend")
         bpy.ops.wm.save_as_mainfile(filepath=path)
-        return path
     except Exception as exc:  # noqa: BLE001
         print("[Flumen] work save failed:", exc)
         return None
+    stale = _absolute_externals()
+    if stale:
+        try:
+            bpy.ops.file.make_paths_relative()
+            bpy.ops.wm.save_mainfile()
+            print(f"[Flumen] work save: made {len(stale)} absolute path(s) "
+                  f"relative (cross-machine safety).")
+        except Exception as exc:  # noqa: BLE001 — the versioned save stands
+            print("[Flumen] work save: could not relativize paths:", exc)
+    return path
 
 
 def publish_locator_name():
@@ -449,8 +479,12 @@ def _texture_check_records():
               if getattr(o, "type", "") == "MESH"]
     materials = {s.material for o in meshes
                  for s in (getattr(o, "material_slots", []) or []) if s.material}
+    # LOCAL images only: a linked material's images resolve relative to THEIR
+    # library file, not this one — they were validated when their own publish
+    # shipped, and checking them here would false-flag linked content.
     return [types.SimpleNamespace(name=img.name, is_missing=_image_missing(img))
-            for img in _images_of_materials(materials)]
+            for img in _images_of_materials(materials)
+            if getattr(img, "library", None) is None]
 
 
 def _images_of_materials(materials):
@@ -606,7 +640,11 @@ def _run_task_checks(step, context, ttype=None, entity=""):
     """run_checks with surface texture state injected for the surface step, the
     task type so shot publishes get the shot gate (camera + frame range), and —
     for profiled categories/steps (environments) — the WARN-only cost profile."""
-    extra = _texture_check_records() if step == "surface" else None
+    # Missing-texture gate for every ASSET step (model/surface/rig/dressing…):
+    # a dead texture path in the work file becomes a dead publish — or a failed
+    # save outright when the file has auto-pack enabled. Shots are exempt (they
+    # are assembled from linked publishes, checked at their own publish time).
+    extra = _texture_check_records() if ttype != "shot" else None
     profile_stats, profiling = None, None
     if ttype == "asset" and entity:
         root = settings_io.find_project_root(_pref_local_root())
