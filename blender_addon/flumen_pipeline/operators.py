@@ -224,6 +224,11 @@ def apply_settings(scene, data: dict, root: str, report: list):
         _apply_one(report, "output path",
                    lambda: setattr(scene.render, "filepath", base + os.sep))
     if out.get("file_format"):
+        # media_type filters the file_format enum (Blender 4.4+/5.x): a scene
+        # left on VIDEO output only offers FFMPEG until flipped back to IMAGE.
+        _apply_one(report, "media type",
+                   lambda: setattr(scene.render.image_settings, "media_type",
+                                   "IMAGE"))
         _apply_one(report, "file format",
                    lambda: setattr(scene.render.image_settings, "file_format",
                                    out["file_format"]))
@@ -3254,7 +3259,17 @@ def _review_render_finish(cancelled):
             bpy.data.images["Render Result"].save_render(filepath=out)
         except Exception as exc:  # noqa: BLE001
             print("[Flumen] review: could not save the render:", exc)
-    scene.camera, r.filepath, r.image_settings.file_format = pending["prior"]
+    cam_p, fp_p, fmt_p, media_p = pending["prior"]
+    scene.camera, r.filepath = cam_p, fp_p
+    if media_p is not None:               # restore media BEFORE format — the
+        try:                              # format enum is filtered by it
+            r.image_settings.media_type = media_p
+        except (AttributeError, TypeError):
+            pass
+    try:
+        r.image_settings.file_format = fmt_p
+    except TypeError:
+        pass
     if cancelled:
         print("[Flumen] review render cancelled — nothing uploaded.")
         return
@@ -3315,8 +3330,15 @@ class FLUMEN_OT_render_review(bpy.types.Operator):
                            f"{leaf}_{task.get('step', '')}_review_{stamp}.png")
         scene = context.scene
         r = scene.render
-        prior = (scene.camera, r.filepath, r.image_settings.file_format)
+        prior = (scene.camera, r.filepath, r.image_settings.file_format,
+                 getattr(r.image_settings, "media_type", None))
         scene.camera = cam
+        # media_type filters the file_format enum (Blender 4.4+/5.x): a scene
+        # set to VIDEO output only offers FFMPEG until flipped back to IMAGE.
+        try:
+            r.image_settings.media_type = "IMAGE"
+        except (AttributeError, TypeError):
+            pass
         r.image_settings.file_format = "PNG"
         r.filepath = out
         _REVIEW_PENDING = {"out": out, "task_id": task["id"], "prior": prior}

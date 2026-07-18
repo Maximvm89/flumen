@@ -241,6 +241,13 @@ def main():
     except ValueError:
         r.resolution_percentage = 100
     r.film_transparent = False
+    # Blender 4.4+/5.x: file_format enum is filtered by media_type. An animator's
+    # session set to VIDEO output (FFmpeg flipbooks) only offers FFMPEG — switch
+    # to IMAGE before choosing PNG, or this line throws and no frame renders.
+    try:
+        r.image_settings.media_type = "IMAGE"
+    except (AttributeError, TypeError):
+        pass
     r.image_settings.file_format = "PNG"
 
     # Burn frame number + camera into the corner so reviewers can call timings.
