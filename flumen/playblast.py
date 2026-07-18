@@ -113,11 +113,30 @@ def playblast_rel(task: dict, version_label: str, fmt: str = "") -> str:
             f"{version_label}_playblast{suffix}.mp4")
 
 
+def _open_locally(path: str) -> None:
+    """Open a rendered file with the OS default player. Best-effort."""
+    import sys as _sys
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]  # noqa: S606
+        elif _sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as exc:  # noqa: BLE001 — the file is still on disk
+        print(f"could not auto-open {path}: {exc}")
+
+
 def run_playblast(cfg, creds, shot_blend: str, task_id: str,
-                  dry_run: bool = False) -> int:
+                  dry_run: bool = False, preview: bool = False) -> int:
     """Open the published shot .blend headless, render its frame range through the
     scene camera into a PNG sequence, encode an MP4, upload it to 07_dailies and
-    attach it to the task's latest publish record. Mirrors run_turntable."""
+    attach it to the task's latest publish record. Mirrors run_turntable.
+
+    `preview` renders the SAME clip but keeps it local: the MP4 lands beside the
+    shot .blend and opens in the OS video player — nothing uploaded, no review
+    record, works offline (the server is only asked, best-effort, for the HUD's
+    task info)."""
     from .sftp import SFTPClient
     from . import tasks
     from .launcher import find_blender, _resolve_ocio
@@ -125,13 +144,20 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                             _load_project_settings, _bundled_path, record_turntable)
 
     local_root = cfg.resolved_local_root()
-    version_label = os.path.splitext(os.path.basename(shot_blend))[0]
+    version_label = ("preview" if preview
+                     else os.path.splitext(os.path.basename(shot_blend))[0])
 
     task = None
     if not dry_run:
-        with SFTPClient(creds, dry_run=dry_run) as client:
-            task = tasks.get_task(client, cfg.remote_root, task_id)
-        if not task:
+        try:
+            with SFTPClient(creds, dry_run=dry_run) as client:
+                task = tasks.get_task(client, cfg.remote_root, task_id)
+        except Exception as exc:  # noqa: BLE001 — preview renders offline
+            if not preview:
+                raise
+            print(f"(preview) server unreachable — rendering without task "
+                  f"info: {exc}")
+        if not task and not preview:
             print(f"error: task not found: {task_id}")
             return 1
 
@@ -143,15 +169,25 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         {"name": "", "resolution_x": pb["resolution_x"],
          "resolution_y": pb["resolution_y"]}]
     t = task or {"entity": "?", "step": "?"}
-    rel = playblast_rel(t, version_label, formats[0]["name"])
-    out_local = os.path.join(local_root, *rel.split("/"))
+
+    def _out_local(fmt_name: str) -> str:
+        if preview:
+            suffix = f"_{fmt_name}" if fmt_name else ""
+            return os.path.join(os.path.dirname(os.path.abspath(shot_blend)),
+                                f"playblast_preview{suffix}.mp4")
+        frel = playblast_rel(t, version_label, fmt_name)
+        return os.path.join(local_root, *frel.split("/"))
+
+    out_local = _out_local(formats[0]["name"])
 
     if dry_run:
         for f in formats:
-            frel = playblast_rel(t, version_label, f["name"])
+            dest = (_out_local(f["name"]) if preview
+                    else "publish -> " + playblast_rel(t, version_label,
+                                                       f["name"]))
             print(f"(dry-run) would playblast {shot_blend} "
                   f"[{f['name'] or 'default'} {f['resolution_x']}x"
-                  f"{f['resolution_y']}]\n          publish -> {frel}")
+                  f"{f['resolution_y']}]\n          {dest}")
         return 0
 
     blender = find_blender(cfg.blender_path)
@@ -196,7 +232,7 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
             continue
         _overlay_element_info(fdir, task, version_label)
         frel = playblast_rel(t, version_label, f["name"])
-        flocal = os.path.join(local_root, *frel.split("/"))
+        flocal = _out_local(f["name"])
         print(f"Encoding MP4 -> {flocal}")
         if _encode_mp4(fdir, flocal, fps) and os.path.isfile(flocal):
             outputs.append((f["name"], frel, flocal))
@@ -204,6 +240,13 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     if not outputs:
         print("error: playblast encode produced no file.")
         return 1
+
+    if preview:
+        for _name, _frel, flocal in outputs:
+            print(f"preview rendered -> {flocal}")
+        _open_locally(outputs[0][2])
+        print("preview opened — nothing uploaded.")
+        return 0
 
     with SFTPClient(creds) as client:
         rr = cfg.remote_root.rstrip("/")

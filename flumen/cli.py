@@ -721,10 +721,18 @@ def cmd_playblast(args) -> int:
         print(f"error: shot file not found: {args.shot_file}", file=sys.stderr)
         return 1
     from . import playblast
-    creds = (SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
-             if args.dry_run else SFTPCredentials.from_env(args.env))
+    preview = getattr(args, "preview", False)
+    if args.dry_run:
+        creds = SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
+    else:
+        try:
+            creds = SFTPCredentials.from_env(args.env)
+        except ValueError:
+            if not preview:            # publish path needs the server
+                raise
+            creds = SFTPCredentials(host="(offline)", port=22, user="(offline)")
     return playblast.run_playblast(cfg, creds, args.shot_file, args.task,
-                                   dry_run=args.dry_run)
+                                   dry_run=args.dry_run, preview=preview)
 
 
 def cmd_build_review(args) -> int:
@@ -1283,6 +1291,9 @@ def build_parser() -> argparse.ArgumentParser:
     pbl.add_argument("--shot-file", required=True, dest="shot_file",
                      help="published shot .blend to playblast")
     pbl.add_argument("--task", required=True, help="shot task id")
+    pbl.add_argument("--preview", action="store_true",
+                     help="render + open locally only: MP4 lands beside the "
+                          "shot .blend, nothing uploaded (works offline)")
     pbl.set_defaults(func=cmd_playblast)
 
     br = sub.add_parser("build-review", parents=[common],

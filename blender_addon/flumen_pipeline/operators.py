@@ -1865,6 +1865,9 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         else:
             return None
         cmd += d.get("extra_args") or []
+        if "--preview" in (d.get("extra_args") or []):
+            label = "Rendering preview"
+            note = "  Opened in your video player — nothing uploaded."
         full, td = _toolkit_cmd(cmd)
         if not full:
             _publog("review render skipped — toolkit not available to run "
@@ -2428,6 +2431,44 @@ class FLUMEN_OT_render_look_turntable(bpy.types.Operator):
             "ttype": task.get("type"), "task_id": task["id"],
             "look_name": look_name, "extra_args": extra,
             "success": f"Turntable of look '{look_name}' rendered.",
+        })
+        bpy.ops.flumen.publish_upload('INVOKE_DEFAULT')
+        return {"FINISHED"}
+
+
+class FLUMEN_OT_preview_playblast(bpy.types.Operator):
+    bl_idname = "flumen.preview_playblast"
+    bl_label = "Preview playblast"
+    bl_description = ("Render a playblast of THIS scene exactly as your "
+                      "viewport shows it and open it in your video player — "
+                      "nothing is published or uploaded. Same renderer and "
+                      "WYSIWYG visibility as the dailies playblast")
+
+    def execute(self, context):
+        task = active_task()
+        if not task or task.get("type") != "shot":
+            self.report({"ERROR"}, "Open a shot task from the Workspace app.")
+            return {"CANCELLED"}
+        # Snapshot the session AS-IS (unsaved edits included) into an
+        # untracked sibling of work/: inside the project tree so linked
+        # libraries keep resolving, outside work/ so it never rides a sync,
+        # a publish or the work-version counter.
+        prev_dir = os.path.join(os.path.dirname(task["work_dir"]), ".preview")
+        tmp = os.path.join(prev_dir, "pb_preview.blend")
+        try:
+            os.makedirs(prev_dir, exist_ok=True)
+            bpy.ops.wm.save_as_mainfile(filepath=tmp, copy=True)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, f"Could not snapshot the scene: {exc}")
+            return {"CANCELLED"}
+        _publog(f"playblast preview: snapshot -> {tmp}", echo=False)
+        _PENDING_UPLOAD.clear()
+        _PENDING_UPLOAD.update({
+            "render_only": True, "render": True,
+            "step": task.get("step"), "ttype": "shot",
+            "task_id": task["id"], "pub_path": tmp,
+            "extra_args": ["--preview"],
+            "success": "Playblast preview rendered.",
         })
         bpy.ops.flumen.publish_upload('INVOKE_DEFAULT')
         return {"FINISHED"}
@@ -3953,6 +3994,7 @@ CLASSES = (
     FLUMEN_OT_add_review_camera,
     FLUMEN_OT_render_review,
     FLUMEN_OT_cycle_format,
+    FLUMEN_OT_preview_playblast,
     FLUMEN_OT_publish_upload,
     FLUMEN_OT_load_model,
     FLUMEN_OT_apply_look,
