@@ -112,6 +112,65 @@ def _ensure_lighting(scene):
         scene.collection.objects.link(ob)
 
 
+def _sync_render_visibility(scene):
+    """WYSIWYG playblast: the render shows exactly what the animator's viewport
+    shows. Artists hide duplicate rigs/helpers with the eye icon or the monitor
+    toggle — neither of which a real render respects (renders only honour
+    hide_render), so a playblast used to show hidden geometry and drop visible
+    geometry whose collection had its camera toggle off. Translate before
+    rendering:
+      * per object: hide_render = NOT visible in the viewport (the eye, the
+        monitor toggle and collection-level hiding all folded in),
+      * collections: render toggles neutralized — the per-object flags above
+        now carry every decision,
+      * keyed monitor toggles: their keyframes are mirrored onto hide_render,
+        so mid-shot show/hide swaps render too. (The eye can't be keyed in
+        Blender — animators key the monitor icon for timed swaps.)
+    Runs on the loaded publish copy in memory; nothing is saved back."""
+    try:
+        vl = bpy.context.view_layer
+        vl.update()
+    except Exception:  # noqa: BLE001
+        vl = scene.view_layers[0] if scene.view_layers else None
+    for coll in bpy.data.collections:
+        if coll.library is not None:
+            continue                      # linked collections are read-only
+        try:
+            coll.hide_render = False
+        except Exception:  # noqa: BLE001
+            pass
+    synced = keyed = 0
+    for o in scene.objects:
+        try:
+            vis = o.visible_get(view_layer=vl) if vl else not o.hide_viewport
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            if o.hide_render != (not vis):
+                o.hide_render = not vis
+                synced += 1
+        except Exception:  # noqa: BLE001
+            continue                      # pure-linked object — leave as authored
+        # Mid-shot swaps: mirror any hide_viewport keys onto hide_render.
+        ad = getattr(o, "animation_data", None)
+        act = getattr(ad, "action", None) if ad else None
+        for fc in (getattr(act, "fcurves", []) or []) if act else []:
+            if fc.data_path != "hide_viewport":
+                continue
+            try:
+                for kp in fc.keyframe_points:
+                    o.hide_render = bool(round(kp.co[1]))
+                    o.keyframe_insert("hide_render", frame=kp.co[0])
+                keyed += 1
+            except Exception:  # noqa: BLE001
+                pass
+    if synced or keyed:
+        print(f"[playblast] viewport-visibility sync: {synced} object(s) "
+              f"aligned to what the viewport shows"
+              + (f", {keyed} animated toggle(s) mirrored" if keyed else "")
+              + ".")
+
+
 def main():
     scene = bpy.context.scene
     frames_dir = _env("FLUMEN_PB_FRAMES_DIR")
@@ -152,6 +211,9 @@ def main():
               "content):")
         for m in missing:
             print(f"    {m}")
+
+    # The playblast contract: it shows what the animator's viewport showed.
+    _sync_render_visibility(scene)
 
     r = scene.render
     requested = _env("FLUMEN_PB_ENGINE", "BLENDER_EEVEE_NEXT")
