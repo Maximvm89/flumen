@@ -432,3 +432,22 @@ def test_published_animations_sources_override_browses_downstream():
     # downstream animation
     chain = E.published_animations(s, "/r", shot, "layout")
     assert [a["version"] for a in chain] == ["v001"]
+
+
+def test_anim_manifest_contents_flow_through_resolution():
+    # 'contents' records which publish each element linked at capture — the
+    # stale-placement guard downstream depends on it surviving resolution.
+    s = FakeSrv()
+    shot = "SEQ999/SH0000"
+    _publish_anim(s, shot, "layout", 1,
+                  '{"version":1,"elements":{"house":{"tende":"tendeAct"}},'
+                  '"contents":{"house":"house_model_v005.blend"}}')
+    anims = E.published_animations(s, "/r", shot, "layout")
+    assert anims[0]["contents"] == {"house": "house_model_v005.blend"}
+    ra = E.resolved_animation(s, "/r", shot, "animation")
+    assert ra["elements"]["house"]["content"] == "house_model_v005.blend"
+    # older manifests without the field resolve with content '' (no guard)
+    _publish_anim(s, shot, "layout", 2,
+                  '{"version":2,"elements":{"camera":{"cam":"a"}}}')
+    ra = E.resolved_animation(s, "/r", shot, "animation")
+    assert ra["elements"]["camera"]["content"] == ""

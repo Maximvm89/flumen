@@ -1484,7 +1484,16 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 anim_path = os.path.join(anim_dir, f"{base}_v{version:03d}_anim.blend")
                 bpy.data.libraries.write(anim_path, actions, fake_user=True)
                 hashes = _SHOT_PUBLISH.get("hashes") or _element_anim_hashes()
-                manifest = anim_mod.build_anim_manifest(version, elem_actions, hashes)
+                # Which publish each element linked at capture time — consumers
+                # use it to refuse stale object-placement keys after a model
+                # restructure (renamed pieces would take the wrong keys).
+                contents = {}
+                for eid in elem_actions:
+                    h = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
+                    if h is not None:
+                        contents[eid] = _element_loaded_file(h)
+                manifest = anim_mod.build_anim_manifest(version, elem_actions,
+                                                        hashes, contents)
                 anim_manifest_path = anim_mod.anim_manifest_path(anim_path)
                 with open(anim_manifest_path, "w") as fh:
                     json.dump(manifest, fh, indent=2)
@@ -3261,10 +3270,41 @@ def _element_anim_hashes(only_ids=None):
     return out
 
 
-def _apply_element_animation(holder, anim_blend, action_map):
+def _stale_content_filter(holder, action_map, captured_content):
+    """When the animation was captured against a DIFFERENT publish of this
+    element (the manifest's 'contents' vs what the holder links now), object-
+    level placement keys are meaningless — a restructured model reuses names
+    for different pieces (a 'Door.003' key lands on the wrong door) and rest
+    transforms moved. Keep only actions targeting ARMATURES (pose keys ride on
+    stable bone names across rig versions); drop the rest. Returns
+    (filtered_map, dropped_count). No captured content recorded -> no filter
+    (pre-stamping publishes keep today's behavior)."""
+    if not captured_content:
+        return action_map, 0
+    loaded = _element_loaded_file(holder)
+    if not loaded or loaded == captured_content:
+        return action_map, 0
+    arm_bases = {o.name.split(".")[0] for o in holder.all_objects
+                 if getattr(o, "type", "") == "ARMATURE"}
+    kept = {k: v for k, v in action_map.items()
+            if k.split(".")[0] in arm_bases}
+    dropped = len(action_map) - len(kept)
+    if dropped:
+        print(f"[Flumen] '{holder.name}': animation was captured against "
+              f"{captured_content}, scene links {loaded} — skipped "
+              f"{dropped} object-placement action(s) (re-publish the layout "
+              f"against the new version to restore placements).")
+    return kept, dropped
+
+
+def _apply_element_animation(holder, anim_blend, action_map, content=""):
     """Append the published Actions and assign them onto this element's objects by
-    name, so a freshly-built element comes back animated."""
+    name, so a freshly-built element comes back animated. `content` = the
+    publish the animation was captured against (stale-placement guard)."""
     if not (anim_blend and action_map and os.path.isfile(anim_blend)):
+        return 0
+    action_map, _dropped = _stale_content_filter(holder, action_map, content)
+    if not action_map:
         return 0
     want = set(action_map.values())
     with bpy.data.libraries.load(anim_blend, link=False) as (src, dst):
@@ -4207,7 +4247,8 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if holder and ael and ael.get("blend_local") and ael.get("objects"):
                 try:
                     animated += _apply_element_animation(
-                        holder, ael["blend_local"], ael["objects"])
+                        holder, ael["blend_local"], ael["objects"],
+                        content=ael.get("content", ""))
                     holder["flumen_anim"] = ael.get("version", "")
                 except Exception as exc:  # noqa: BLE001
                     print("[Flumen] could not apply animation:", exc)
@@ -4323,6 +4364,7 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
         global _LOAD_ANIM
         _LOAD_ANIM = {a["version"]: {"blend_local": a.get("blend_local", ""),
                                      "elements": a.get("elements", {}),
+                                     "contents": a.get("contents", {}),
                                      "by": a.get("by", ""),
                                      "description": a.get("description", "")}
                       for a in anims}
@@ -4371,7 +4413,10 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
             amap = (data.get("elements") or {}).get(it.element_id) if data else None
             if holder and data and data.get("blend_local") and amap:
                 try:
-                    n = _apply_element_animation(holder, data["blend_local"], amap)
+                    n = _apply_element_animation(
+                        holder, data["blend_local"], amap,
+                        content=(data.get("contents") or {}).get(
+                            it.element_id, ""))
                 except Exception as exc:  # noqa: BLE001
                     print("[Flumen] load animation failed:", exc)
                     n = 0

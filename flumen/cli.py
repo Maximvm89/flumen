@@ -1074,6 +1074,7 @@ def cmd_resolve_assembly(args) -> int:
             for eid, info in ra["elements"].items():
                 entry = {"objects": info["objects"],
                          "version": info.get("version", ""),
+                         "content": info.get("content", ""),
                          "blend_rel": info["blend_rel"]}
                 if not args.list:
                     brel = info["blend_rel"]

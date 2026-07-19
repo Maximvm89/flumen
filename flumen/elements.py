@@ -333,7 +333,9 @@ def resolved_animation(sftp, remote_root: str, shot_entity: str, step: str,
         for eid, objs in (a.get("elements") or {}).items():
             if eid not in elements:
                 elements[eid] = {"blend_rel": a["blend_rel"], "objects": objs,
-                                 "version": a["version"]}
+                                 "version": a["version"],
+                                 "content": (a.get("contents") or {}).get(eid,
+                                                                          "")}
     return {"elements": elements} if elements else None
 
 
@@ -385,15 +387,16 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
                 continue
             blend_rel = p["rel"]
             manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
-            elements, hashes = {}, {}
+            elements, hashes, contents = {}, {}, {}
             txt = sftp.read_text(rr + "/" + manifest_rel)
             if txt:
                 try:
                     m = _json.loads(txt) or {}
                     elements = m.get("elements") or {}
                     hashes = m.get("hashes") or {}
+                    contents = m.get("contents") or {}
                 except ValueError:
-                    elements, hashes = {}, {}
+                    elements, hashes, contents = {}, {}, {}
             label = anim_version_label(p["name"])
             if st != step:
                 label = f"{st} {label}"
@@ -401,7 +404,8 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
                         "blend_rel": blend_rel, "by": p.get("by"),
                         "description": p.get("description", ""),
                         "time": p.get("time"),
-                        "elements": elements, "hashes": hashes})
+                        "elements": elements, "hashes": hashes,
+                        "contents": contents})
     return out
 
 

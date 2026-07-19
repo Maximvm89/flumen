@@ -33,12 +33,20 @@ def is_anim_blend(name: str) -> bool:
 
 
 def build_anim_manifest(version: int, element_actions: dict,
-                        hashes: dict | None = None) -> dict:
+                        hashes: dict | None = None,
+                        contents: dict | None = None) -> dict:
     """The <base>_vNNN_anim.manifest.json payload: which action sits on which object,
     grouped per element, plus a content hash per element for dedup. `element_actions`
     is {element_id: {object_name: action_name}} (empty maps dropped); `hashes` is
-    {element_id: sha1} (kept only for the published elements)."""
+    {element_id: sha1} (kept only for the published elements). `contents` records
+    WHICH publish file each element linked when the animation was captured
+    ({element_id: 'house_model_v005.blend'}) — object-level placement keys are
+    only meaningful against that exact content; a consumer linking a different
+    version must not smear them onto renamed/restructured objects."""
     elements = {eid: dict(objs) for eid, objs in (element_actions or {}).items()
                 if objs}
     keep = {eid: h for eid, h in (hashes or {}).items() if eid in elements}
-    return {"version": int(version), "elements": elements, "hashes": keep}
+    kept_contents = {eid: c for eid, c in (contents or {}).items()
+                     if eid in elements and c}
+    return {"version": int(version), "elements": elements, "hashes": keep,
+            "contents": kept_contents}
