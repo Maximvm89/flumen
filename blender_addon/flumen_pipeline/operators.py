@@ -3728,8 +3728,12 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             # cleaned): offer a rebuild, pre-checked.
             it.broken = (holder is not None
                          and _element_content_broken(holder, missing_libs))
-            it.enabled = (not it.present) or it.broken
             it.detail, it.update = _element_update_notes(el, holder, anim_meta)
+            # Updates arrive PRE-TICKED: opening Build shot and clicking Build
+            # brings every element to the newest publish + animation. Untick a
+            # row to keep what's in the scene (e.g. unpublished local anim on
+            # that element — an update re-applies the newest PUBLISHED one).
+            it.enabled = (not it.present) or it.broken or it.update
             steps = el.get("available_steps") or []
             it.steps_csv = ",".join(steps)
             if steps and el.get("source_step") in steps:
@@ -3739,10 +3743,15 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
 
     def draw(self, context):
         col = self.layout.column()
-        col.label(text="Bring these elements into the shot — tick an in-scene "
-                       "row to update it:")
+        col.label(text="Bring these elements into the shot:")
+        items = context.window_manager.flumen_build_items
+        n_up = sum(1 for it in items if it.update and it.present)
+        if n_up:
+            col.label(text=f"{n_up} element(s) have a newer publish or "
+                           f"animation — pre-ticked to update. Untick to "
+                           f"keep what's in the scene.", icon="FILE_REFRESH")
         box = col.box()
-        for it in context.window_manager.flumen_build_items:
+        for it in items:
             row = box.row(align=True)
             cb = row.row()
             # Any asset element can be re-ticked to UPDATE to the latest
