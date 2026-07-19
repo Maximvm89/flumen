@@ -2561,7 +2561,23 @@ def _element_matrix_snapshot(holder):
     (model -> rig) and no object name survives the swap."""
     return {"objects": {o.name: o.matrix_basis.copy()
                         for o in holder.all_objects},
-            "roots": [o.name for o in holder.all_objects if o.parent is None]}
+            "roots": [o.name for o in holder.all_objects if o.parent is None],
+            "file": _element_loaded_file(holder)}
+
+
+def _rig_main_control(arm):
+    """The rig's 'place me here' pose bone: a root-like name first (Rigify's
+    'root'), else the first parentless pose bone. None on a boneless rig."""
+    if not getattr(arm, "pose", None):
+        return None
+    for name in ("root", "Root", "ROOT", "main", "master", "global"):
+        pb = arm.pose.bones.get(name)
+        if pb is not None:
+            return pb
+    for pb in arm.pose.bones:
+        if pb.parent is None:
+            return pb
+    return None
 
 
 def _matrix_is_identity(m, eps=1e-6):
@@ -2583,24 +2599,41 @@ def _element_matrix_restore(holder, snap):
     objs = (snap or {}).get("objects") or {}
     if not objs:
         return 0
-    by_base = {}
-    for name in objs:
-        by_base.setdefault(name.split(".")[0], name)
+
+    # A publish-family switch (model -> rig) must NEVER restore by name: the
+    # rig usually shares its mesh names with the model it was built from, so
+    # stale model-space matrices (scale included) would land on meshes the
+    # armature already drives — double transforms. Placement goes to the rig's
+    # control instead.
+    import re
+
+    def _step_of(fname):
+        m = re.search(r"_([a-z0-9]+)_v\d+\.blend$", fname or "")
+        return m.group(1) if m else ""
+
+    old_step = _step_of((snap or {}).get("file", ""))
+    new_step = _step_of(_element_loaded_file(holder))
+    cross_step = bool(old_step and new_step and old_step != new_step)
+
     restored = 0
-    for o in holder.all_objects:
-        m = objs.get(o.name)
-        if m is None:
-            src = by_base.get(o.name.split(".")[0])
-            m = objs.get(src) if src else None
-        if m is not None:
-            try:
-                o.matrix_basis = m
-                restored += 1
-            except Exception:  # noqa: BLE001
-                pass
-    if restored:
-        return restored
-    # Cross-step swap: carry the element's placement via its old root.
+    if not cross_step:
+        by_base = {}
+        for name in objs:
+            by_base.setdefault(name.split(".")[0], name)
+        for o in holder.all_objects:
+            m = objs.get(o.name)
+            if m is None:
+                src = by_base.get(o.name.split(".")[0])
+                m = objs.get(src) if src else None
+            if m is not None:
+                try:
+                    o.matrix_basis = m
+                    restored += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        if restored:
+            return restored
+    # Cross-step swap (or nothing matched): carry the placement via the old root.
     roots = (snap or {}).get("roots") or []
     root_m = None
     for name in roots:
@@ -2614,6 +2647,35 @@ def _element_matrix_restore(holder, snap):
             root_m = m
     if root_m is None or _matrix_is_identity(root_m):
         return 0
+    # New content is a RIG: the placement belongs on its MAIN CONTROL, the
+    # channel animators actually use — location + facing only, never scale
+    # (the model was often scaled to fit; the rig's proportions are its own),
+    # and the rig's meshes are never touched (they follow the armature).
+    from mathutils import Matrix
+    loc, rot, _scale = root_m.decompose()
+    place = Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+    arms = sorted((o for o in holder.all_objects
+                   if getattr(o, "type", "") == "ARMATURE"
+                   and getattr(o, "pose", None)),
+                  key=lambda a: -len(a.pose.bones))
+    if arms:
+        arm = arms[0]                      # the rig (most bones), not helpers
+        pb = _rig_main_control(arm)
+        try:
+            if pb is not None:
+                pb.matrix = arm.matrix_world.inverted() @ place
+                where = f"'{pb.name}' control"
+            else:
+                arm.matrix_basis = place @ arm.matrix_basis
+                where = "armature object (no root-like control found)"
+            print(f"[Flumen] model→rig update: placement (location+rotation, "
+                  f"scale dropped) applied to the rig's {where}.")
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Flumen] could not place the rig's control: {exc}")
+            return 0
+    # No armature (e.g. a model republished with renamed objects): carry the
+    # full matrix onto the roots — scale is meaningful for placed models.
     for o in holder.all_objects:
         if o.parent is not None:
             continue
