@@ -3735,6 +3735,20 @@ _ELEMENT_LOADERS = {
 _BUILD_FRAME_RANGE = {"start": None, "end": None}
 
 
+def _scene_unloaded_ids(scene) -> set:
+    """Element ids the artist deliberately UNLOADED from this scene (an
+    optimised working view). Stored on the scene so it survives sessions;
+    the shot breakdown on the server is untouched."""
+    try:
+        return set(json.loads(scene.get("flumen_unloaded", "") or "[]"))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _set_scene_unloaded_ids(scene, ids) -> None:
+    scene["flumen_unloaded"] = json.dumps(sorted(set(ids)))
+
+
 def _apply_build_frame_range(context):
     """Set the scene timeline to the captured shot range. Returns a short message
     (e.g. 'timeline 1001-1100') or '' if no range was captured."""
@@ -3893,6 +3907,11 @@ class FLUMEN_AssemblyItem(bpy.types.PropertyGroup):
     present: bpy.props.BoolProperty(default=False)
     broken: bpy.props.BoolProperty(default=False)   # in scene but content missing
     update: bpy.props.BoolProperty(default=False)   # newer publish/anim available
+    unload: bpy.props.BoolProperty(
+        name="Unload", default=False,
+        description="Remove this element from THIS scene (an optimised view — "
+                    "the shot breakdown is untouched; tick it again in a later "
+                    "Build shot to load it back)")
     steps_csv: bpy.props.StringProperty()    # available steps, comma-separated
     step: bpy.props.EnumProperty(name="Step", items=_step_enum_items,
                                  description="Which published step to bring in")
@@ -3941,6 +3960,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
 
         missing_libs = _missing_libraries()
         anim_meta = ((data.get("anim") or {}).get("elements")) or {}
+        unloaded = _scene_unloaded_ids(context.scene)
         rows = context.window_manager.flumen_build_items
         rows.clear()
         for el in listed:
@@ -3948,9 +3968,10 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             it.payload = json.dumps(el)
             it.kind = el.get("kind", "asset")
             it.label = el.get("label") or el.get("id", "")
-            holder = bpy.data.collections.get(
-                ELEMENT_HOLDER_PREFIX + str(el.get("id", "")))
+            eid = str(el.get("id", ""))
+            holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
             it.present = holder is not None
+            it.unload = False
             # In scene but its publish is gone from disk (e.g. local files
             # cleaned): offer a rebuild, pre-checked.
             it.broken = (holder is not None
@@ -3961,6 +3982,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             # row to keep what's in the scene (e.g. unpublished local anim on
             # that element — an update re-applies the newest PUBLISHED one).
             it.enabled = (not it.present) or it.broken or it.update
+            # Deliberately unloaded from this scene: stays out until the
+            # artist opts back in — never silently rebuilt by a routine Build.
+            if not it.present and eid in unloaded:
+                it.enabled = False
+                it.detail = "unloaded from this scene — tick to load it back"
             steps = el.get("available_steps") or []
             it.steps_csv = ",".join(steps)
             if steps and el.get("source_step") in steps:
@@ -3986,15 +4012,18 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             # stays locked — rebuilding it would lose the camera move — EXCEPT
             # when a newer published animation exists to bring it back.
             cb.enabled = (it.broken or not it.present or it.kind != "camera"
-                          or it.update)
+                          or it.update) and not it.unload
             cb.prop(it, "enabled", text="")
-            icon = ("ERROR" if it.broken
+            icon = ("TRASH" if it.unload and it.present
+                    else "ERROR" if it.broken
                     else "FILE_REFRESH" if it.present and it.update
                     else "CHECKMARK" if it.present
                     else "OUTLINER_OB_CAMERA" if it.kind == "camera"
                     else "OUTLINER_OB_ARMATURE")
             row.label(text=it.label, icon=icon)
-            if it.broken:
+            if it.unload and it.present:
+                row.label(text="will be UNLOADED from this scene")
+            elif it.broken:
                 row.label(text="missing on disk — rebuild")
             elif it.present and it.enabled and it.kind != "camera":
                 # updating: what's new, and which step to bring back in
@@ -4013,15 +4042,23 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                 sub = row.row()
                 sub.enabled = it.enabled
                 sub.prop(it, "step", text="")
+            if it.present:
+                # the unload toggle: build an optimised view by dropping what
+                # this scene doesn't need (breakdown untouched, reversible)
+                tr = row.row()
+                tr.prop(it, "unload", text="", icon="TRASH")
 
     def execute(self, context):
         task = active_task()
         if not task:
             return {"CANCELLED"}
         chosen, picks, rebuild, update = [], {}, set(), set()
+        unloads = []
         present_ct, deselected_ct = 0, 0
         for it in context.window_manager.flumen_build_items:
-            if it.present and not it.enabled:
+            if it.unload and it.present:
+                unloads.append(json.loads(it.payload)["id"])
+            elif it.present and not it.enabled:
                 present_ct += 1
             elif it.enabled:
                 eid = json.loads(it.payload)["id"]
@@ -4035,13 +4072,49 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             else:
                 deselected_ct += 1
 
+        # Unloads happen FIRST (and independently of any building): drop the
+        # holder trees, purge what they alone kept alive, and remember the
+        # choice on the scene so later Builds don't silently re-add them.
+        unloaded_ids = _scene_unloaded_ids(context.scene)
+        removed_els = 0
+        for eid in unloads:
+            holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + str(eid))
+            if holder is not None:
+                _remove_collection_tree(holder)
+                removed_els += 1
+            unloaded_ids.add(str(eid))
+        if removed_els:
+            try:
+                for _ in range(3):
+                    bpy.data.orphans_purge(do_local_ids=True,
+                                           do_linked_ids=True,
+                                           do_recursive=True)
+            except Exception:  # noqa: BLE001
+                pass
+            # orphans_purge drops the library's CONTENT but leaves the empty
+            # library entry behind — sweep those so the unloaded publish is
+            # genuinely out of the file (memory + Missing File checks).
+            for lib in list(bpy.data.libraries):
+                try:
+                    if not lib.users_id:
+                        bpy.data.libraries.remove(lib)
+                except Exception:  # noqa: BLE001
+                    pass
+        unloaded_ids -= {str(e) for e in chosen}       # loading back opts in
+        _set_scene_unloaded_ids(context.scene, unloaded_ids)
+
         # Always set the shot's timeline to its frame range, even if nothing new
         # is built (e.g. everything already present).
         tl_msg = _apply_build_frame_range(context)
         if not chosen:
-            extra = f" — {tl_msg}" if tl_msg else ""
-            self.report({"INFO"},
-                        f"Nothing to build ({present_ct} already in scene){extra}.")
+            bits = [f"{present_ct} already in scene"]
+            if removed_els:
+                bits.insert(0, f"unloaded {removed_els} element(s)")
+            if tl_msg:
+                bits.append(tl_msg)
+            self.report({"INFO"}, ("Nothing to build (" if not removed_els
+                                   else "Done: ") + "; ".join(bits)
+                        + ("" if removed_els else ")") + ".")
             return {"FINISHED"}
 
         # downloads only the chosen, at their chosen steps
@@ -4146,6 +4219,8 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             pass
 
         parts = [f"Built {len(built)} element(s)"]
+        if removed_els:
+            parts.append(f"unloaded {removed_els}")
         if update:
             parts.append(f"updated {len(update & {e.get('id') for e, _ in built})}"
                          f" to the latest publish")
