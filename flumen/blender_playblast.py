@@ -171,6 +171,39 @@ def _sync_render_visibility(scene):
               + ".")
 
 
+def _sync_viewport_colors():
+    """Workbench evaluates NO shader nodes: it draws a base-color image only
+    when one is plugged DIRECTLY into the BSDF, and otherwise the material's
+    Viewport Display color — default grey, whatever the shader says. Materials
+    authored as plain BSDF colors (flat stylized characters) therefore render
+    grey. Sync the viewport color from the BSDF's base color value before
+    rendering. Local materials only (linked ones are read-only — with
+    build-time looks, the materials that matter in a shot ARE local copies)."""
+    synced = 0
+    for m in bpy.data.materials:
+        if m.library is not None or not m.use_nodes or m.node_tree is None:
+            continue
+        for node in m.node_tree.nodes:
+            if node.type not in ("BSDF_PRINCIPLED", "BSDF_DIFFUSE", "EMISSION"):
+                continue
+            inp = (node.inputs.get("Base Color") or node.inputs.get("Color"))
+            if inp is None or inp.links:
+                continue        # image/node-driven: a flat color can't help
+            c = list(inp.default_value)[:4]
+            if len(c) == 3:
+                c.append(1.0)
+            try:
+                if any(abs(a - b) > 0.01 for a, b in zip(m.diffuse_color, c)):
+                    m.diffuse_color = c
+                    synced += 1
+            except Exception:  # noqa: BLE001
+                pass
+            break
+    if synced:
+        print(f"[playblast] Workbench: synced viewport colors on {synced} "
+              f"material(s) from their shader base color.")
+
+
 def main():
     scene = bpy.context.scene
     frames_dir = _env("FLUMEN_PB_FRAMES_DIR")
@@ -282,6 +315,7 @@ def main():
     # Workbench: fast solid shading. TEXTURE colour shows the texture maps but is
     # flat/shadeless; MATERIAL shows flat base colours. Opt in via playblast.engine.
     elif engine == "BLENDER_WORKBENCH":
+        _sync_viewport_colors()
         color = _env("FLUMEN_PB_COLOR", "TEXTURE").upper()
         if color not in {"MATERIAL", "TEXTURE", "SINGLE", "OBJECT", "VERTEX", "RANDOM"}:
             color = "TEXTURE"
