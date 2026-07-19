@@ -78,7 +78,7 @@
   ],
   "_playblast_note": "Shot playblast (layout/anim): a render of the shot's frame range through the shot camera, pushed to 07_dailies on publish. engine BLENDER_EEVEE_NEXT renders full materials+textures+lighting (matches the shaded viewport). auto_light: shots with NO lights of their own get a camera-parented shadowless key+fill rig (reaches inside closed sets, near-zero render cost) — set false to always render the shot's own lighting. samples (EEVEE, default 16 vs render's 64) and resolution_percentage (50 = half the delivery size, ~4x fewer pixels) keep playblasts FAST — bump them if clips look rough. BLENDER_WORKBENCH is a fast flat/shadeless pass; for it, color=TEXTURE shows the texture maps. resolution/fps used when no 'formats' block is set.",
   "playblast": {
-    "engine": "BLENDER_EEVEE_NEXT",
+    "engine": "BLENDER_WORKBENCH",
     "color": "TEXTURE",
     "resolution_x": 1280,
     "resolution_y": 720,
