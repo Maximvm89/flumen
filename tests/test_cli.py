@@ -244,6 +244,10 @@ def test_resolve_assembly_list_does_not_download(monkeypatch, capsys, tmp_path):
     assert {e["id"] for e in out} == {"frankenstein", "camera"}     # both listed
     assert all(e["blend_local"] == "" for e in out)                 # nothing fetched
     assert srv.downloads == []
+    # blend_rel must ride even in --list: the Build-shot dialog compares it
+    # against the loaded library to flag 'new model/rig' updates.
+    fr = next(e for e in out if e["id"] == "frankenstein")
+    assert fr["blend_rel"].endswith("frankenstein_model_v001.blend")
     cam = next(e for e in out if e["kind"] == "camera")
     assert cam["load"] == "create_rig" and cam["camera_name"] == "SEQ010_SH0010"
 

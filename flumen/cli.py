@@ -965,6 +965,10 @@ def cmd_resolve_assembly(args) -> int:
             collection = "" if r["kind"] == "camera" else r["asset"].split("/")[-1]
             entry = {"id": r["id"], "label": r["label"], "kind": r["kind"],
                      "asset": r["asset"], "blend_local": local,
+                     # blend_rel always rides (also in --list): the Build-shot
+                     # dialog compares its basename against the loaded library
+                     # to flag 'new model/rig' updates.
+                     "blend_rel": rel,
                      "source_step": r["source_step"], "collection": collection,
                      "available_steps": r.get("available_steps", []),
                      "look": r.get("look", ""), "load": r.get("load", "link"),

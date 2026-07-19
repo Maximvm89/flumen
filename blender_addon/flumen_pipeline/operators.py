@@ -3664,10 +3664,17 @@ def _element_update_notes(el, holder, anim_meta):
         latest = os.path.basename(el["blend_rel"])
         loaded = _element_loaded_file(holder)
         if loaded and loaded != latest:
+            import re
             lv = _publish_version_label(loaded)
             nv = _publish_version_label(latest) or latest
             step = el.get("source_step", "publish")
-            notes.append(f"new {step} {nv}" + (f" (scene has {lv})" if lv else ""))
+            # Name the loaded STEP too when it differs (model -> rig upgrade):
+            # 'new rig v002 (scene has model v021)', not a bare version clash.
+            m = re.search(r"_([a-z0-9]+)_v\d+\.blend$", loaded)
+            lstep = m.group(1) if m and m.group(1) != step else ""
+            scene_txt = f"{lstep} {lv}".strip() if lv else loaded
+            notes.append(f"new {step} {nv}"
+                         + (f" (scene has {scene_txt})" if scene_txt else ""))
             update = True
         elif loaded:
             v = _publish_version_label(loaded)
