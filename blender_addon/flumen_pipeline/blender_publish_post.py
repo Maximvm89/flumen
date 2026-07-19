@@ -104,6 +104,74 @@ def _bake_modifiers(coll):
     return baked, skipped
 
 
+def _sidecar_udim(img, tex_dir, taken):
+    """Sidecar one UDIM set: every tile file lands in textures/ under a
+    collision-guarded common stem, keeping the '<UDIM>' pattern, and the image
+    is repathed to '//textures/…'. Handles packed sets (each tile is its own
+    packed_files entry) by writing the bytes directly — same reasoning as the
+    single-image packed path: unpack()'s writers can't be aimed. Returns the
+    number of tile files written, 0 if left as-is, -1 when sources are missing
+    (set untouched, so nothing half-copies on the wrong machine)."""
+    import shutil
+    src_pattern = bpy.path.abspath(img.filepath) if img.filepath else ""
+    if "<UDIM>" not in src_pattern:
+        print(f"[Flumen] post: UDIM image '{img.name}' has no <UDIM> token "
+              f"in its path — left as-is.")
+        return 0
+    src_key = img.filepath_raw or img.filepath or img.name
+    base = os.path.basename(src_pattern)                 # name.<UDIM>.exr
+    name = base
+    if taken.get(name, src_key) != src_key:              # stem collision
+        stem, ext = os.path.splitext(base)               # strips only '.exr'
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", img.name)
+        name = f"{safe}_{base}" if stem.endswith(".<UDIM>") else f"{stem}_{safe}{ext}"
+
+    packed = list(getattr(img, "packed_files", []) or [])
+    written = 0
+    if packed:
+        # Per-tile packed entries expose no bytes to Python, so the manual
+        # write used for single images can't work here — only unpack() can
+        # write them, and it names tiles from the packed ORIGINAL basename.
+        # Collision-free: fine, unpack locally and claim the name. Colliding:
+        # leave the set PACKED (fat but correct — the tiles ride inside the
+        # .blend) instead of letting tiles overwrite another set's files.
+        if name != base:
+            print(f"[Flumen] post: packed UDIM '{img.name}' collides with "
+                  f"another texture set named '{base}' — left PACKED so "
+                  f"nothing overwrites (rename the exports to slim the file).")
+            return 0
+        try:
+            os.makedirs(tex_dir, exist_ok=True)
+            img.unpack(method="WRITE_LOCAL")   # -> //textures/<base tiles>
+            taken[name] = src_key
+            return len(packed)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Flumen] post: could not unpack UDIM '{img.name}': {exc}")
+            return 0
+    # external set: every tile file must exist before we commit to the copy
+    srcs = {t.number: src_pattern.replace("<UDIM>", str(t.number))
+            for t in img.tiles}
+    have = {n: p for n, p in srcs.items() if os.path.isfile(p)}
+    if not have:
+        print(f"[Flumen] post: UDIM '{img.name}' tiles missing on disk "
+              f"(left as-is): {img.filepath}")
+        return -1
+    if len(have) < len(srcs):
+        gone = sorted(set(srcs) - set(have))
+        print(f"[Flumen] post: UDIM '{img.name}' missing tile(s) {gone} — "
+              f"copying the {len(have)} present.")
+    os.makedirs(tex_dir, exist_ok=True)
+    for num, src in have.items():
+        dst = os.path.join(tex_dir, name.replace("<UDIM>", str(num)))
+        if os.path.abspath(dst) != os.path.abspath(src):
+            shutil.copy2(src, dst)
+        written += 1
+    img.filepath = "//textures/" + name
+    img.filepath_raw = "//textures/" + name
+    taken[name] = src_key
+    return written
+
+
 def _sidecar_textures():
     """Normalize the publish's textures into a sidecar folder beside the file:
     packed images are unpacked to //textures/, external images are copied there
@@ -119,8 +187,11 @@ def _sidecar_textures():
         if img.library is not None:
             continue    # linked from another publish — its sidecar, not ours
         if img.source == "TILED":
-            print(f"[Flumen] post: UDIM image '{img.name}' left as-is "
-                  f"(tiled textures aren't sidecar'd yet).")
+            n = _sidecar_udim(img, tex_dir, taken)
+            if n > 0:
+                copied += n
+            elif n < 0:
+                missing += 1
             continue
         if img.source not in ("FILE", "SEQUENCE"):
             continue    # generated / render results carry no file
