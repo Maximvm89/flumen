@@ -116,8 +116,6 @@
       "flumen.cycle_format",
       "flumen.preview_playblast",
       "---",
-      "flumen.add_review_camera",
-      "flumen.render_review",
       "flumen.save_to_task",
       "flumen.run_checks",
       "flumen.auto_fix",
