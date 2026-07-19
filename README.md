@@ -64,6 +64,8 @@ Each sub-folder has its own README with detailed usage.
 
 - `config.yaml` — project name, code, `remote_root`, optional `local_root` and
   `blender_path`. Copy from `config.example.yaml`. **Git-ignored.**
+  Custom/portable Blender install (Steam, .zip, non-standard folder)? See
+  [docs/CUSTOM_BLENDER.md](docs/CUSTOM_BLENDER.md).
 - `.env` — your per-user SFTP credentials. Copy from `.env.example`.
   **Git-ignored — never commit real credentials.**
 - `folder_schema.yaml` — the project folder structure (single source of truth;

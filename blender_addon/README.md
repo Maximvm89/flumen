@@ -38,7 +38,8 @@ Flow: **artist double-clicks the launcher → it syncs config from FTP & sets OC
    password). This is for the in-Blender "Pull Latest" button and future publish
    tools.
 4. (Optional) If Blender isn't in a standard location, set `tools.blender_path`
-   in `config.yaml` or the `FLUMEN_BLENDER` env var.
+   in `config.yaml` or the `FLUMEN_BLENDER` env var — step-by-step per OS in
+   [docs/CUSTOM_BLENDER.md](../docs/CUSTOM_BLENDER.md).
 
 ## Daily use
 
