@@ -18,6 +18,7 @@ Exits non-zero on a hard failure so the caller can abort the upload.
 """
 
 import os
+import re
 import sys
 
 import bpy
@@ -124,9 +125,35 @@ def _sidecar_textures():
         if img.source not in ("FILE", "SEQUENCE"):
             continue    # generated / render results carry no file
         if img.packed_file:
+            # Packed images land in the SAME flat textures/ folder as the
+            # copies below — and Substance-style exports name every set
+            # 'DefaultMaterial_<map>.exr', so different packed textures can
+            # share one basename (wallpaper vs velvet vs ceiling). A bare
+            # unpack() ignores the collision guard and each write clobbers
+            # the previous one, leaving every object sampling whichever
+            # unpacked LAST. Unique-name the target first, then unpack to it.
+            src_key = img.filepath_raw or img.filepath or img.name
+            base = (os.path.basename(bpy.path.abspath(img.filepath) or "")
+                    or img.name)
+            name = base
+            if taken.get(name, src_key) != src_key:   # same name, other source
+                stem, ext = os.path.splitext(base)
+                safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", img.name)
+                name = f"{stem}_{safe}{ext}"
             try:
                 os.makedirs(tex_dir, exist_ok=True)
-                img.unpack(method="WRITE_LOCAL")   # writes //textures/<name>
+                # unpack()'s own writers derive the target name from the
+                # PACKED file's original basename (WRITE_LOCAL) or write to
+                # the artist's original absolute path (WRITE_ORIGINAL) — both
+                # ignore our unique name and re-collide. Write the packed
+                # bytes ourselves, point the image at the file, drop the pack.
+                dst = os.path.join(tex_dir, name)
+                with open(dst, "wb") as fh:
+                    fh.write(bytes(img.packed_file.data))
+                img.filepath = "//textures/" + name
+                img.filepath_raw = "//textures/" + name
+                img.unpack(method="REMOVE")   # keep the file we just wrote
+                taken[name] = src_key
                 unpacked += 1
             except Exception as exc:  # noqa: BLE001
                 print(f"[Flumen] post: could not unpack '{img.name}': {exc}")
