@@ -2894,21 +2894,66 @@ def _animated_paths(obj):
     return paths
 
 
+def _rebind_action_and_key(obj, channel, frame):
+    """Recover from keyframe_insert() silently returning False at object level.
+    Two real-world causes, both seen in production layouts:
+      * the object's action is LINKED from the asset's publish (e.g. an empty
+        leftover action that shipped inside a model file) — not editable, so
+        Blender refuses new keys. Replace it with a LOCAL copy (any motion it
+        carries is preserved) and key into that.
+      * the action has no bound slot (Blender 4.4+ slotted actions on a
+        duplicated override) — it drives nothing; bind its slot, or drop the
+        dead action so a fresh insert creates a properly-bound one."""
+    ad = getattr(obj, "animation_data", None)
+    if ad is None or ad.action is None:
+        return False
+    act = ad.action
+    try:
+        if (getattr(act, "library", None) is not None
+                or not getattr(act, "is_editable", True)):
+            local = act.copy()                 # editable local twin
+            ad.action = local
+            slots = getattr(local, "slots", None)
+            if slots and len(slots) and getattr(ad, "action_slot", None) is None:
+                ad.action_slot = slots[0]
+        elif getattr(ad, "action_slot", None) is None:
+            slots = getattr(act, "slots", None)
+            if slots and len(slots):
+                ad.action_slot = slots[0]      # its own duplicated slot
+            else:
+                ad.action = None               # dead action — start fresh
+        else:
+            return False                       # refused for some other reason
+        return bool(obj.keyframe_insert(data_path=channel, frame=frame))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _snapshot_poses(context):
-    """Before publishing, key every MOVED but un-keyed pose bone (and rig object) at
-    the shot's start frame, so static offsets the artist changed without keyframing
-    are captured in the Action and survive a rebuild. Channels that are already
-    animated are left untouched. Returns the number of channels keyed."""
+    """Before publishing, key every MOVED but un-keyed channel at the shot's
+    start frame, so static offsets the artist changed without keyframing are
+    captured in the Action and survive a rebuild:
+
+      * pose bones + rig objects — moved when they differ from rest (identity),
+      * every OTHER object in an element holder (meshes/empties of a
+        model-linked element, the camera object) — moved when it differs from
+        its LINKED REFERENCE, i.e. the transform its publish shipped with.
+        Best effort for layouts built before rigs exist: a model placed
+        somewhere specific hands that placement to the animation step's
+        Build shot exactly like a posed rig does.
+
+    Channels that are already animated are left untouched. Returns the number
+    of channels keyed."""
     scene = context.scene
     start = int(getattr(scene, "frame_start", 1001))
     prev = scene.frame_current
     scene.frame_set(start)
-    rest = {"location": (0.0, 0.0, 0.0), "scale": (1.0, 1.0, 1.0),
-            "rotation_euler": (0.0, 0.0, 0.0),
-            "rotation_quaternion": (1.0, 0.0, 0.0, 0.0)}
+    identity = {"location": (0.0, 0.0, 0.0), "scale": (1.0, 1.0, 1.0),
+                "rotation_euler": (0.0, 0.0, 0.0),
+                "rotation_quaternion": (1.0, 0.0, 0.0, 0.0)}
     keyed = 0
 
-    def snap(target, prefix, animated):
+    def snap(target, prefix, animated, rest):
         nonlocal keyed
         rot = ("rotation_quaternion"
                if getattr(target, "rotation_mode", "XYZ") == "QUATERNION"
@@ -2917,25 +2962,48 @@ def _snapshot_poses(context):
             path = (prefix + "." + ch) if prefix else ch
             if path in animated:                       # already animated — leave it
                 continue
-            if tuple(getattr(target, ch)) == rest[ch]:  # at rest — nothing to capture
-                continue
+            base = rest.get(ch)
+            cur = tuple(getattr(target, ch))
+            if base is not None and len(cur) == len(base) and all(
+                    abs(a - b) <= 1e-6 for a, b in zip(cur, base)):
+                continue                               # at rest — nothing to capture
             try:
-                target.keyframe_insert(data_path=ch, frame=start)
+                ok = target.keyframe_insert(data_path=ch, frame=start)
+            except Exception:  # noqa: BLE001 — read-only (pure-linked) object
+                ok = False
+            if not ok and not prefix:
+                ok = _rebind_action_and_key(target, ch, start)
+            if ok:
                 keyed += 1
-            except Exception:  # noqa: BLE001
-                pass
+
+    def rest_of(obj):
+        """The transform baseline 'unmoved' is measured against: the linked
+        reference's values for an override (what the publish shipped), the
+        identity for local objects (a fresh camera rig)."""
+        ov = getattr(obj, "override_library", None)
+        ref = getattr(ov, "reference", None) if ov else None
+        if ref is None:
+            return identity
+        rot = ("rotation_quaternion"
+               if getattr(ref, "rotation_mode", "XYZ") == "QUATERNION"
+               else "rotation_euler")
+        return {"location": tuple(ref.location), "scale": tuple(ref.scale),
+                rot: tuple(getattr(ref, rot))}
 
     for coll in bpy.data.collections:
         if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
             continue
         for o in coll.all_objects:
-            if getattr(o, "type", "") != "ARMATURE" or not getattr(o, "pose", None):
-                continue
-            o.animation_data_create()
-            animated = _animated_paths(o)
-            snap(o, "", animated)                       # the rig object itself
-            for pb in o.pose.bones:
-                snap(pb, 'pose.bones["%s"]' % pb.name, animated)
+            if getattr(o, "type", "") == "ARMATURE" and getattr(o, "pose", None):
+                o.animation_data_create()
+                animated = _animated_paths(o)
+                snap(o, "", animated, rest_of(o))       # the rig object itself
+                for pb in o.pose.bones:
+                    snap(pb, 'pose.bones["%s"]' % pb.name, animated, identity)
+            else:
+                # Plain object (model geometry, empty, camera): capture its
+                # placement when it moved away from where its publish put it.
+                snap(o, "", _animated_paths(o), rest_of(o))
     scene.frame_set(prev)
     return keyed
 
