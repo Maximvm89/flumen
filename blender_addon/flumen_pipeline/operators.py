@@ -4043,6 +4043,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             col.label(text=f"{n_up} element(s) have a newer publish or "
                            f"animation — pre-ticked to update. Untick to "
                            f"keep what's in the scene.", icon="FILE_REFRESH")
+        col.prop(context.window_manager, "flumen_build_apply_anim")
         box = col.box()
         for it in items:
             row = box.row(align=True)
@@ -4178,6 +4179,12 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                 print(f"[Flumen] library reload failed ({lib.filepath}): {exc}")
         # Per-element animation: each element resolves to its own newest version.
         anim_elements = ((data or {}).get("anim") or {}).get("elements") or {}
+        if not context.window_manager.flumen_build_apply_anim:
+            # Clean import: publish defaults only — no placements, no camera
+            # move. The reset path after a restructure, before re-placing.
+            anim_elements = {}
+            print("[Flumen] build: published animation NOT applied "
+                  "(clean import requested).")
 
         built, skipped, repaired, animated, dressed = [], [], [], 0, 0
         looked = 0

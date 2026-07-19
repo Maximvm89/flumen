@@ -93,6 +93,12 @@ def register():
         description="Bake the modifier stack into the published copy (your work "
                     "file keeps them live). Armature-deformed meshes are skipped. "
                     "Recommended for heavy static environments")
+    bpy.types.WindowManager.flumen_build_apply_anim = bpy.props.BoolProperty(
+        name="Apply published animation", default=True,
+        description="Re-apply each element's published animation/placements "
+                    "when building. Untick for a CLEAN import at publish "
+                    "defaults — e.g. resetting an environment after a "
+                    "restructure, before re-placing and re-publishing")
     bpy.types.WindowManager.flumen_force_publish = bpy.props.BoolProperty(
         name="Force publish", default=False,
         description="Publish a new shot version even when no animation changed "
@@ -138,6 +144,7 @@ def unregister():
     del bpy.types.WindowManager.flumen_look_name
     del bpy.types.WindowManager.flumen_lookdev_hdri
     del bpy.types.WindowManager.flumen_apply_modifiers
+    del bpy.types.WindowManager.flumen_build_apply_anim
     del bpy.types.WindowManager.flumen_force_publish
     del bpy.types.WindowManager.flumen_dressing_name
     del bpy.types.WindowManager.flumen_build_items
