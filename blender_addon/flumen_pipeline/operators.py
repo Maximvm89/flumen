@@ -3200,9 +3200,28 @@ def _apply_element_animation(holder, anim_blend, action_map):
     # manifest name. Same zip pattern as look material append.
     loaded = {name: blk for name, blk in zip(req_names, dst.actions)
               if blk is not None}
+    # Exact names first, then a BASE-NAME fallback scoped to this holder:
+    # model elements' object names carry scene-dependent .00N suffixes (every
+    # model publish ships a 'PUBLISH' root empty — a layout with twelve model
+    # elements numbers them by link order), so the layout's 'PUBLISH.003' is
+    # a fresh animation scene's 'PUBLISH.001'. Within one holder the base
+    # name is unambiguous; the fallback only fires when it's unique on BOTH
+    # sides (the manifest and the scene).
+    manifest_by_base = {}
+    for name in action_map:
+        b = name.split(".")[0]
+        manifest_by_base[b] = None if b in manifest_by_base else name
+    holder_objs = list(holder.all_objects)
+    base_count = {}
+    for o in holder_objs:
+        b = o.name.split(".")[0]
+        base_count[b] = base_count.get(b, 0) + 1
     applied = 0
-    for o in holder.all_objects:
-        act = loaded.get(action_map.get(o.name, ""))
+    for o in holder_objs:
+        key = o.name if o.name in action_map else None
+        if key is None and base_count.get(o.name.split(".")[0]) == 1:
+            key = manifest_by_base.get(o.name.split(".")[0])
+        act = loaded.get(action_map.get(key, "")) if key else None
         if act is None:
             continue
         o.animation_data_create()
