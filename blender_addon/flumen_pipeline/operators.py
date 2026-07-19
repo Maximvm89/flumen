@@ -2555,32 +2555,77 @@ def _clear_element_holder(holder):
 
 
 def _element_matrix_snapshot(holder):
-    """{object name: matrix_basis} for everything under an element holder —
-    the artist's placement, captured before an update clears the content."""
-    return {o.name: o.matrix_basis.copy() for o in holder.all_objects}
+    """The artist's placement, captured before an update clears the content:
+    per-object local matrices plus which objects were ROOTS (parentless) — the
+    roots carry the element's overall placement when an update switches steps
+    (model -> rig) and no object name survives the swap."""
+    return {"objects": {o.name: o.matrix_basis.copy()
+                        for o in holder.all_objects},
+            "roots": [o.name for o in holder.all_objects if o.parent is None]}
+
+
+def _matrix_is_identity(m, eps=1e-6):
+    for i in range(4):
+        for j in range(4):
+            if abs(m[i][j] - (1.0 if i == j else 0.0)) > eps:
+                return False
+    return True
 
 
 def _element_matrix_restore(holder, snap):
     """Re-apply captured local matrices to same-named objects after a relink
-    (base-name fallback absorbs .001 suffix drift between publishes).
-    Returns how many objects got their placement back."""
-    if not snap:
+    (base-name fallback absorbs .001 suffix drift between publishes). When
+    NOTHING matches by name — the update switched steps, e.g. a model element
+    upgraded to its freshly-published rig — the old ROOT transform (preferring
+    the model's PUBLISH locator) is composed onto the new content's roots, so
+    the element stays where the artist put it. Returns how many objects got
+    their placement back."""
+    objs = (snap or {}).get("objects") or {}
+    if not objs:
         return 0
     by_base = {}
-    for name in snap:
+    for name in objs:
         by_base.setdefault(name.split(".")[0], name)
     restored = 0
     for o in holder.all_objects:
-        m = snap.get(o.name)
+        m = objs.get(o.name)
         if m is None:
             src = by_base.get(o.name.split(".")[0])
-            m = snap.get(src) if src else None
+            m = objs.get(src) if src else None
         if m is not None:
             try:
                 o.matrix_basis = m
                 restored += 1
             except Exception:  # noqa: BLE001
                 pass
+    if restored:
+        return restored
+    # Cross-step swap: carry the element's placement via its old root.
+    roots = (snap or {}).get("roots") or []
+    root_m = None
+    for name in roots:
+        m = objs.get(name)
+        if m is None:
+            continue
+        if name.split(".")[0].startswith("PUBLISH"):
+            root_m = m                    # the model's wrap root — best signal
+            break
+        if root_m is None:
+            root_m = m
+    if root_m is None or _matrix_is_identity(root_m):
+        return 0
+    for o in holder.all_objects:
+        if o.parent is not None:
+            continue
+        try:
+            o.matrix_basis = root_m @ o.matrix_basis
+            restored += 1
+        except Exception:  # noqa: BLE001
+            pass
+    if restored:
+        print(f"[Flumen] element update switched publishes with no matching "
+              f"object names — placement carried over via the old root "
+              f"transform ({restored} root object(s) moved).")
     return restored
 
 
