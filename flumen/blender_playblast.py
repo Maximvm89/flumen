@@ -183,6 +183,30 @@ def _sync_viewport_colors():
     for m in bpy.data.materials:
         if m.library is not None or not m.use_nodes or m.node_tree is None:
             continue
+        # Workbench TEXTURE mode draws each material's ACTIVE image node — if
+        # a non-image node was active when the file was saved (the artist's
+        # last click), the material renders flat grey. Point it at the
+        # base-color image (or any image) before rendering.
+        nt = m.node_tree
+        active = getattr(nt.nodes, "active", None)
+        if active is None or active.type != "TEX_IMAGE":
+            target = None
+            for nd in nt.nodes:
+                if nd.type != "BSDF_PRINCIPLED":
+                    continue
+                inp = nd.inputs.get("Base Color")
+                if (inp and inp.links
+                        and inp.links[0].from_node.type == "TEX_IMAGE"):
+                    target = inp.links[0].from_node
+                break
+            if target is None:
+                target = next((n for n in nt.nodes if n.type == "TEX_IMAGE"
+                               and n.image is not None), None)
+            if target is not None:
+                try:
+                    nt.nodes.active = target
+                except Exception:  # noqa: BLE001
+                    pass
         for node in m.node_tree.nodes:
             if node.type not in ("BSDF_PRINCIPLED", "BSDF_DIFFUSE", "EMISSION"):
                 continue

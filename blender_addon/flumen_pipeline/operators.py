@@ -2332,6 +2332,33 @@ class FLUMEN_OT_apply_look(bpy.types.Operator):
         return assigned, missing
 
 
+def _activate_base_image(mat):
+    """Make the base-color image the material's ACTIVE node. Workbench's
+    TEXTURE mode (solid viewports + our playblasts) displays the active image
+    node — if the surface artist's last click before publishing was the
+    Material Output, the whole character draws flat grey. Saved click-state
+    should never decide what dailies look like."""
+    nt = getattr(mat, "node_tree", None)
+    if nt is None:
+        return
+    target = None
+    for nd in nt.nodes:
+        if nd.type != "BSDF_PRINCIPLED":
+            continue
+        inp = nd.inputs.get("Base Color")
+        if inp and inp.links and inp.links[0].from_node.type == "TEX_IMAGE":
+            target = inp.links[0].from_node
+        break
+    if target is None:
+        target = next((n for n in nt.nodes
+                       if n.type == "TEX_IMAGE" and n.image is not None), None)
+    if target is not None:
+        try:
+            nt.nodes.active = target
+        except Exception:  # noqa: BLE001 — linked/read-only tree
+            pass
+
+
 def _apply_element_look(holder, look_data):
     """Apply a published look onto a LINKED shot element. The mesh datablocks
     are linked (read-only), so materials go on OBJECT-level slots — those are
@@ -2354,6 +2381,8 @@ def _apply_element_look(holder, look_data):
         names = list(src.materials)
         dst.materials = list(src.materials)
     mats = {nm: mat for nm, mat in zip(names, dst.materials) if mat is not None}
+    for mat in mats.values():
+        _activate_base_image(mat)          # Workbench draws the ACTIVE image
     meshes = [o for o in holder.all_objects if getattr(o, "type", "") == "MESH"]
     by_name = {o.name: o for o in meshes}
     assigned = 0
