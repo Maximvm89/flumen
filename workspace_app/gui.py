@@ -2412,11 +2412,23 @@ class MainWindow(QMainWindow):
         asset_entities = sorted({t["entity"] for t in self._tasks
                                  if t.get("type") == "asset"})
 
+        # Published look names per asset, from the already-loaded task list —
+        # no server roundtrip (surface publishes ride the task records).
+        by_id = {t.get("id"): t for t in self._tasks}
+        looks_by_asset = {}
+        for ent in asset_entities:
+            st = by_id.get(tasksmod.make_id("asset", ent, "surface"))
+            if st:
+                names = [l["look"] for l in tasksmod.published_looks(st)]
+                if names:
+                    looks_by_asset[ent] = names
+
         def done(result):
             assembly, dressings_by_asset = result
             self._busy_buttons(False)
             dlg = ElementsDialog(shot_entity, assembly, asset_entities, self,
-                                 dressings_by_asset=dressings_by_asset)
+                                 dressings_by_asset=dressings_by_asset,
+                                 looks_by_asset=looks_by_asset)
             if dlg.exec() != QDialog.Accepted:
                 return
             new_assembly = dlg.assembly()
@@ -2900,12 +2912,13 @@ class ElementsDialog(QDialog):
     the caller saves it via elements.save_assembly. No network here."""
 
     def __init__(self, shot_entity, assembly, asset_entities, parent=None,
-                 dressings_by_asset=None):
+                 dressings_by_asset=None, looks_by_asset=None):
         super().__init__(parent)
         from flumen import elements as E
         self._E = E
         self._asset_entities = list(asset_entities or [])
         self._dressings = dict(dressings_by_asset or {})
+        self._looks = dict(looks_by_asset or {})
         self._assembly = E.normalize(dict(assembly), shot_entity)
         self.setWindowTitle(f"Elements — {shot_entity}")
         self.setMinimumWidth(560)
@@ -2920,14 +2933,17 @@ class ElementsDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
+        # Double-click a Look cell -> dropdown of the asset's published looks.
+        self.table.cellDoubleClicked.connect(self._edit_look)
         root.addWidget(self.table, 1)
 
         add_row = QHBoxLayout()
         self.cb_asset = QComboBox()
         self.cb_asset.addItems(self._asset_entities)
         self.cb_asset.currentTextChanged.connect(self._refresh_dressing_choices)
-        self.ed_look = QLineEdit()
-        self.ed_look.setPlaceholderText("look (optional)")
+        self.ed_look = QComboBox()
+        self.ed_look.setEditable(True)          # published looks + free typing
+        self.ed_look.lineEdit().setPlaceholderText("look (optional)")
         # Dressing choice — only meaningful for environments with published
         # dressings; disabled otherwise.
         self.cb_dressing = QComboBox()
@@ -2985,13 +3001,42 @@ class ElementsDialog(QDialog):
         end = start + max(1, self.spin_duration.value()) - 1
         self.lbl_range.setText(f"→ frames {start}–{end}")
 
+    def _edit_look(self, row: int, col: int):
+        """Double-click on a Look cell: pick from the asset's PUBLISHED looks
+        (blank = the default look at build time). Free typing stays possible
+        for a look that hasn't been published yet."""
+        if col != 3 or row >= len(self._assembly["elements"]):
+            return
+        e = self._assembly["elements"][row]
+        if e.get("kind") != "asset":
+            return
+        published = self._looks.get(e.get("asset", "")) or []
+        none_label = "(default)"
+        items = [none_label] + published
+        cur = e.get("look", "")
+        idx = items.index(cur) if cur in items else 0
+        choice, ok = QInputDialog.getItem(
+            self, f"Look — {e.get('asset', '')}",
+            "Published looks (or type a new name):", items, idx, True)
+        if not ok:
+            return
+        choice = choice.strip()
+        e["look"] = "" if choice == none_label else choice
+        self._reload()
+
     def _refresh_dressing_choices(self):
-        names = self._dressings.get(self.cb_asset.currentText().strip()) or []
+        ent = self.cb_asset.currentText().strip()
+        names = self._dressings.get(ent) or []
         self.cb_dressing.clear()
         self.cb_dressing.addItem("")                 # no dressing
         for n in names:
             self.cb_dressing.addItem(n)
         self.cb_dressing.setEnabled(bool(names))
+        # the add-row look dropdown follows the chosen asset too
+        self.ed_look.clear()
+        self.ed_look.addItem("")                     # default look
+        for n in self._looks.get(ent) or []:
+            self.ed_look.addItem(n)
 
     def _add_asset(self):
         ent = self.cb_asset.currentText().strip()
@@ -2999,10 +3044,11 @@ class ElementsDialog(QDialog):
             return
         self._E.add_element(self._assembly,
                             self._E.new_element(ent, "asset",
-                                                look=self.ed_look.text().strip(),
+                                                look=self.ed_look.currentText()
+                                                .strip(),
                                                 dressing=self.cb_dressing
                                                 .currentText().strip()))
-        self.ed_look.clear()
+        self.ed_look.setCurrentText("")
         self._reload()
 
     def _add_camera(self):

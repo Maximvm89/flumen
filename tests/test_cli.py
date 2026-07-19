@@ -683,3 +683,51 @@ def test_resolve_assembly_list_includes_anim_metadata(monkeypatch, capsys,
     assert fr["version"] == "v001" and fr["objects"] == {"frank_rig": "A"}
     assert "blend_local" not in fr                       # metadata only
     assert srv.downloads == []                           # nothing fetched
+
+
+def test_resolve_assembly_resolves_looks_at_build(monkeypatch, capsys,
+                                                  tmp_path):
+    # Build-time looks: every asset element resolves its look (element.look,
+    # else 'default') from the asset's surface publishes — metadata in --list,
+    # fetched for a real build. Shading never depends on the geometry publish.
+    import json
+    from flumen import turntable, elements as E
+    monkeypatch.setattr(turntable, "_load_project_settings", lambda _r: {})
+    srv = _DownloadSrv()
+    ent = "characters/frankenstein"
+    tasks.save_task(srv, "/r", tasks.new_task("asset", ent, "model"))
+    tasks.publish_task(srv, "/r", "marco", ["/tmp/frankenstein_model_v001.blend"],
+                       tasks.make_id("asset", ent, "model"))
+    st = tasks.save_task(srv, "/r", tasks.new_task("asset", ent, "surface"))
+    pub = "03_assets/characters/frankenstein/surface/publish"
+    st["publishes"] = [{"files": [pub + "/frankenstein_surface_default_v002.blend",
+                                  pub + "/frankenstein_surface_default_v002"
+                                        ".manifest.json"],
+                        "time": 1, "by": "marco"}]
+    tasks.save_task(srv, "/r", st)
+    shot = "SEQ010/SH0010"
+    shot_task = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    asm = E.empty_assembly(shot)
+    E.add_element(asm, E.new_element(ent))
+    E.save_assembly(srv, "/r", shot, asm)
+
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    # --list: metadata only, nothing downloaded
+    rc = cli.cmd_resolve_assembly(_args(task=shot_task["id"], shot=None,
+                                        step=None, list=True, only=[], pick=[]))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    fr = out["elements"][0]
+    assert fr["look_data"] == {"name": "default", "version": 2}
+    assert srv.downloads == []
+    # real build: the look blend + manifest download
+    rc = cli.cmd_resolve_assembly(_args(task=shot_task["id"], shot=None,
+                                        step=None, list=False, only=[],
+                                        pick=[]))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    ld = out["elements"][0]["look_data"]
+    assert ld["blend_local"].endswith("frankenstein_surface_default_v002.blend")
+    got = [r for r, _l in srv.downloads]
+    assert any(r.endswith("_v002.blend") for r in got)
+    assert any(r.endswith(".manifest.json") for r in got)

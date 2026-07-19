@@ -2332,6 +2332,56 @@ class FLUMEN_OT_apply_look(bpy.types.Operator):
         return assigned, missing
 
 
+def _apply_element_look(holder, look_data):
+    """Apply a published look onto a LINKED shot element. The mesh datablocks
+    are linked (read-only), so materials go on OBJECT-level slots — those are
+    override-editable. Assignment matches the look manifest's mesh names with
+    the same per-holder base-name fallback the anim apply uses (the manifest
+    carries the surface file's clean names; this scene may have suffixed them).
+    Returns how many meshes got the look."""
+    blend = look_data.get("blend_local") or ""
+    if not (blend and os.path.isfile(blend)):
+        return 0
+    try:
+        manifest = json.load(open(blend[:-6] + ".manifest.json"))
+    except Exception:  # noqa: BLE001
+        manifest = {}
+    assignments = manifest.get("assignments") or {}
+    if not assignments:
+        return 0
+    names = []
+    with bpy.data.libraries.load(blend, link=False) as (src, dst):
+        names = list(src.materials)
+        dst.materials = list(src.materials)
+    mats = {nm: mat for nm, mat in zip(names, dst.materials) if mat is not None}
+    meshes = [o for o in holder.all_objects if getattr(o, "type", "") == "MESH"]
+    by_name = {o.name: o for o in meshes}
+    assigned = 0
+    for mesh_name, slot_mats in assignments.items():
+        obj = by_name.get(mesh_name)
+        if obj is None:                       # suffix drift: unique base match
+            base = mesh_name.split(".")[0]
+            cands = [o for o in meshes if o.name.split(".")[0] == base]
+            obj = cands[0] if len(cands) == 1 else None
+        if obj is None:
+            continue
+        ok = False
+        for i, mname in enumerate(slot_mats):
+            if i >= len(obj.material_slots):
+                break                          # linked mesh defines the slots
+            mat = mats.get(mname) if mname else None
+            slot = obj.material_slots[i]
+            try:
+                if slot.link != "OBJECT":
+                    slot.link = "OBJECT"       # object slots are override-safe
+                slot.material = mat
+                ok = True
+            except Exception:  # noqa: BLE001
+                pass
+        assigned += bool(ok)
+    return assigned
+
+
 class FLUMEN_OT_preview_turntable(bpy.types.Operator):
     bl_idname = "flumen.preview_turntable"
     bl_label = "Preview Turntable Framing"
@@ -3735,8 +3785,13 @@ def _element_update_notes(el, holder, anim_meta):
     `anim_meta` is resolve-assembly's per-element anim info ({id: {version,…}})."""
     eid = str(el.get("id", ""))
     avail = (anim_meta.get(eid) or {}).get("version", "")
+    ld = el.get("look_data") or {}
+    look_avail = (f"{ld.get('name', '')} v{int(ld.get('version', 0)):03d}"
+                  if ld else "")
     if holder is None:                       # not in the scene yet
         base = _element_detail(el, False)
+        if look_avail:
+            base += f"  ·  look {look_avail} will apply"
         if avail:
             base += f"  ·  anim {avail} will apply"
         return base, False
@@ -3761,6 +3816,16 @@ def _element_update_notes(el, holder, anim_meta):
             v = _publish_version_label(loaded)
             step = el.get("source_step", "")
             notes.append(f"{step} {v} ✓".strip())
+    if look_avail:
+        cur_look = str(holder.get("flumen_look", "") or "")
+        if cur_look == look_avail:
+            notes.append(f"look {look_avail} ✓")
+        elif cur_look:
+            notes.append(f"new look {look_avail} (scene has {cur_look})")
+            update = True
+        else:
+            notes.append(f"look {look_avail} available")
+            update = True
     applied = str(holder.get("flumen_anim", "") or "")
     if avail:
         if applied == avail:
@@ -3973,6 +4038,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         anim_elements = ((data or {}).get("anim") or {}).get("elements") or {}
 
         built, skipped, repaired, animated, dressed = [], [], [], 0, 0
+        looked = 0
         snapshots, placement_kept = {}, 0
         for el in elements:
             eid = str(el.get("id", ""))
@@ -4018,6 +4084,22 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if el.get("dressing_error"):
                 print(f"[Flumen] dressing warning ({el.get('id')}): "
                       f"{el['dressing_error']}")
+            # The element's look, applied at build time: shading comes from the
+            # look publish, never from what the geometry publish carried.
+            ld = el.get("look_data")
+            if holder and isinstance(ld, dict) and ld.get("blend_local"):
+                try:
+                    n_look = _apply_element_look(holder, ld)
+                except Exception as exc:  # noqa: BLE001
+                    print("[Flumen] could not apply look:", exc)
+                    n_look = 0
+                if n_look:
+                    holder["flumen_look"] = (f"{ld.get('name', '')} "
+                                             f"v{int(ld.get('version', 0)):03d}")
+                    looked += 1
+            if el.get("look_error"):
+                print(f"[Flumen] look warning ({el.get('id')}): "
+                      f"{el['look_error']}")
             # Re-apply this element's published animation (its own newest version).
             ael = anim_elements.get(el.get("id"))
             if holder and ael and ael.get("blend_local") and ael.get("objects"):
@@ -4045,6 +4127,8 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                          f"animation kept)")
         if dressed:
             parts.append(f"placed {dressed} dressing prop(s)")
+        if looked:
+            parts.append(f"applied looks on {looked} element(s)")
         if animated:
             parts.append(f"re-applied animation to {animated} object(s)")
         if tl_msg:

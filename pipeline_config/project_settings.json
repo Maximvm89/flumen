@@ -96,13 +96,13 @@
         "source_step": "rig",
         "fallback_step": "model",
         "load": "link",
-        "apply_look": false
+        "apply_look": true
       },
       "animation": {
         "source_step": "rig",
         "fallback_step": "model",
         "load": "link",
-        "apply_look": false
+        "apply_look": true
       },
       "lighting": {
         "source_step": "cache",

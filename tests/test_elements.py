@@ -93,7 +93,9 @@ def test_resolve_element_mapping_per_step():
     for step in ("layout", "animation"):
         spec = E.resolve_element(e, step)
         assert spec["source_step"] == "rig" and spec["fallback_step"] == "model"
-        assert spec["load"] == "link" and spec["apply_look"] is False
+        # looks apply at BUILD time on every scene step — shading comes from
+        # the look publish, not whatever the geometry publish happened to carry
+        assert spec["load"] == "link" and spec["apply_look"] is True
     light = E.resolve_element(e, "lighting")
     assert light["load"] == "alembic" and light["apply_look"] is True
     assert E.resolve_element(e, "comp") is None

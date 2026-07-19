@@ -31,10 +31,13 @@ DEFAULT_DURATION = 100
 # "assembly":{"representations":{...}}. Only the `layout` slice is wired in this
 # build; the rest define the seam for the lighting/alembic round.
 DEFAULT_REPRESENTATIONS = {
+    # apply_look: Build shot fetches each element's look (element.look, else
+    # 'default') and assigns its materials onto the linked content — shading
+    # comes from the LOOK publish at build time, never baked geometry publishes.
     "layout":    {"source_step": "rig", "fallback_step": "model",
-                  "load": "link", "apply_look": False},
+                  "load": "link", "apply_look": True},
     "animation": {"source_step": "rig", "fallback_step": "model",
-                  "load": "link", "apply_look": False},
+                  "load": "link", "apply_look": True},
     "lighting":  {"source_step": "cache", "fallback_step": "model",
                   "load": "alembic", "apply_look": True},
     "comp":      None,   # comp consumes renders, not scene elements

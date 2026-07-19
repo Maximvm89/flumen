@@ -974,6 +974,42 @@ def cmd_resolve_assembly(args) -> int:
                      "look": r.get("look", ""), "load": r.get("load", "link"),
                      "apply_look": r.get("apply_look", False),
                      "camera_name": r.get("camera_name", "")}
+            # Look resolution at BUILD time: every asset element gets its
+            # chosen look (element.look, else 'default') fetched so Build shot
+            # can assign the materials — shading always comes from the look
+            # publish, never from whatever the geometry publish had baked in.
+            if r["kind"] != "camera" and r.get("apply_look"):
+                lname = r.get("look") or "default"
+                stask = T.get_task(client, rr,
+                                   T.make_id("asset", r["asset"], "surface"))
+                sel = next((l for l in (T.published_looks(stask) if stask
+                                        else []) if l["look"] == lname), None)
+                if sel:
+                    ld = {"name": lname, "version": sel["version"]}
+                    if not args.list:
+                        lb = os.path.join(local_root,
+                                          *sel["blend_rel"].split("/"))
+                        client.download(rr + "/" + sel["blend_rel"], lb)
+                        client.download(
+                            rr + "/" + sel["manifest_rel"],
+                            os.path.join(local_root,
+                                         *sel["manifest_rel"].split("/")))
+                        pd = sel["blend_rel"].rsplit("/", 1)[0] + "/textures"
+                        if pd not in tex_seen:
+                            tex_seen.add(pd)
+                            try:
+                                client.download_dir(
+                                    rr + "/" + pd,
+                                    os.path.join(local_root, *pd.split("/")))
+                            except Exception:  # noqa: BLE001 — no textures
+                                pass
+                        ld["blend_local"] = lb
+                    entry["look_data"] = ld
+                elif r.get("look"):
+                    # only an EXPLICITLY chosen look that's missing is an error;
+                    # a missing 'default' just means no look published yet.
+                    entry["look_error"] = (f"no published look '{lname}' "
+                                           f"on {r['asset']}")
             # Environment element with a named set-dressing: resolve the newest
             # published version of that name, inline its manifest and fetch each
             # prop's publish so Build shot only has to link + place.
