@@ -2453,12 +2453,17 @@ class MainWindow(QMainWindow):
                       or self.cfg.resolved_local_root())
         self.cfg.local_root = local_root
         cfg, creds = self.cfg, self._creds()
-        work_rel = tasksmod.task_work_rel(task)
+        # Caching ALWAYS operates on the shot's animation step — resolve the
+        # animated rigs and publish caches there — no matter which task row was
+        # right-clicked (lighting, comp…). Build the animation task context.
+        entity = task.get("entity", "")
+        anim_id = tasksmod.make_id("shot", entity, "animation")
+        work_rel = f"04_sequences/{entity}/animation/work"
         extra_env = {
-            "FLUMEN_TASK_ID": task.get("id", ""),
-            "FLUMEN_TASK_TYPE": task.get("type", ""),
-            "FLUMEN_TASK_ENTITY": task.get("entity", ""),
-            "FLUMEN_TASK_STEP": task.get("step", ""),
+            "FLUMEN_TASK_ID": anim_id,
+            "FLUMEN_TASK_TYPE": "shot",
+            "FLUMEN_TASK_ENTITY": entity,
+            "FLUMEN_TASK_STEP": "animation",
             "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
             "FLUMEN_CACHE_SHOT": "1",
             "FLUMEN_CACHE_ONLY": ",".join(only_ids),
