@@ -92,8 +92,12 @@ def main():
 
     r = scene.render
     # --- project final render settings, with per-shot overrides -------------
-    engine = _env("FLUMEN_RENDER_ENGINE", "CYCLES")
-    for eng in (engine, "CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):
+    # Engine enum names differ by Blender version (EEVEE is BLENDER_EEVEE in
+    # some builds, BLENDER_EEVEE_NEXT in others) — try the aliases.
+    want = _env("FLUMEN_RENDER_ENGINE", "BLENDER_EEVEE")
+    aliases = ([want] if "CYCLES" in want
+               else ["BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"])
+    for eng in aliases + ["CYCLES"]:
         try:
             r.engine = eng
             break
@@ -123,6 +127,13 @@ def main():
                 scene.eevee.taa_render_samples = int(samples)
         except Exception as exc:  # noqa: BLE001
             print("[render] could not set samples:", exc)
+    # EEVEE raytracing (the finals' engine) — required for the eye-shader
+    # switch and screen-space reflections/refraction. EEVEE renders on the GPU.
+    if r.engine != "CYCLES" and _env("FLUMEN_RENDER_RAYTRACING", "") in ("0", "1"):
+        try:
+            scene.eevee.use_raytracing = _env("FLUMEN_RENDER_RAYTRACING") == "1"
+        except Exception as exc:  # noqa: BLE001
+            print("[render] could not set raytracing:", exc)
     fps = _env("FLUMEN_RENDER_FPS")
     if fps:
         try:
@@ -153,9 +164,8 @@ def main():
           f"@ {r.resolution_percentage}% · {nframes} frame(s) "
           f"{scene.frame_start}-{scene.frame_end} · cam={scene.camera.name}",
           flush=True)
-    print(f"[render] starting — a final {r.engine} render, expect minutes per "
-          f"frame. Per-frame progress follows; Cycles also prints per-sample "
-          f"status below.", flush=True)
+    print(f"[render] starting — final {r.engine} render on the GPU. Per-frame "
+          f"progress follows.", flush=True)
     bpy.ops.render.render(animation=True)
     print("[render] done.", flush=True)
 

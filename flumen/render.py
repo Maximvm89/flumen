@@ -94,18 +94,26 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
     ocio = _resolve_ocio(local_root)
     if ocio:
         env["BLENDER_OCIO"] = ocio
+    engine = str(rnd.get("engine", "BLENDER_EEVEE"))
     cyc = rnd.get("cycles") or {}
+    eev = rnd.get("eevee") or {}
+    # Samples: override wins, else the engine's own project block.
+    proj_samples = (cyc.get("samples") if "CYCLES" in engine
+                    else eev.get("taa_render_samples"))
     env.update({
         "FLUMEN_RENDER_FRAMES_DIR": frames_dir,
-        "FLUMEN_RENDER_ENGINE": str(rnd.get("engine", "CYCLES")),
+        "FLUMEN_RENDER_ENGINE": engine,
         "FLUMEN_RENDER_RESX": str(rnd.get("resolution_x", "")),
         "FLUMEN_RENDER_RESY": str(rnd.get("resolution_y", "")),
         "FLUMEN_RENDER_RESPCT": str(respct if respct is not None
                                     else rnd.get("resolution_percentage", 100)),
         "FLUMEN_RENDER_SAMPLES": str(samples if samples is not None
-                                     else cyc.get("samples", "")),
+                                     else (proj_samples or "")),
         "FLUMEN_RENDER_DENOISE": "0" if cyc.get("use_denoising") is False else "1",
         "FLUMEN_RENDER_DEVICE": str(cyc.get("device", "")),
+        # EEVEE raytracing — the finals' engine; the eye-shader switch needs it.
+        "FLUMEN_RENDER_RAYTRACING":
+            "1" if eev.get("use_raytracing") else "0",
         "FLUMEN_RENDER_FPS": str(rnd.get("fps", "")),
         "FLUMEN_RENDER_FILM_TRANSPARENT":
             "1" if rnd.get("film_transparent") else "0",
