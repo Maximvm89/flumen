@@ -57,10 +57,18 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
                             _bundled_path, record_turntable)
 
     local_root = cfg.resolved_local_root()
-    settings = _load_project_settings(local_root)
-    rnd = _project_render(settings)
 
     with SFTPClient(creds, dry_run=dry_run) as client:
+        # Refresh project_settings.json from the server first — the render
+        # settings (engine EEVEE vs Cycles, samples, raytracing) are the single
+        # source of truth, and the local mirror only syncs on a Blender launch.
+        if not dry_run:
+            try:
+                ps_rel = "02_pipeline/project_settings.json"
+                client.download(cfg.remote_root.rstrip("/") + "/" + ps_rel,
+                                os.path.join(local_root, *ps_rel.split("/")))
+            except Exception:  # noqa: BLE001 — fall back to the local copy
+                pass
         task = T.get_task(client, cfg.remote_root, task_id) if not dry_run else \
             {"entity": "?", "step": "lighting", "id": task_id}
         if not task or task.get("type", "shot") != "shot":
@@ -69,6 +77,9 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
         entity = task["entity"]
         blend = None if dry_run else _latest_work_blend(client, cfg, task,
                                                         local_root)
+
+    settings = _load_project_settings(local_root)
+    rnd = _project_render(settings)
     if not dry_run and not blend:
         print("error: no lighting work file to render — the lighter must save "
               "the shot into the task first.")
