@@ -17,6 +17,8 @@ ROOT = os.path.abspath(os.getcwd())
 # Plus the imageio-ffmpeg binary so MP4 encoding works on a machine with no ffmpeg.
 datas = [(os.path.join(ROOT, "flumen", "blender_turntable.py"), "flumen"),
          (os.path.join(ROOT, "flumen", "blender_playblast.py"), "flumen"),
+         (os.path.join(ROOT, "flumen", "blender_render.py"), "flumen"),
+         (os.path.join(ROOT, "flumen", "blender_cache_shot.py"), "flumen"),
          (os.path.join(ROOT, "flumen", "blender_bootstrap.py"), "flumen"),
          (os.path.join(ROOT, "packaging", "flumen.png"), ".")]  # runtime window icon
 datas += collect_data_files("imageio_ffmpeg")

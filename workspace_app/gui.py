@@ -2386,6 +2386,11 @@ class MainWindow(QMainWindow):
         # a Lighting build imports. Shots only.
         act_cache = (menu.addAction("Cache shot (Alembic)…")
                      if t.get("type") == "shot" else None)
+        # Render shot: final-render the lighting work file (headless), publish
+        # the PNG sequence + review MP4. Lighting tasks only.
+        act_render = (menu.addAction("Render shot…")
+                      if (t.get("type") == "shot"
+                          and t.get("step") == "lighting") else None)
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         act_delete.setEnabled(self._can_delete_remote())
@@ -2405,8 +2410,44 @@ class MainWindow(QMainWindow):
             self._open_elements_editor(t)
         elif act_cache is not None and chosen == act_cache:
             self._cache_shot(t, work_abs)
+        elif act_render is not None and chosen == act_render:
+            self._render_shot(t)
         elif chosen == act_delete:
             self._delete_task(t)
+
+    def _render_shot(self, task: dict):
+        """Right-click 'Render shot': final-render the lighting work file
+        headless (project settings + optional per-shot overrides), publish the
+        PNG sequence + review MP4. Runs on the Job thread."""
+        if not self.cfg:
+            return
+        dlg = RenderShotDialog(task.get("entity", ""), self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        ov = dlg.overrides()
+        cfg, creds = self.cfg, self._creds()
+        tid = task["id"]
+
+        def work():
+            from flumen import render as R
+            return R.run_render(cfg, creds, tid, **ov)  # self-contained conn
+
+        def done(rc):
+            self._busy_buttons(False)
+            if rc == 0:
+                self.status.showMessage(
+                    f"Rendered {task.get('entity')} — sequence in 06_renders, "
+                    f"review clip in Dailies.")
+            else:
+                QMessageBox.warning(
+                    self, "Render failed",
+                    "The render returned an error — no lighting work file, a "
+                    "missing linked publish, or no camera. See "
+                    "~/.flumen/blender.log.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done,
+                    busy_msg=f"Rendering {task.get('entity')} (final — slow)…")
 
     def _cache_shot(self, task: dict, work_abs: str):
         """Right-click 'Cache shot': show a dialog of the shot's rigged
@@ -3251,6 +3292,59 @@ class CacheShotDialog(QDialog):
     def selected_ids(self) -> list:
         return [row["id"] for b, row in zip(self._boxes, self._plan)
                 if b.isChecked()]
+
+
+class RenderShotDialog(QDialog):
+    """Final-render options: project settings by default, with per-shot
+    overrides (samples, resolution %, frame range)."""
+
+    def __init__(self, shot_entity, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Render shot — {shot_entity}")
+        self.setMinimumWidth(420)
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(
+            "Final-render the lighting work file with the project's render "
+            "settings. Leave a field at 0 / blank to use the project default; "
+            "set it to override just this shot."))
+        form = QFormLayout()
+        self.sp_samples = QSpinBox()
+        self.sp_samples.setRange(0, 20000)
+        self.sp_samples.setSpecialValueText("project default")
+        self.sp_samples.setValue(0)
+        form.addRow("Samples override:", self.sp_samples)
+        self.sp_respct = QSpinBox()
+        self.sp_respct.setRange(0, 100)
+        self.sp_respct.setSpecialValueText("project default")
+        self.sp_respct.setValue(0)
+        self.sp_respct.setSuffix(" %")
+        form.addRow("Resolution override:", self.sp_respct)
+        self.ed_range = QLineEdit()
+        self.ed_range.setPlaceholderText("whole shot (e.g. 1001-1010)")
+        form.addRow("Frame range:", self.ed_range)
+        root.addLayout(form)
+        root.addWidget(QLabel("A final render can be slow. The PNG sequence "
+                              "goes to 06_renders and a review MP4 to Dailies."))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Render")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def overrides(self) -> dict:
+        ov = {"samples": None, "respct": None, "start": None, "end": None}
+        if self.sp_samples.value() > 0:
+            ov["samples"] = self.sp_samples.value()
+        if self.sp_respct.value() > 0:
+            ov["respct"] = self.sp_respct.value()
+        txt = self.ed_range.text().strip()
+        if "-" in txt:
+            a, b = txt.split("-", 1)
+            try:
+                ov["start"], ov["end"] = int(a), int(b)
+            except ValueError:
+                pass
+        return ov
 
 
 class BugReportDialog(QDialog):

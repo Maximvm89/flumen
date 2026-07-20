@@ -1114,6 +1114,19 @@ def cmd_resolve_assembly(args) -> int:
     return 0
 
 
+def cmd_render(args) -> int:
+    """Final-render a lighting shot's saved work file (project render settings +
+    per-shot overrides), publish the PNG sequence to 06_renders and a review
+    MP4 to 07_dailies."""
+    cfg = ProjectConfig.load(args.config)
+    creds = (SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
+             if args.dry_run else SFTPCredentials.from_env(args.env))
+    from . import render as R
+    return R.run_render(cfg, creds, args.task,
+                        samples=args.samples, respct=args.respct,
+                        start=args.start, end=args.end, dry_run=args.dry_run)
+
+
 def cmd_publish_lights(args) -> int:
     """Publish a lighting task's light rig (the LIGHTS collection, written to a
     .blend by the add-on) into the lighting publish folder, versioned, recorded
@@ -1559,6 +1572,17 @@ def build_parser() -> argparse.ArgumentParser:
     ra.add_argument("--pick", action="append", default=[],
                     help="override an element's step as id=step (repeatable)")
     ra.set_defaults(func=cmd_resolve_assembly)
+
+    rnd2 = sub.add_parser("render", parents=[common],
+                          help="final-render a lighting shot's work file")
+    rnd2.add_argument("--task", required=True, help="lighting shot task id")
+    rnd2.add_argument("--samples", type=int, default=None,
+                      help="override render samples for this shot")
+    rnd2.add_argument("--respct", type=int, default=None,
+                      help="override resolution percentage")
+    rnd2.add_argument("--start", type=int, default=None, help="override start frame")
+    rnd2.add_argument("--end", type=int, default=None, help="override end frame")
+    rnd2.set_defaults(func=cmd_render)
 
     pl2 = sub.add_parser("publish-lights", parents=[common],
                          help="publish a lighting task's light rig")
