@@ -451,3 +451,48 @@ def test_anim_manifest_contents_flow_through_resolution():
                   '{"version":2,"elements":{"camera":{"cam":"a"}}}')
     ra = E.resolved_animation(s, "/r", shot, "animation")
     assert ra["elements"]["camera"]["content"] == ""
+
+
+# ---- alembic caches (lighting inputs) --------------------------------------
+
+def _publish_cache_files(s, shot, step, files):
+    tid = tasks.make_id("shot", shot, step)
+    if not tasks.get_task(s, "/r", tid):
+        tasks.save_task(s, "/r", tasks.new_task("shot", shot, step))
+    t = tasks.get_task(s, "/r", tid)
+    t["publishes"] = (t.get("publishes") or []) + [{
+        "files": files, "time": 1, "by": "marco", "kind": "cache"}]
+    tasks.save_task(s, "/r", t)
+
+
+def test_cache_name_and_parse_roundtrip():
+    assert E.cache_name("skeleton", 3) == "skeleton_v003.abc"
+    assert E.parse_cache_name("skeleton_v003.abc") == ("skeleton", 3)
+    assert E.parse_cache_name("skeleton_1_v012.abc") == ("skeleton_1", 12)
+    assert E.parse_cache_name("not_a_cache.blend") is None
+
+
+def test_published_caches_newest_per_element():
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    cdir = E.cache_dir_rel(shot)
+    _publish_cache_files(s, shot, "animation",
+                         [cdir + "/skeleton_v001.abc", cdir + "/orso_v001.abc"])
+    _publish_cache_files(s, shot, "animation",
+                         [cdir + "/skeleton_v002.abc"])          # re-cache skel
+    t = tasks.get_task(s, "/r", tasks.make_id("shot", shot, "animation"))
+    caches = E.published_caches(t)
+    assert caches["skeleton"]["version"] == 2                    # newest wins
+    assert caches["orso"]["version"] == 1                        # untouched
+    assert E.next_cache_version(t, "skeleton") == 3
+    assert E.next_cache_version(t, "brand_new") == 1
+
+
+def test_resolved_caches_reads_animation_step():
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    cdir = E.cache_dir_rel(shot)
+    _publish_cache_files(s, shot, "animation", [cdir + "/skeleton_v004.abc"])
+    rc = E.resolved_caches(s, "/r", shot)
+    assert rc["skeleton"]["rel"].endswith("skeleton_v004.abc")
+    assert E.resolved_caches(s, "/r", "SEQ999/NOPE") == {}

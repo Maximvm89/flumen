@@ -44,6 +44,7 @@ ACTIONS = {
     "flumen.build_shot": {"text": "Build shot",
                           "icon": "OUTLINER_OB_GROUP_INSTANCE"},
     "flumen.load_animation": {"text": "Load animation…", "icon": "ANIM_DATA"},
+    "flumen.cache_shot": {"text": "Cache shot (Alembic)…", "icon": "FILE_CACHE"},
     "flumen.cycle_format": {"text": "Preview format (16:9 ⇄ 9:16)",
                             "icon": "ARROW_LEFTRIGHT"},
     "flumen.preview_playblast": {"text": "Preview playblast",

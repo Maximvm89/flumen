@@ -296,6 +296,17 @@ def resolved_elements(sftp, remote_root: str, shot_entity: str, step: str,
     return out
 
 
+def resolved_caches(sftp, remote_root: str, shot_entity: str,
+                    step: str = "animation") -> dict:
+    """Newest published alembic cache per element for a shot, from the step that
+    publishes caches (animation): {element_id: {rel, version, by}}. Drives the
+    lighting build — each animated character loads its latest cache."""
+    from . import tasks
+    t = tasks.get_task(sftp, remote_root,
+                       tasks.make_id("shot", shot_entity, step))
+    return published_caches(t) if t else {}
+
+
 def newest_dressing(sftp, remote_root: str, asset_entity: str,
                     dressing_name: str) -> dict | None:
     """The newest published version of a NAMED set-dressing on an environment
@@ -407,6 +418,55 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
                         "elements": elements, "hashes": hashes,
                         "contents": contents})
     return out
+
+
+CACHE_SUFFIX = ".abc"
+
+
+def cache_dir_rel(shot_entity: str, step: str = "animation") -> str:
+    """Where a shot's alembic caches live: the animation step's publish/cache."""
+    return f"{SEQ_ROOT}/{shot_entity}/{step}/publish/cache"
+
+
+def cache_name(element_id: str, version: int) -> str:
+    return f"{element_id}_v{version:03d}{CACHE_SUFFIX}"
+
+
+_CACHE_RE = re.compile(r"^(.+)_v(\d+)\.abc$")
+
+
+def parse_cache_name(name: str):
+    """'skeleton_v003.abc' -> ('skeleton', 3), else None."""
+    import os as _os
+    m = _CACHE_RE.match(_os.path.basename(name or ""))
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def published_caches(task: dict) -> dict:
+    """Newest published alembic cache per element from a shot task's history:
+    {element_id: {version, rel, time, by}}. Fed to the lighting build so each
+    animated character resolves to its latest cache, element by element."""
+    import os as _os
+    best: dict[str, dict] = {}
+    for rec in task.get("publishes") or []:
+        for rel in rec.get("files") or []:
+            if not rel.endswith(CACHE_SUFFIX):
+                continue
+            parsed = parse_cache_name(_os.path.basename(rel))
+            if not parsed:
+                continue
+            eid, ver = parsed
+            cur = best.get(eid)
+            if cur is None or ver > cur["version"]:
+                best[eid] = {"version": ver, "rel": rel,
+                             "time": rec.get("time"), "by": rec.get("by")}
+    return best
+
+
+def next_cache_version(task: dict, element_id: str) -> int:
+    """The next cache version number for an element (1 if none yet)."""
+    cur = published_caches(task).get(element_id)
+    return (cur["version"] + 1) if cur else 1
 
 
 def latest_anim_hashes(anims: list[dict]) -> dict:

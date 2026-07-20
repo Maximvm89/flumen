@@ -948,11 +948,29 @@ def cmd_resolve_assembly(args) -> int:
         resolved = E.resolved_elements(client, rr, shot_entity, step, settings,
                                        picks=picks)
         only = set(args.only or [])
+        # Lighting: each animated element loads its newest published ALEMBIC
+        # cache (geometry) instead of the rig; the look re-applies onto it.
+        caches = (E.resolved_caches(client, rr, shot_entity)
+                  if any(r.get("load") == "alembic" for r in resolved) else {})
         out = []
         tex_seen: set = set()
         for r in resolved:
             if only and r["id"] not in only:         # --only: just these elements
                 continue
+            # An asset resolved as 'alembic' (lighting) whose cache exists ->
+            # swap the blend link for the cache; no cache yet -> fall back to
+            # the geometry publish already resolved (rig/model), so a
+            # partially-cached shot still builds.
+            cache = caches.get(r["id"]) if r.get("load") == "alembic" else None
+            if cache:
+                clocal = ""
+                if not args.list:
+                    clocal = os.path.join(local_root, *cache["rel"].split("/"))
+                    client.download(rr + "/" + cache["rel"], clocal)
+                r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
+                         cache_version=cache["version"])
+            elif r.get("load") == "alembic":
+                r = dict(r, load="link")             # no cache — link the geo
             rel = r.get("blend_rel") or ""
             local = ""
             # --list previews the breakdown without downloading anything; otherwise
@@ -973,7 +991,10 @@ def cmd_resolve_assembly(args) -> int:
                      "available_steps": r.get("available_steps", []),
                      "look": r.get("look", ""), "load": r.get("load", "link"),
                      "apply_look": r.get("apply_look", False),
-                     "camera_name": r.get("camera_name", "")}
+                     "camera_name": r.get("camera_name", ""),
+                     "cache_rel": r.get("cache_rel", ""),
+                     "cache_local": r.get("cache_local", ""),
+                     "cache_version": r.get("cache_version", 0)}
             # Look resolution at BUILD time: every asset element gets its
             # chosen look (element.look, else 'default') fetched so Build shot
             # can assign the materials — shading always comes from the look
@@ -1090,6 +1111,54 @@ def cmd_resolve_assembly(args) -> int:
     if anim:
         result["anim"] = anim
     print(json.dumps(result))
+    return 0
+
+
+def cmd_publish_cache(args) -> int:
+    """Upload alembic caches (one per element) into the shot step's publish/cache
+    folder and record them on the task. Each --cache is 'element_id=/local/x.abc';
+    the server assigns the next version per element. Drives the anim caching tool."""
+    import time as _time
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import tasks as T, elements as E
+    rr = cfg.remote_root.rstrip("/")
+    pairs = []
+    for spec in args.cache or []:
+        if "=" not in spec:
+            print(f"error: bad --cache '{spec}' (want element_id=/path.abc)",
+                  file=sys.stderr)
+            return 1
+        eid, path = spec.split("=", 1)
+        if not os.path.isfile(path):
+            print(f"error: cache file not found: {path}", file=sys.stderr)
+            return 1
+        pairs.append((eid, path))
+    if not pairs:
+        print("error: no --cache given", file=sys.stderr)
+        return 1
+    with SFTPClient(creds) as client:
+        task = T.get_task(client, rr, args.task)
+        if not task or task.get("type") != "shot":
+            print(f"error: not a shot task: {args.task}", file=sys.stderr)
+            return 1
+        shot_entity = task["entity"]
+        cache_dir = E.cache_dir_rel(shot_entity, task["step"])
+        files, published = [], []
+        for eid, path in pairs:
+            ver = E.next_cache_version(task, eid)
+            rel = cache_dir + "/" + E.cache_name(eid, ver)
+            client.upload(path, rr + "/" + rel)
+            files.append(rel)
+            published.append((eid, ver, rel))
+        rec = {"time": _time.time(), "by": creds.user, "files": files,
+               "description": args.description or "cache", "kind": "cache"}
+        task["publishes"] = (task.get("publishes") or []) + [rec]
+        T.save_task(client, rr, task, actor=creds.user)
+        from . import ledger
+        ledger.record_uploads(client, rr, creds.user, files)
+    for eid, ver, rel in published:
+        print(f"cached {eid} v{ver:03d} -> {cfg.remote_root}/{rel}")
     return 0
 
 
@@ -1418,6 +1487,14 @@ def build_parser() -> argparse.ArgumentParser:
     ra.add_argument("--pick", action="append", default=[],
                     help="override an element's step as id=step (repeatable)")
     ra.set_defaults(func=cmd_resolve_assembly)
+
+    pc2 = sub.add_parser("publish-cache", parents=[common],
+                         help="publish alembic caches (per element) for a shot")
+    pc2.add_argument("--task", required=True, help="shot task id")
+    pc2.add_argument("--cache", action="append", default=[],
+                     help="element_id=/local/path.abc (repeatable)")
+    pc2.add_argument("--description", default="", help="publish note")
+    pc2.set_defaults(func=cmd_publish_cache)
 
     lan = sub.add_parser("list-animations", parents=[common],
                          help="list a shot's published animations (+ fetch them) for "

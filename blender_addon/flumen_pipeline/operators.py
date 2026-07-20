@@ -2847,13 +2847,51 @@ def _link_collection_override(context, blend_local, coll_name, holder):
 
 
 def _link_asset_element(context, element):
-    """LINK the asset's published collection and make a poseable library override,
-    placed under the element's holder collection. Returns (holder, error)."""
+    """Bring an asset element into the shot. Lighting resolves a baked ALEMBIC
+    cache (geometry per frame) — import it; otherwise LINK the published
+    collection as a poseable library override. Placed under the element's
+    holder. Returns (holder, error)."""
+    if element.get("cache_local"):
+        return _import_alembic_cache(context, element)
     holder = _element_holder(context, element["id"])
     override, err = _link_collection_override(
         context, element.get("blend_local"), element.get("collection") or "", holder)
     if err:
         return None, err
+    return holder, None
+
+
+def _import_alembic_cache(context, element):
+    """Import an element's alembic cache into its holder and keep the cache
+    connection live (a re-cache reloads via the CacheFile). The imported meshes
+    keep their source object names, so the look re-applies by name like a
+    linked rig. Returns (holder, error)."""
+    path = element.get("cache_local") or ""
+    if not os.path.isfile(path):
+        return None, "cache file missing on disk"
+    holder = _element_holder(context, element["id"])
+    before = set(bpy.data.objects)
+    try:
+        bpy.ops.wm.alembic_import(filepath=path, as_background_job=False,
+                                  set_frame_range=False)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"alembic import failed: {exc}"
+    new = [o for o in bpy.data.objects if o not in before]
+    if not new:
+        return None, "alembic imported no objects"
+    scene_coll = context.scene.collection
+    for o in new:
+        for c in list(o.users_collection):
+            if c is not holder:
+                try:
+                    c.objects.unlink(o)
+                except Exception:  # noqa: BLE001
+                    pass
+        if o.name not in holder.objects:
+            try:
+                holder.objects.link(o)
+            except Exception:  # noqa: BLE001
+                pass
     return holder, None
 
 
@@ -4461,6 +4499,132 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
             return None
 
 
+def _cache_candidates():
+    """Element holders to alembic-cache: rigged AND animated. An armature with
+    an action (its animation) makes it a deforming character; environments
+    (backdrops) and camera holders are skipped, and a static model with no
+    armature has nothing to bake. Returns [(element_id, holder)]."""
+    out = []
+    for coll in bpy.data.collections:
+        if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
+            continue
+        if str(coll.get("flumen_asset", "")).startswith("environments/"):
+            continue
+        arms = [o for o in coll.all_objects
+                if getattr(o, "type", "") == "ARMATURE"]
+        animated = any(_action_fcurves(a) for a in arms)
+        if arms and animated:
+            out.append((coll.name[len(ELEMENT_HOLDER_PREFIX):], coll))
+    return out
+
+
+class FLUMEN_OT_cache_shot(bpy.types.Operator):
+    bl_idname = "flumen.cache_shot"
+    bl_label = "Cache shot (Alembic)"
+    bl_description = ("Bake each rigged, animated character in this shot to its "
+                      "own Alembic cache over the shot frame range and publish "
+                      "them — the inputs a Lighting shot build imports. Camera, "
+                      "environment and un-animated models are skipped")
+
+    def invoke(self, context, event):
+        task = active_task()
+        if not task or task.get("type") != "shot":
+            self.report({"ERROR"}, "Open a shot task from the Workspace app.")
+            return {"CANCELLED"}
+        self._cands = _cache_candidates()
+        if not self._cands:
+            self.report({"WARNING"}, "No rigged, animated elements to cache — "
+                                     "Build shot and load animation first.")
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=420, title="Cache shot", confirm_text="Cache")
+
+    def draw(self, context):
+        col = self.layout.column()
+        fs = int(context.scene.frame_start)
+        fe = int(context.scene.frame_end)
+        col.label(text=f"Bake to Alembic over frames {fs}–{fe}:")
+        box = col.box()
+        for eid, _ in self._cands:
+            box.label(text=eid, icon="OUTLINER_OB_ARMATURE")
+        col.label(text="Published per element; Lighting Build shot imports "
+                       "the latest.", icon="INFO")
+
+    def execute(self, context):
+        task = active_task()
+        if not task:
+            return {"CANCELLED"}
+        import tempfile
+        scene = context.scene
+        fs, fe = int(scene.frame_start), int(scene.frame_end)
+        tmp = tempfile.mkdtemp(prefix="flumen_cache_")
+        pairs, failed = [], []
+        prev_active = context.view_layer.objects.active
+        for eid, holder in _cache_candidates():
+            meshes = [o for o in holder.all_objects
+                      if getattr(o, "type", "") == "MESH"]
+            if not meshes:
+                failed.append((eid, "no meshes"))
+                continue
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:  # noqa: BLE001
+                pass
+            bpy.ops.object.select_all(action="DESELECT")
+            for o in meshes:
+                try:
+                    o.select_set(True)
+                except Exception:  # noqa: BLE001
+                    pass
+            context.view_layer.objects.active = meshes[0]
+            path = os.path.join(tmp, f"{eid}.abc")
+            try:
+                # Selected meshes only, evaluated (deformed) per frame; flatten
+                # the parent hierarchy so imported names match the source meshes
+                # (the look re-applies by name in the lighting build).
+                bpy.ops.wm.alembic_export(
+                    filepath=path, selected=True, start=fs, end=fe,
+                    flatten=True, uvs=True, packuv=True, normals=True,
+                    face_sets=True, evaluation_mode="RENDER")
+            except Exception as exc:  # noqa: BLE001
+                failed.append((eid, str(exc)))
+                continue
+            if os.path.isfile(path):
+                pairs.append((eid, path))
+            else:
+                failed.append((eid, "export produced no file"))
+        context.view_layer.objects.active = prev_active
+
+        if not pairs:
+            self.report({"ERROR"}, "Nothing cached — "
+                        + "; ".join(f"{e}: {m}" for e, m in failed))
+            return {"CANCELLED"}
+
+        args = ["publish-cache", "--task", task["id"]]
+        for eid, path in pairs:
+            args += ["--cache", f"{eid}={path}"]
+        cmd, td = _toolkit_cmd(args)
+        if cmd is None:
+            self.report({"WARNING"}, f"Baked {len(pairs)} cache(s) to {tmp}, but "
+                        f"the toolkit wasn't found to publish them.")
+            return {"FINISHED"}
+        _publog(f"cache-shot: {' '.join(str(c) for c in cmd)}", echo=False)
+        try:
+            p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+                               **_no_window())
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, f"Cache publish failed to start: {exc}")
+            return {"CANCELLED"}
+        for line in ((p.stdout or "") + (p.stderr or "")).splitlines():
+            _publog("  " + line, echo=False)
+        if p.returncode != 0:
+            self.report({"ERROR"}, "Cache publish failed — see the pipeline log.")
+            return {"CANCELLED"}
+        note = f"; skipped {len(failed)}" if failed else ""
+        self.report({"INFO"}, f"Cached + published {len(pairs)} element(s){note}.")
+        return {"FINISHED"}
+
+
 CLASSES = (
     FLUMEN_OT_apply_project_settings,
     FLUMEN_OT_verify_ocio,
@@ -4487,6 +4651,7 @@ CLASSES = (
     FLUMEN_OT_build_shot,
     FLUMEN_AnimItem,                # PropertyGroup — register before the operator
     FLUMEN_OT_load_animation,
+    FLUMEN_OT_cache_shot,
     FLUMEN_OT_turntable_framing,
     FLUMEN_OT_preview_turntable,
     FLUMEN_OT_render_look_turntable,

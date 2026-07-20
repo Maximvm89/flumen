@@ -731,3 +731,45 @@ def test_resolve_assembly_resolves_looks_at_build(monkeypatch, capsys,
     got = [r for r, _l in srv.downloads]
     assert any(r.endswith("_v002.blend") for r in got)
     assert any(r.endswith(".manifest.json") for r in got)
+
+
+def test_publish_cache_and_lighting_resolves_it(monkeypatch, capsys, tmp_path):
+    # the caching tool -> lighting build round-trip, end to end (faked server).
+    import json
+    from flumen import turntable, elements as E
+    monkeypatch.setattr(turntable, "_load_project_settings", lambda _r: {})
+    srv = _DownloadSrv()
+    ent = "characters/skeleton"
+    for st in ("rig", "model"):
+        tasks.save_task(srv, "/r", tasks.new_task("asset", ent, st))
+        tasks.publish_task(srv, "/r", "m", [f"/tmp/skeleton_{st}_v001.blend"],
+                           tasks.make_id("asset", ent, st))
+    shot = "SEQ010/SH0010"
+    tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "animation"))
+    tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "lighting"))
+    asm = E.empty_assembly(shot)
+    E.add_element(asm, E.new_element(ent))
+    E.save_assembly(srv, "/r", shot, asm)
+
+    # publish a cache for skeleton from the animation task
+    abc = tmp_path / "skeleton.abc"
+    abc.write_bytes(b"ABC-fake")
+    anim_id = tasks.make_id("shot", shot, "animation")
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    rc = cli.cmd_publish_cache(_args(task=anim_id,
+                                     cache=[f"skeleton={abc}"], description=""))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cached skeleton v001" in out
+
+    # lighting resolve picks up the cache
+    lit_id = tasks.make_id("shot", shot, "lighting")
+    rc = cli.cmd_resolve_assembly(_args(task=lit_id, shot=None, step=None,
+                                        list=False, only=[], pick=[]))
+    assert rc == 0
+    res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    sk = next(e for e in res["elements"] if e["id"] == "skeleton")
+    assert sk["load"] == "alembic"
+    assert sk["cache_rel"].endswith("skeleton_v001.abc")
+    assert sk["cache_local"].endswith("skeleton_v001.abc")
+    assert sk["cache_version"] == 1

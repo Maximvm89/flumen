@@ -115,6 +115,7 @@
       "flumen.load_animation",
       "flumen.cycle_format",
       "flumen.preview_playblast",
+      "flumen.cache_shot",
       "---",
       "flumen.save_to_task",
       "flumen.run_checks",
