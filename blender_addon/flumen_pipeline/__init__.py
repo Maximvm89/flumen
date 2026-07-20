@@ -51,23 +51,6 @@ def _empty_startup():
     return None   # don't repeat
 
 
-def _cache_shot_startup():
-    """One-shot headless 'Cache shot': the Workspace app launches Blender in
-    the background with FLUMEN_CACHE_SHOT=1 on the shot's work file — build the
-    shot if needed, bake + publish the caches, then quit with the right code."""
-    rc = 1
-    try:
-        rc = _ops.headless_build_and_cache()
-    except Exception as exc:  # noqa: BLE001
-        print("[Flumen] headless cache failed:", exc)
-    try:
-        bpy.ops.wm.quit_blender()
-    except Exception:  # noqa: BLE001
-        import sys
-        sys.exit(rc)
-    return None
-
-
 def _color_startup():
     """One-shot: align the opened file's color management with the project OCIO."""
     try:
@@ -142,9 +125,10 @@ def register():
     # Headless 'Cache shot' job: build + bake + publish + quit. Runs on a timer
     # so the file/context are fully loaded first; skips every other startup hook.
     if os.environ.get("FLUMEN_CACHE_SHOT"):
-        # enable the project add-ons first (camera rig etc.), then build+cache
-        bpy.app.timers.register(_addons_startup, first_interval=0.1)
-        bpy.app.timers.register(_cache_shot_startup, first_interval=0.4)
+        # Headless 'Cache shot': the actual build+bake+publish runs from
+        # flumen/blender_cache_shot.py, a second --python AFTER this bootstrap
+        # (bpy.data is restricted during register(), and app.timers never fire
+        # in -b mode). Here we only skip the interactive startup hooks.
         return
     # Fresh surface task: start from a clean, shading-ready scene.
     if os.environ.get("FLUMEN_NEW_SURFACE"):

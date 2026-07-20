@@ -2472,10 +2472,16 @@ class MainWindow(QMainWindow):
             "FLUMEN_NEW_SCENE": "1",
         }
 
+        import flumen as _flumen
+        cache_script = os.path.join(os.path.dirname(_flumen.__file__),
+                                    "blender_cache_shot.py")
+
         def work():
-            # No open_file: a fresh Blender that builds the published shot.
+            # No open_file: a fresh Blender that builds the published shot; the
+            # cache script runs after the bootstrap registers the add-on.
             return launch(cfg, creds, extra_env=extra_env, open_file=None,
                           background=True,
+                          extra_args=["--python", cache_script],
                           log_path=applog.prepare_blender_log())
 
         def done(rc):
