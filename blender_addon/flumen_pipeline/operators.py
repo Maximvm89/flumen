@@ -3188,6 +3188,12 @@ def _snapshot_poses(context):
     for coll in bpy.data.collections:
         if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
             continue
+        # Environments are structural backdrops placed as ONE unit — never
+        # per-piece animated in a shot. Keying every set piece (tende, sofa,
+        # bookshelf…) was creating hundreds of spurious placement 'overrides'.
+        # Skip their non-rig objects entirely; the environment sits where its
+        # publish/dressing puts it.
+        is_env = str(coll.get("flumen_asset", "")).startswith("environments/")
         for o in coll.all_objects:
             if getattr(o, "type", "") == "ARMATURE" and getattr(o, "pose", None):
                 o.animation_data_create()
@@ -3195,9 +3201,13 @@ def _snapshot_poses(context):
                 snap(o, "", animated, rest_of(o))       # the rig object itself
                 for pb in o.pose.bones:
                     snap(pb, 'pose.bones["%s"]' % pb.name, animated, identity)
-            else:
-                # Plain object (model geometry, empty, camera): capture its
-                # placement when it moved away from where its publish put it.
+            elif is_env:
+                continue                                # backdrop — no capture
+            elif o.parent is None:
+                # Plain object (model geometry root, empty, camera): the
+                # element's PLACEMENT lives on its root. Children are the
+                # published model's internal structure — they follow the root,
+                # so keying them is redundant and bloats the anim publish.
                 snap(o, "", _animated_paths(o), rest_of(o))
     scene.frame_set(prev)
     return keyed
@@ -4218,6 +4228,9 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                 # Stamp the holder so the playblast HUD can show what's in the shot.
                 holder["flumen_step"] = ("camera" if el.get("kind") == "camera"
                                          else el.get("source_step", ""))
+                # And the asset entity — the publish snapshot uses it to skip
+                # per-piece placement keys on environments (placed as a unit).
+                holder["flumen_asset"] = el.get("asset", "")
             # Environment element with a set-dressing: link each manifest prop
             # under the holder and place it at its published transform.
             dressing = el.get("dressing")
