@@ -198,6 +198,19 @@ def apply_settings(scene, data: dict, root: str, report: list):
                        lambda: setattr(scene.cycles, "use_denoising",
                                        bool(cyc["use_denoising"])))
 
+    # --- EEVEE (only if that engine is active) — the project's finals engine ---
+    eev = rn.get("eevee", {})
+    if eev and str(getattr(scene.render, "engine", "")).startswith(
+            "BLENDER_EEVEE") and hasattr(scene, "eevee"):
+        if eev.get("taa_render_samples"):
+            _apply_one(report, "eevee samples",
+                       lambda: setattr(scene.eevee, "taa_render_samples",
+                                       int(eev["taa_render_samples"])))
+        if eev.get("use_raytracing") is not None:
+            _apply_one(report, "eevee raytracing",
+                       lambda: setattr(scene.eevee, "use_raytracing",
+                                       bool(eev["use_raytracing"])))
+
     # --- Frame range ---
     if fr.get("start") is not None:
         _apply_one(report, "frame start",

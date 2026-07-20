@@ -52,6 +52,7 @@ def _fake_scene():
                    fps_base=None, filepath=None,
                    image_settings=_ns(file_format=None, color_depth=None, exr_codec=None)),
         cycles=_ns(device=None, samples=None, use_denoising=None),
+        eevee=_ns(taa_render_samples=None, use_raytracing=None),
         unit_settings=_ns(system=None, scale_length=None, length_unit=None),
         frame_start=None, frame_end=None,
     )
@@ -77,14 +78,15 @@ def test_apply_settings_maps_all_fields():
     operators.apply_settings(scene, SAMPLE, "/proj/LEGAMI", warnings)
 
     assert warnings == [], warnings  # nothing should fail against a fake scene
-    assert scene.render.engine == "CYCLES"
+    assert scene.render.engine == "BLENDER_EEVEE"   # project finals: EEVEE
     assert scene.render.fps == 24
     assert scene.render.resolution_x == 1920
     assert scene.view_settings.view_transform == "ACES 1.0 - SDR Video"
     assert scene.display_settings.display_device == "sRGB - Display"
     assert scene.unit_settings.system == "METRIC"
     assert scene.frame_end == 250
-    assert scene.cycles.samples == 256
+    assert scene.eevee.taa_render_samples == 64      # EEVEE finals settings
+    assert scene.eevee.use_raytracing is True
     assert scene.render.image_settings.file_format == "OPEN_EXR_MULTILAYER"
     # output path joined under the project root + the rel path
     assert scene.render.filepath.startswith(os.path.join("/proj/LEGAMI", "06_renders"))
