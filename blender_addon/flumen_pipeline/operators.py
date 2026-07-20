@@ -4578,7 +4578,20 @@ def _headless_build_shot(context, task):
         bpy.ops.file.make_paths_relative()
     except Exception:  # noqa: BLE001
         pass
-    _apply_build_frame_range(context)
+    # Set the shot's frame range from the resolve (the interactive dialog seeds
+    # _BUILD_FRAME_RANGE in invoke(); headless has no dialog, so set it here).
+    # Without this the scene stays at 1-250 and a cache bakes frames BEFORE the
+    # animation starts (keyed at 1001+) — static geometry.
+    fs, fe = data.get("frame_start"), data.get("frame_end")
+    if fs and fe:
+        try:
+            scene = context.scene
+            scene.frame_start, scene.frame_end = int(fs), int(fe)
+            scene.frame_set(int(fs))
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        _apply_build_frame_range(context)
     return built
 
 
