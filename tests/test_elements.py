@@ -496,3 +496,41 @@ def test_resolved_caches_reads_animation_step():
     rc = E.resolved_caches(s, "/r", shot)
     assert rc["skeleton"]["rel"].endswith("skeleton_v004.abc")
     assert E.resolved_caches(s, "/r", "SEQ999/NOPE") == {}
+
+
+# ---- light rigs (lighting) --------------------------------------------------
+
+def test_light_rig_name_and_parse():
+    assert E.light_rig_name("SEQ010/SH0010", 3) == "SH0010_lighting_lights_v003.blend"
+    assert E.parse_light_rig_name("SH0010_lighting_lights_v003.blend") == 3
+    assert E.parse_light_rig_name("SH0010_layout_v003.blend") is None
+
+
+def test_published_light_rigs_and_next_version():
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    t = tasks.save_task(s, "/r", tasks.new_task("shot", shot, "lighting"))
+    pub = "04_sequences/SEQ010/SH0010/lighting/publish/"
+    for v in (1, 2):
+        t = tasks.get_task(s, "/r", t["id"])
+        t["publishes"] = (t.get("publishes") or []) + [{
+            "files": [pub + f"SH0010_lighting_lights_v{v:03d}.blend"],
+            "time": v, "by": "nicola", "kind": "lights"}]
+        tasks.save_task(s, "/r", t)
+    rigs = E.published_light_rigs(tasks.get_task(s, "/r", t["id"]))
+    assert [r["version"] for r in rigs] == [2, 1]              # newest first
+    assert E.next_light_version(tasks.get_task(s, "/r", t["id"])) == 3
+
+
+def test_all_light_rigs_newest_per_shot():
+    s = FakeSrv()
+    for shot in ("SEQ010/SH0010", "SEQ010/SH0020"):
+        t = tasks.save_task(s, "/r", tasks.new_task("shot", shot, "lighting"))
+        pub = f"04_sequences/{shot}/lighting/publish/"
+        leaf = shot.split("/")[-1]
+        t["publishes"] = [{"files": [pub + f"{leaf}_lighting_lights_v001.blend"],
+                           "time": 1, "by": "nicola", "kind": "lights"}]
+        tasks.save_task(s, "/r", t)
+    rigs = E.all_light_rigs(s, "/r")
+    assert [r["shot"] for r in rigs] == ["SEQ010/SH0010", "SEQ010/SH0020"]
+    assert all(r["version"] == 1 for r in rigs)

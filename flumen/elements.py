@@ -296,6 +296,61 @@ def resolved_elements(sftp, remote_root: str, shot_entity: str, step: str,
     return out
 
 
+LIGHTS_SUFFIX = "_lighting_lights"
+
+
+def light_rig_name(shot_entity: str, version: int) -> str:
+    """'SEQ010/SH0010' -> 'SH0010_lighting_lights_v003.blend'."""
+    leaf = shot_entity.split("/")[-1]
+    return f"{leaf}{LIGHTS_SUFFIX}_v{version:03d}.blend"
+
+
+_LIGHTS_RE = re.compile(r"_lighting_lights_v(\d+)\.blend$")
+
+
+def parse_light_rig_name(name: str):
+    """version int from a light-rig .blend name, else None."""
+    import os as _os
+    m = _LIGHTS_RE.search(_os.path.basename(name or ""))
+    return int(m.group(1)) if m else None
+
+
+def published_light_rigs(task: dict) -> list[dict]:
+    """A lighting task's published light rigs, newest first:
+    [{version, rel, by, time}]."""
+    out = []
+    for rec in task.get("publishes") or []:
+        for rel in rec.get("files") or []:
+            v = parse_light_rig_name(rel)
+            if v is not None:
+                out.append({"version": v, "rel": rel, "by": rec.get("by"),
+                            "time": rec.get("time")})
+    out.sort(key=lambda r: r["version"], reverse=True)
+    return out
+
+
+def next_light_version(task: dict) -> int:
+    rigs = published_light_rigs(task)
+    return (rigs[0]["version"] + 1) if rigs else 1
+
+
+def all_light_rigs(sftp, remote_root: str) -> list[dict]:
+    """Newest published light rig per shot across the project, for the
+    'Load lights' picker: [{shot, version, rel, by}] sorted by shot."""
+    from . import tasks
+    out = []
+    for t in tasks.load_tasks(sftp, remote_root):
+        if t.get("type") != "shot" or t.get("step") != "lighting":
+            continue
+        rigs = published_light_rigs(t)
+        if rigs:
+            r = rigs[0]
+            out.append({"shot": t.get("entity", ""), "version": r["version"],
+                        "rel": r["rel"], "by": r["by"]})
+    out.sort(key=lambda r: r["shot"])
+    return out
+
+
 def cache_plan(sftp, remote_root: str, shot_entity: str,
                step: str = "animation", settings: dict | None = None) -> list:
     """What the Cache-shot dialog shows: every RIGGED asset element of a shot

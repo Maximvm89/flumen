@@ -1114,6 +1114,69 @@ def cmd_resolve_assembly(args) -> int:
     return 0
 
 
+def cmd_publish_lights(args) -> int:
+    """Publish a lighting task's light rig (the LIGHTS collection, written to a
+    .blend by the add-on) into the lighting publish folder, versioned, recorded
+    on the task. Reusable across shots via 'load-lights'."""
+    import time as _time
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import tasks as T, elements as E
+    rr = cfg.remote_root.rstrip("/")
+    if not os.path.isfile(args.local):
+        print(f"error: light rig file not found: {args.local}", file=sys.stderr)
+        return 1
+    with SFTPClient(creds) as client:
+        task = T.get_task(client, rr, args.task)
+        if not task or task.get("type") != "shot":
+            print(f"error: not a shot task: {args.task}", file=sys.stderr)
+            return 1
+        ver = E.next_light_version(task)
+        rel = (T.task_dir_rel(task) + "/publish/"
+               + E.light_rig_name(task["entity"], ver))
+        client.upload(args.local, rr + "/" + rel)
+        rec = {"time": _time.time(), "by": creds.user, "files": [rel],
+               "description": args.description or "light rig", "kind": "lights"}
+        task["publishes"] = (task.get("publishes") or []) + [rec]
+        if args.status:
+            task["status"] = args.status
+        T.save_task(client, rr, task, actor=creds.user)
+        from . import ledger
+        ledger.record_uploads(client, rr, creds.user, [rel])
+    print(f"published light rig v{ver:03d} -> {cfg.remote_root}/{rel}")
+    if args.status:
+        print(f"task {args.task} -> {args.status}")
+    return 0
+
+
+def cmd_list_light_rigs(args) -> int:
+    """Print every shot's newest published light rig as JSON — feeds the
+    'Load lights from another shot' picker."""
+    import json
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import elements as E
+    with SFTPClient(creds) as client:
+        rigs = E.all_light_rigs(client, cfg.remote_root.rstrip("/"))
+    print(json.dumps(rigs))
+    return 0
+
+
+def cmd_fetch_lights(args) -> int:
+    """Download a chosen published light rig .blend into the local mirror and
+    print its path (the add-on appends the lights from it)."""
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    rr = cfg.remote_root.rstrip("/")
+    local_root = cfg.resolved_local_root() or os.getcwd()
+    rel = args.rel
+    local = os.path.join(local_root, *rel.split("/"))
+    with SFTPClient(creds) as client:
+        client.download(rr + "/" + rel, local)
+    print(local)
+    return 0
+
+
 def cmd_publish_cache(args) -> int:
     """Upload alembic caches (one per element) into the shot step's publish/cache
     folder and record them on the task. Each --cache is 'element_id=/local/x.abc';
@@ -1496,6 +1559,23 @@ def build_parser() -> argparse.ArgumentParser:
     ra.add_argument("--pick", action="append", default=[],
                     help="override an element's step as id=step (repeatable)")
     ra.set_defaults(func=cmd_resolve_assembly)
+
+    pl2 = sub.add_parser("publish-lights", parents=[common],
+                         help="publish a lighting task's light rig")
+    pl2.add_argument("--task", required=True, help="lighting shot task id")
+    pl2.add_argument("--local", required=True, help="the LIGHTS .blend to upload")
+    pl2.add_argument("--status", default="", help="set task status after publish")
+    pl2.add_argument("--description", default="", help="publish note")
+    pl2.set_defaults(func=cmd_publish_lights)
+
+    llr = sub.add_parser("list-light-rigs", parents=[common],
+                         help="list every shot's newest light rig (JSON)")
+    llr.set_defaults(func=cmd_list_light_rigs)
+
+    fl2 = sub.add_parser("fetch-lights", parents=[common],
+                         help="download a light rig .blend by rel path")
+    fl2.add_argument("--rel", required=True, help="server rel path of the rig")
+    fl2.set_defaults(func=cmd_fetch_lights)
 
     pc2 = sub.add_parser("publish-cache", parents=[common],
                          help="publish alembic caches (per element) for a shot")
