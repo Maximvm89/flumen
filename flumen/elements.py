@@ -296,6 +296,45 @@ def resolved_elements(sftp, remote_root: str, shot_entity: str, step: str,
     return out
 
 
+def cache_plan(sftp, remote_root: str, shot_entity: str,
+               step: str = "animation", settings: dict | None = None) -> list:
+    """What the Cache-shot dialog shows: every RIGGED asset element of a shot
+    (environments and the camera excluded), with its published animation
+    version and the cache already on the server. Each row:
+    {id, label, anim_version, cache_version, cache_anim, up_to_date}. up_to_date
+    means a cache exists that was baked from the element's current published
+    anim version — a re-cache isn't needed. Computed from the server only
+    (no Blender)."""
+    from . import tasks
+    assembly = load_assembly(sftp, remote_root, shot_entity)
+    ra = resolved_animation(sftp, remote_root, shot_entity, step, settings) or {}
+    anim_els = ra.get("elements") or {}
+    anim_task = tasks.get_task(sftp, remote_root,
+                               tasks.make_id("shot", shot_entity, step))
+    caches = published_caches(anim_task) if anim_task else {}
+    out = []
+    for e in assembly.get("elements", []):
+        if e.get("kind") != "asset":
+            continue
+        asset = e.get("asset") or ""
+        if asset.startswith("environments/"):
+            continue
+        rig_t = tasks.get_task(sftp, remote_root,
+                               tasks.make_id("asset", asset, "rig"))
+        if not (rig_t and tasks.published_files(rig_t)):
+            continue                              # not rigged -> can't cache
+        eid = e["id"]
+        anim_v = (anim_els.get(eid) or {}).get("version", "")
+        c = caches.get(eid) or {}
+        up = bool(c and anim_v and c.get("anim") == anim_v)
+        out.append({"id": eid, "label": e.get("label") or eid,
+                    "anim_version": anim_v,
+                    "cache_version": c.get("version", 0),
+                    "cache_anim": c.get("anim", ""),
+                    "up_to_date": up})
+    return out
+
+
 def resolved_caches(sftp, remote_root: str, shot_entity: str,
                     step: str = "animation") -> dict:
     """Newest published alembic cache per element for a shot, from the step that
@@ -449,6 +488,7 @@ def published_caches(task: dict) -> dict:
     import os as _os
     best: dict[str, dict] = {}
     for rec in task.get("publishes") or []:
+        cache_anim = rec.get("cache_anim") or {}
         for rel in rec.get("files") or []:
             if not rel.endswith(CACHE_SUFFIX):
                 continue
@@ -459,7 +499,9 @@ def published_caches(task: dict) -> dict:
             cur = best.get(eid)
             if cur is None or ver > cur["version"]:
                 best[eid] = {"version": ver, "rel": rel,
-                             "time": rec.get("time"), "by": rec.get("by")}
+                             "time": rec.get("time"), "by": rec.get("by"),
+                             # anim version this cache was baked from
+                             "anim": cache_anim.get(eid, "")}
     return best
 
 

@@ -2381,6 +2381,11 @@ class MainWindow(QMainWindow):
         act_hist = menu.addAction("Publish history…")
         # A shot's element breakdown is shared across its steps — edit it here.
         act_elements = menu.addAction("Elements…") if t.get("type") == "shot" else None
+        # Cache shot: bake the animated characters to Alembic (headless Blender:
+        # opens the work file, builds if needed, caches, publishes) — the inputs
+        # a Lighting build imports. Shots only.
+        act_cache = (menu.addAction("Cache shot (Alembic)…")
+                     if t.get("type") == "shot" else None)
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         act_delete.setEnabled(self._can_delete_remote())
@@ -2398,8 +2403,95 @@ class MainWindow(QMainWindow):
             self._show_history(t)
         elif act_elements is not None and chosen == act_elements:
             self._open_elements_editor(t)
+        elif act_cache is not None and chosen == act_cache:
+            self._cache_shot(t, work_abs)
         elif chosen == act_delete:
             self._delete_task(t)
+
+    def _cache_shot(self, task: dict, work_abs: str):
+        """Right-click 'Cache shot': show a dialog of the shot's rigged
+        characters (with which already have an up-to-date cache), let the artist
+        pick, then launch Blender HEADLESS on the work file to build + bake +
+        publish only the chosen ones."""
+        if not self.cfg:
+            return
+        import glob as _glob
+        cands = (sorted(_glob.glob(os.path.join(work_abs, "*.blend")),
+                        reverse=True) if os.path.isdir(work_abs) else [])
+        if not cands:
+            QMessageBox.warning(
+                self, "No work file",
+                f"No local work file for this shot to cache from.\n\n{work_abs}"
+                f"\n\nBuild the shot and 'Save to task' in Blender first.")
+            return
+        open_file = cands[0]
+        remote = self.cfg.remote_root
+        entity = task["entity"]
+
+        def load_plan():
+            from flumen import elements as E
+            settings = self._conn_do(
+                lambda c: __import__("flumen.turntable", fromlist=["x"])
+                ._load_project_settings(self.cfg.resolved_local_root()))
+            return self._conn_do(
+                lambda c: E.cache_plan(c, remote, entity, settings=settings))
+
+        def show(plan):
+            self._busy_buttons(False)
+            if not plan:
+                QMessageBox.information(
+                    self, "Nothing to cache",
+                    "This shot has no rigged characters to cache (only rigged "
+                    "assets with a published rig are cacheable).")
+                return
+            dlg = CacheShotDialog(entity, plan, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            chosen = dlg.selected_ids()
+            if not chosen:
+                return
+            self._launch_cache_job(task, open_file, chosen)
+
+        self._busy_buttons(True)
+        self._spawn(load_plan, show, busy_msg="Checking existing caches…")
+
+    def _launch_cache_job(self, task: dict, open_file: str, only_ids: list):
+        from flumen.launcher import launch
+        local_root = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+        self.cfg.local_root = local_root
+        cfg, creds = self.cfg, self._creds()
+        work_rel = tasksmod.task_work_rel(task)
+        extra_env = {
+            "FLUMEN_TASK_ID": task.get("id", ""),
+            "FLUMEN_TASK_TYPE": task.get("type", ""),
+            "FLUMEN_TASK_ENTITY": task.get("entity", ""),
+            "FLUMEN_TASK_STEP": task.get("step", ""),
+            "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
+            "FLUMEN_CACHE_SHOT": "1",
+            "FLUMEN_CACHE_ONLY": ",".join(only_ids),
+        }
+
+        def work():
+            return launch(cfg, creds, extra_env=extra_env, open_file=open_file,
+                          background=True,
+                          log_path=applog.prepare_blender_log())
+
+        def done(rc):
+            self._busy_buttons(False)
+            if rc == 0:
+                self.status.showMessage(
+                    f"Cached {len(only_ids)} element(s) for {task.get('entity')} "
+                    f"— a Lighting build will import them.")
+            else:
+                QMessageBox.warning(
+                    self, "Cache failed",
+                    "The cache job returned an error. See ~/.flumen/blender.log "
+                    "for details.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done,
+                    busy_msg=f"Caching {len(only_ids)} element(s) in Blender…")
 
     def _open_elements_editor(self, task: dict):
         """Edit a shot's element breakdown (the assets + camera it contains).
@@ -3074,6 +3166,84 @@ class ElementsDialog(QDialog):
 
     def assembly(self) -> dict:
         return self._assembly
+
+
+class CacheShotDialog(QDialog):
+    """Pick which rigged characters to Alembic-cache. Elements whose current
+    published animation already has a cache are shown 'up to date' and left
+    unchecked; the rest are pre-checked."""
+
+    def __init__(self, shot_entity, plan, parent=None):
+        super().__init__(parent)
+        self._plan = list(plan or [])
+        self.setWindowTitle(f"Cache shot — {shot_entity}")
+        self.setMinimumWidth(560)
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(
+            "Bake these animated characters to Alembic (the inputs a Lighting "
+            "build imports). Up-to-date caches are unchecked — tick to re-bake."))
+        self.table = QTableWidget(len(self._plan), 4)
+        self.table.setHorizontalHeaderLabels(
+            ["Cache", "Element", "Animation", "Existing cache"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self._boxes = []
+        for i, row in enumerate(self._plan):
+            cb = QCheckBox()
+            cb.setChecked(not row["up_to_date"])   # pre-check what needs caching
+            self._boxes.append(cb)
+            w = QWidget()
+            lay = QHBoxLayout(w)
+            lay.setContentsMargins(6, 0, 0, 0)
+            lay.addWidget(cb)
+            lay.addStretch(1)
+            self.table.setCellWidget(i, 0, w)
+            self.table.setItem(i, 1, QTableWidgetItem(row["label"]))
+            av = row["anim_version"] or "— (no published anim)"
+            self.table.setItem(i, 2, QTableWidgetItem(av))
+            if row["cache_version"]:
+                if row["up_to_date"]:
+                    txt = f"v{row['cache_version']:03d} · up to date"
+                else:
+                    txt = (f"v{row['cache_version']:03d} · from "
+                           f"{row['cache_anim'] or '?'} — stale")
+            else:
+                txt = "none yet"
+            it = QTableWidgetItem(txt)
+            if row["up_to_date"]:
+                it.setForeground(QBrush(QColor("#5fae62")))
+            elif row["cache_version"]:
+                it.setForeground(QBrush(QColor("#e0a030")))
+            self.table.setItem(i, 3, it)
+        self.table.resizeColumnsToContents()
+        root.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        b_all = QPushButton("Select all")
+        b_all.clicked.connect(lambda: [b.setChecked(True) for b in self._boxes])
+        b_none = QPushButton("Select none")
+        b_none.clicked.connect(lambda: [b.setChecked(False) for b in self._boxes])
+        b_stale = QPushButton("Only needing update")
+        b_stale.clicked.connect(self._select_stale)
+        btns.addWidget(b_all)
+        btns.addWidget(b_none)
+        btns.addWidget(b_stale)
+        btns.addStretch(1)
+        root.addLayout(btns)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Cache")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def _select_stale(self):
+        for b, row in zip(self._boxes, self._plan):
+            b.setChecked(not row["up_to_date"])
+
+    def selected_ids(self) -> list:
+        return [row["id"] for b, row in zip(self._boxes, self._plan)
+                if b.isChecked()]
 
 
 class BugReportDialog(QDialog):

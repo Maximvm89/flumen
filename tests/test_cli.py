@@ -757,7 +757,7 @@ def test_publish_cache_and_lighting_resolves_it(monkeypatch, capsys, tmp_path):
     anim_id = tasks.make_id("shot", shot, "animation")
     _patch(monkeypatch, srv, local_root=str(tmp_path))
     rc = cli.cmd_publish_cache(_args(task=anim_id,
-                                     cache=[f"skeleton={abc}"], description=""))
+                                     cache=[f"skeleton={abc}"], anim=[], description=""))
     assert rc == 0
     out = capsys.readouterr().out
     assert "cached skeleton v001" in out

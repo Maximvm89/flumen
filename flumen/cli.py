@@ -1123,6 +1123,11 @@ def cmd_publish_cache(args) -> int:
     creds = SFTPCredentials.from_env(args.env)
     from . import tasks as T, elements as E
     rr = cfg.remote_root.rstrip("/")
+    anim_of = {}
+    for spec in args.anim or []:
+        if "=" in spec:
+            k, v = spec.split("=", 1)
+            anim_of[k] = v
     pairs = []
     for spec in args.cache or []:
         if "=" not in spec:
@@ -1152,7 +1157,11 @@ def cmd_publish_cache(args) -> int:
             files.append(rel)
             published.append((eid, ver, rel))
         rec = {"time": _time.time(), "by": creds.user, "files": files,
-               "description": args.description or "cache", "kind": "cache"}
+               "description": args.description or "cache", "kind": "cache",
+               # anim version each element was baked from — lets the cache
+               # dialog say 'up to date' vs 'needs re-cache'.
+               "cache_anim": {eid: anim_of.get(eid, "")
+                              for eid, _v, _r in published}}
         task["publishes"] = (task.get("publishes") or []) + [rec]
         T.save_task(client, rr, task, actor=creds.user)
         from . import ledger
@@ -1493,6 +1502,9 @@ def build_parser() -> argparse.ArgumentParser:
     pc2.add_argument("--task", required=True, help="shot task id")
     pc2.add_argument("--cache", action="append", default=[],
                      help="element_id=/local/path.abc (repeatable)")
+    pc2.add_argument("--anim", action="append", default=[],
+                     help="element_id=anim_version the cache was baked from "
+                          "(repeatable)")
     pc2.add_argument("--description", default="", help="publish note")
     pc2.set_defaults(func=cmd_publish_cache)
 

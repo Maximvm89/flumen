@@ -98,7 +98,10 @@ def sync_pipeline_config(cfg: ProjectConfig, creds: SFTPCredentials,
 def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | None = None,
            dry_run: bool = False, no_sync: bool = False,
            extra_env: dict | None = None, open_file: str | None = None,
-           log_path: str | None = None) -> int:
+           log_path: str | None = None, background: bool = False) -> int:
+    """Launch Blender. `background=True` runs it headless (-b) and BLOCKS until
+    it exits, returning Blender's exit code — used by jobs like 'Cache shot'
+    that drive Blender to completion instead of opening a window."""
     local_root = cfg.resolved_local_root()
     if not no_sync:
         local_root = sync_pipeline_config(cfg, creds, dry_run=dry_run)
@@ -153,6 +156,8 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
         return 0
 
     cmd = [blender]
+    if background:
+        cmd.append("-b")                 # headless; blocks below until it exits
     # Open a specific .blend (e.g. the latest published version) if given.
     if open_file and os.path.isfile(open_file):
         cmd.append(open_file)
@@ -185,6 +190,13 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
         except OSError:
             out = None
     try:
+        if background:
+            # Drive Blender to completion and return its exit code (the caller
+            # runs this on a worker thread so the UI stays responsive).
+            rc = subprocess.call(cmd, env=env,
+                                 stdout=out, stderr=(subprocess.STDOUT if out
+                                                     else None))
+            return rc
         # Detach so closing the terminal doesn't kill Blender. When `out` is set,
         # Blender's stdout+stderr go to the log file (its own dup of the fd), so we
         # can close our handle right after spawning.
