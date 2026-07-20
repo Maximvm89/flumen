@@ -150,15 +150,21 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
     os.makedirs(os.path.dirname(video_local), exist_ok=True)
     made = _encode_mp4(frames_dir, video_local, fps)
 
+    total_mb = sum(os.path.getsize(f) for f in frames) / 1e6
+    print(f"Uploading {len(frames)} frame(s) ({total_mb:.0f} MB) + review "
+          f"video to the server …", flush=True)
     with SFTPClient(creds) as client:
         rr = cfg.remote_root.rstrip("/")
-        for f in frames:
+        for i, f in enumerate(frames, 1):
             rel = frames_rel + "/" + os.path.basename(f)
             client.upload(f, rr + "/" + rel)
+            if i % 10 == 0 or i == len(frames):
+                print(f"  uploaded {i}/{len(frames)} frames", flush=True)
         if made and os.path.isfile(video_local):
             client.upload(video_local, rr + "/" + video_rel)
             record_turntable(client, cfg.remote_root, task_id, video_rel,
                              creds.user)
+            print("  uploaded review video", flush=True)
     print(f"published render -> {cfg.remote_root}/{frames_rel}")
     if made:
         print(f"review video    -> {cfg.remote_root}/{video_rel}")
