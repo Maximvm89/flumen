@@ -2410,21 +2410,13 @@ class MainWindow(QMainWindow):
 
     def _cache_shot(self, task: dict, work_abs: str):
         """Right-click 'Cache shot': show a dialog of the shot's rigged
-        characters (with which already have an up-to-date cache), let the artist
-        pick, then launch Blender HEADLESS on the work file to build + bake +
-        publish only the chosen ones."""
+        characters (flagging which already have an up-to-date cache), let the
+        reviewer pick, then launch Blender HEADLESS to build the shot from the
+        PUBLISHED animation and bake + publish the chosen ones. Caching always
+        works off published, reviewed data — never an animator's work file — so
+        it's reproducible and runs on any machine with server access."""
         if not self.cfg:
             return
-        import glob as _glob
-        cands = (sorted(_glob.glob(os.path.join(work_abs, "*.blend")),
-                        reverse=True) if os.path.isdir(work_abs) else [])
-        if not cands:
-            QMessageBox.warning(
-                self, "No work file",
-                f"No local work file for this shot to cache from.\n\n{work_abs}"
-                f"\n\nBuild the shot and 'Save to task' in Blender first.")
-            return
-        open_file = cands[0]
         remote = self.cfg.remote_root
         entity = task["entity"]
 
@@ -2450,12 +2442,12 @@ class MainWindow(QMainWindow):
             chosen = dlg.selected_ids()
             if not chosen:
                 return
-            self._launch_cache_job(task, open_file, chosen)
+            self._launch_cache_job(task, chosen)
 
         self._busy_buttons(True)
         self._spawn(load_plan, show, busy_msg="Checking existing caches…")
 
-    def _launch_cache_job(self, task: dict, open_file: str, only_ids: list):
+    def _launch_cache_job(self, task: dict, only_ids: list):
         from flumen.launcher import launch
         local_root = (self.ed_local.text().strip()
                       or self.cfg.resolved_local_root())
@@ -2470,10 +2462,14 @@ class MainWindow(QMainWindow):
             "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
             "FLUMEN_CACHE_SHOT": "1",
             "FLUMEN_CACHE_ONLY": ",".join(only_ids),
+            # start empty: the cache builds the shot from PUBLISHED data, so no
+            # default cube/camera/light should leak in.
+            "FLUMEN_NEW_SCENE": "1",
         }
 
         def work():
-            return launch(cfg, creds, extra_env=extra_env, open_file=open_file,
+            # No open_file: a fresh Blender that builds the published shot.
+            return launch(cfg, creds, extra_env=extra_env, open_file=None,
                           background=True,
                           log_path=applog.prepare_blender_log())
 

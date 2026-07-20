@@ -4651,6 +4651,12 @@ def headless_build_and_cache():
     if not task or task.get("type") != "shot":
         print("[Flumen] cache: no active shot task.")
         return 1
+    # Build from PUBLISHED data on a clean scene (no default cube/camera/light,
+    # no animator work file) — caching is always of reviewed, published anim.
+    try:
+        scaffold_empty_scene()
+    except Exception:  # noqa: BLE001
+        pass
     n = _headless_build_shot(ctx, task)
     _publog(f"cache: built {n} element(s) before caching", echo=True)
     # Restrict to the elements the artist ticked in the Workspace dialog.
