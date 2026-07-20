@@ -2520,10 +2520,13 @@ class MainWindow(QMainWindow):
         def work():
             # No open_file: a fresh Blender that builds the published shot; the
             # cache script runs after the bootstrap registers the add-on.
+            # log_path=None -> the job's output inherits the app's stdout so
+            # progress is visible in the console (the addon still writes the
+            # detail to ~/.flumen/publish.log via its own logger).
             return launch(cfg, creds, extra_env=extra_env, open_file=None,
                           background=True,
                           extra_args=["--python", cache_script],
-                          log_path=applog.prepare_blender_log())
+                          log_path=None)
 
         def done(rc):
             self._busy_buttons(False)

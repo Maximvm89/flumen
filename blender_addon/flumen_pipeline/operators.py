@@ -4549,13 +4549,18 @@ def _headless_build_shot(context, task):
     elements = data.get("elements") or []
     anim_elements = ((data.get("anim") or {}).get("elements")) or {}
     built = 0
-    for el in elements:
+    n = len(elements)
+    print(f"[Flumen] cache: building {n} element(s) from the published shot…",
+          flush=True)
+    for i, el in enumerate(elements, 1):
         eid = str(el.get("id", ""))
         if bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid) is not None:
             continue                              # already present — additive
         loader = _ELEMENT_LOADERS.get(el.get("kind"))
         if loader is None:
             continue
+        print(f"[Flumen] cache:   [{i}/{n}] building {eid} "
+              f"({el.get('kind', 'asset')})…", flush=True)
         try:
             holder, err = loader(context, el)
         except Exception as exc:  # noqa: BLE001
@@ -4618,15 +4623,20 @@ def _cache_shot_elements(context, task, only=None):
     tmp = tempfile.mkdtemp(prefix="flumen_cache_")
     pairs, failed, anim_of = [], [], {}
     prev_active = context.view_layer.objects.active
-    for eid, holder in _cache_candidates():
-        if only is not None and eid not in only:
-            continue
+    todo = [(eid, h) for eid, h in _cache_candidates()
+            if only is None or eid in only]
+    print(f"[Flumen] cache: baking {len(todo)} element(s) to Alembic over "
+          f"frames {fs}-{fe} — this evaluates every frame, it can take a bit.",
+          flush=True)
+    for i, (eid, holder) in enumerate(todo, 1):
         anim_of[eid] = str(holder.get("flumen_anim", "") or "")
         meshes = [o for o in holder.all_objects
                   if getattr(o, "type", "") == "MESH"]
         if not meshes:
             failed.append((eid, "no meshes"))
             continue
+        print(f"[Flumen] cache:   [{i}/{len(todo)}] baking {eid} "
+              f"({len(meshes)} mesh(es))…", flush=True)
         try:
             bpy.ops.object.mode_set(mode="OBJECT")
         except Exception:  # noqa: BLE001
@@ -4654,6 +4664,9 @@ def _cache_shot_elements(context, task, only=None):
     context.view_layer.objects.active = prev_active
     if not pairs:
         return [], failed
+    total_mb = sum(os.path.getsize(p) for _e, p in pairs) / 1e6
+    print(f"[Flumen] cache: uploading {len(pairs)} cache(s) ({total_mb:.0f} MB) "
+          f"to the server…", flush=True)
     args = ["publish-cache", "--task", task["id"]]
     for eid, path in pairs:
         args += ["--cache", f"{eid}={path}"]
