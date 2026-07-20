@@ -3874,6 +3874,10 @@ def _element_detail(el, present):
     if kind == "camera":
         return ("new Dolly camera rig" if el.get("load") == "create_rig"
                 else "shot camera (published)")
+    # Lighting: a resolved alembic cache is imported instead of the geometry.
+    if el.get("cache_rel"):
+        v = int(el.get("cache_version") or 0)
+        return f"load cache v{v:03d}" if v else "load cache"
     src = el.get("source_step") or "?"
     detail = f"link {src}"
     d = el.get("dressing")
