@@ -18,20 +18,50 @@ def _env(name, default=""):
     return os.environ.get(name, default)
 
 
+def _fmt(sec):
+    sec = int(sec)
+    if sec < 90:
+        return f"{sec}s"
+    if sec < 5400:
+        return f"{sec // 60}m{sec % 60:02d}s"
+    return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+
+
 def _install_progress(scene):
     total = max(1, scene.frame_end - scene.frame_start + 1)
-    start = [None]
+    st = {"start": None, "frame_start": None, "done": 0}
+
+    def _pre(*_a):
+        import time
+        st["frame_start"] = time.monotonic()
+        if st["start"] is None:
+            st["start"] = st["frame_start"]
+        i = scene.frame_current - scene.frame_start + 1
+        # A "starting" line so there's feedback BEFORE the (slow) frame finishes.
+        avg = ((time.monotonic() - st["start"]) / st["done"]) if st["done"] else 0
+        eta = avg * (total - st["done"])
+        pct = int(100 * st["done"] / total)
+        tail = f"  ~{_fmt(eta)} left" if st["done"] else ""
+        print(f"FLUMEN_PROGRESS {pct} {eta:.0f} rendering frame "
+              f"{scene.frame_current}", flush=True)
+        print(f"[render] frame {i}/{total} (#{scene.frame_current}) "
+              f"rendering…{tail}", flush=True)
 
     def _post(*_a):
         import time
-        if start[0] is None:
-            start[0] = time.monotonic()
-        done = scene.frame_current - scene.frame_start + 1
-        pct = int(100 * done / total)
-        el = time.monotonic() - start[0]
-        eta = (el / max(1, done)) * (total - done)
-        print(f"FLUMEN_PROGRESS {pct} {eta:.0f} rendering frame "
-              f"{scene.frame_current}/{scene.frame_end}", flush=True)
+        st["done"] += 1
+        dur = time.monotonic() - st["frame_start"] if st["frame_start"] else 0
+        avg = (time.monotonic() - st["start"]) / st["done"]
+        eta = avg * (total - st["done"])
+        pct = int(100 * st["done"] / total)
+        print(f"FLUMEN_PROGRESS {pct} {eta:.0f} rendered frame "
+              f"{scene.frame_current}", flush=True)
+        print(f"[render] frame {st['done']}/{total} done in {_fmt(dur)}"
+              + (f"  ·  {pct}%  ·  ~{_fmt(eta)} left"
+                 if st["done"] < total else "  ·  100% complete"),
+              flush=True)
+
+    bpy.app.handlers.render_pre.append(_pre)
     bpy.app.handlers.render_post.append(_post)
 
 
@@ -118,10 +148,14 @@ def main():
     r.use_overwrite = True
 
     _install_progress(scene)
+    nframes = scene.frame_end - scene.frame_start + 1
     print(f"[render] {r.engine} {r.resolution_x}x{r.resolution_y} "
-          f"@ {r.resolution_percentage}% frames "
-          f"{scene.frame_start}-{scene.frame_end} cam={scene.camera.name}",
+          f"@ {r.resolution_percentage}% · {nframes} frame(s) "
+          f"{scene.frame_start}-{scene.frame_end} · cam={scene.camera.name}",
           flush=True)
+    print(f"[render] starting — a final {r.engine} render, expect minutes per "
+          f"frame. Per-frame progress follows; Cycles also prints per-sample "
+          f"status below.", flush=True)
     bpy.ops.render.render(animation=True)
     print("[render] done.", flush=True)
 
