@@ -114,17 +114,22 @@ class FLUMEN_OT_publish_lights(bpy.types.Operator):
 
 
 _LIGHT_RIGS = []   # cached [{shot, version, rel, by}] for the Load-lights enum
+# Blender only stores char* pointers for callback-generated enum items, so the
+# label/id strings MUST be kept alive on the Python side or they get GC'd and the
+# dropdown renders freed memory as garbage. Hold the last returned list here.
+_LIGHT_RIG_ENUM = []
 
 
 def _light_rig_items(self, context):
-    global _LIGHT_RIGS
+    global _LIGHT_RIG_ENUM
     items = []
     for i, r in enumerate(_LIGHT_RIGS):
         label = f"{r['shot']}  ·  v{r['version']:03d}"
         if r.get("by"):
             label += f"  ·  {r['by']}"
         items.append((str(i), label, r.get("rel", "")))
-    return items or [("-1", "(no published light rigs)", "")]
+    _LIGHT_RIG_ENUM = items or [("-1", "(no published light rigs)", "")]
+    return _LIGHT_RIG_ENUM
 
 
 class FLUMEN_OT_load_lights(bpy.types.Operator):

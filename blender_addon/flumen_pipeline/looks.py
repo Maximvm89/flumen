@@ -19,12 +19,17 @@ from ._common import active_task, _toolkit_cmd, _no_window
 
 
 _LOOK_CHOICES = []   # cached list-looks result for the apply dropdown
+# Keep the returned enum items alive — Blender stores only char* pointers for
+# callback-generated items, so a fresh local list gets GC'd and the dropdown
+# renders freed memory as garbage. Same guard as lights._light_rig_items.
+_LOOK_ENUM = []
 
 
 def _apply_look_items(self, context):
-    items = [(l["look"], f"{l['look']}  (v{l['version']:03d})", "")
-             for l in _LOOK_CHOICES]
-    return items or [("", "<no looks published>", "")]
+    global _LOOK_ENUM
+    _LOOK_ENUM = [(l["look"], f"{l['look']}  (v{l['version']:03d})", "")
+                  for l in _LOOK_CHOICES] or [("", "<no looks published>", "")]
+    return _LOOK_ENUM
 
 
 class FLUMEN_OT_apply_look(bpy.types.Operator):
