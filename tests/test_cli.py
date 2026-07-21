@@ -23,6 +23,9 @@ class _DownloadSrv(FakeSrv):
         self.downloads.append((remote + "/*", local))
         return 0
 
+    def fetch_stats(self):
+        return {"downloaded": len(self.downloads), "skipped": 0, "bytes": 0}
+
     def __enter__(self):
         return self
 

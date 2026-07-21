@@ -1110,6 +1110,13 @@ def cmd_resolve_assembly(args) -> int:
     result = {"frame_start": fs, "frame_end": fe, "elements": out}
     if anim:
         result["anim"] = anim
+    if not args.list:
+        from .sftp import _human
+        stats = client.fetch_stats()
+        result["_fetch"] = stats
+        print(f"[flumen] resolve: fetched {stats['downloaded']} file(s) "
+              f"({_human(stats['bytes'])}), {stats['skipped']} already "
+              f"up-to-date (skipped)", file=sys.stderr, flush=True)
     print(json.dumps(result))
     return 0
 

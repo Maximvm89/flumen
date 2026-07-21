@@ -10,11 +10,22 @@ import os
 import posixpath
 import queue
 import stat as stat_mod
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Iterable
 
 from .config import SFTPCredentials
+
+
+def _human(nbytes: float) -> str:
+    """Compact human-readable byte size, e.g. 812KB, 12.4MB."""
+    n = float(nbytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}TB"
 
 
 def _local_is_current(local_path: str, remote_size: int,
@@ -104,6 +115,32 @@ class SFTPClient:
         self._transport = None
         self._sftp = None
         self._known_dirs: set[str] = set()
+        # Progress: when FLUMEN_VERBOSE is set (the add-on sets it for build/render
+        # subprocesses), announce each transfer/skip on stderr so it shows live in
+        # Blender's System Console. Counters back a one-line fetch summary.
+        self._verbose = bool(os.environ.get("FLUMEN_VERBOSE"))
+        self._n_fetched = 0
+        self._n_skipped = 0
+        self._bytes_fetched = 0
+
+    def fetch_stats(self) -> dict:
+        """Cumulative download tally since this client opened."""
+        return {"downloaded": self._n_fetched, "skipped": self._n_skipped,
+                "bytes": self._bytes_fetched}
+
+    def _log_skip(self, remote_path: str) -> None:
+        self._n_skipped += 1
+        if self._verbose:
+            print(f"[flumen] · up-to-date  {posixpath.basename(remote_path)}",
+                  file=sys.stderr, flush=True)
+
+    def _log_fetch(self, remote_path: str, size: int) -> None:
+        self._n_fetched += 1
+        self._bytes_fetched += size
+        if self._verbose:
+            print(f"[flumen] ↓ {_human(size):>8}  "
+                  f"{posixpath.basename(remote_path)}",
+                  file=sys.stderr, flush=True)
 
     # -- connection management ------------------------------------------------
     def __enter__(self) -> "SFTPClient":
@@ -216,9 +253,11 @@ class SFTPClient:
         if self.dry_run:
             return
         st = self._sftp.stat(remote_path)
-        if _local_is_current(local_path, int(st.st_size or 0),
-                             float(st.st_mtime or 0)):
+        size = int(st.st_size or 0)
+        if _local_is_current(local_path, size, float(st.st_mtime or 0)):
+            self._log_skip(remote_path)
             return
+        self._log_fetch(remote_path, size)
         self._sftp.get(remote_path, local_path)
         if st.st_mtime:
             os.utime(local_path, (st.st_atime or st.st_mtime, st.st_mtime))
@@ -241,8 +280,11 @@ class SFTPClient:
                 # Skip files already present + unchanged; preserve mtime so the
                 # next sync recognises them (listdir_attr already gave us stat,
                 # so no extra round-trip).
-                if not _local_is_current(lpath, int(entry.st_size or 0),
-                                         float(entry.st_mtime or 0)):
+                size = int(entry.st_size or 0)
+                if _local_is_current(lpath, size, float(entry.st_mtime or 0)):
+                    self._log_skip(rpath)
+                else:
+                    self._log_fetch(rpath, size)
                     self._sftp.get(rpath, lpath)
                     if entry.st_mtime:
                         os.utime(lpath, (entry.st_atime or entry.st_mtime,
@@ -433,9 +475,11 @@ class SFTPClient:
         if self.dry_run:
             return
         st = self._sftp.stat(remote_path)
-        if _local_is_current(local_path, int(st.st_size or 0),
-                             float(st.st_mtime or 0)):
+        size = int(st.st_size or 0)
+        if _local_is_current(local_path, size, float(st.st_mtime or 0)):
+            self._log_skip(remote_path)
             return
+        self._log_fetch(remote_path, size)
         self._sftp.get(remote_path, local_path)
         if st.st_mtime:
             os.utime(local_path, (st.st_atime or st.st_mtime, st.st_mtime))

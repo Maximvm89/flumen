@@ -1317,6 +1317,13 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             pass
 
         parts = [f"Built {len(built)} element(s)"]
+        # Download summary from resolve-assembly — shows the skip optimisation at
+        # work (how much was re-fetched vs already local) right in the status bar.
+        fetch = (data or {}).get("_fetch") or {}
+        if fetch.get("downloaded") or fetch.get("skipped"):
+            parts.append(f"fetched {fetch['downloaded']} file(s) "
+                         f"({fetch.get('bytes', 0) / 1e6:.0f} MB), "
+                         f"{fetch['skipped']} already up-to-date")
         if removed_els:
             parts.append(f"unloaded {removed_els}")
         if update:
@@ -1357,8 +1364,14 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         cmd, td = _toolkit_cmd(args)
         if cmd is None:
             return None
+        # FLUMEN_VERBOSE makes resolve-assembly announce each file it downloads or
+        # skips on stderr — which flows to Blender's System Console (Window ▸ Toggle
+        # System Console on Windows; the launching terminal on Mac). check_output
+        # only captures stdout (the JSON), so the progress stays visible.
+        env = dict(os.environ, FLUMEN_VERBOSE="1")
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
+            out = subprocess.check_output(cmd, cwd=td, text=True, env=env,
+                                          **_no_window()).strip()
             return json.loads(out.splitlines()[-1]) if out else []
         except Exception:  # noqa: BLE001
             return None
