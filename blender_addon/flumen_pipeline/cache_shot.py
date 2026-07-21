@@ -10,7 +10,9 @@ import subprocess
 import bpy
 
 from .build_shot import (
-    ELEMENT_HOLDER_PREFIX, _ELEMENT_LOADERS, _action_fcurves, _apply_build_frame_range, _apply_dressing_props, _apply_element_animation)
+    ELEMENT_HOLDER_PREFIX, _ELEMENT_LOADERS, _action_fcurves,
+    _apply_build_frame_range, _apply_dressing_props, _apply_element_animation,
+    _is_environment)
 from ._common import (
     _no_window, _publog, _toolkit_cmd, active_task)
 from .looks import _apply_element_look
@@ -84,12 +86,22 @@ def _headless_build_shot(context, task):
             except Exception as exc:  # noqa: BLE001
                 _publog(f"headless build: look on {eid} failed: {exc}")
         ael = anim_elements.get(eid)
-        if ael and ael.get("blend_local") and ael.get("objects"):
+        if (ael and ael.get("blend_local") and ael.get("objects")
+                and not _is_environment(el)):
+            want = len(ael.get("objects") or {})
             try:
-                _apply_element_animation(holder, ael["blend_local"],
-                                        ael["objects"],
-                                        content=ael.get("content", ""))
+                got = _apply_element_animation(holder, ael["blend_local"],
+                                               ael["objects"],
+                                               content=ael.get("content", ""))
                 holder["flumen_anim"] = ael.get("version", "")
+                # Diagnostic: how many of the manifest's animated objects actually
+                # got their action. A shortfall here is why a character can bake to
+                # the cache with a wrong pose / dropped limb.
+                print(f"[Flumen] cache:   anim on {eid}: {got}/{want} object(s) "
+                      f"animated (v{ael.get('version', '?')})", flush=True)
+                if got < want:
+                    _publog(f"cache: {eid} animation incomplete — {got}/{want} "
+                            f"objects matched the manifest by name")
             except Exception as exc:  # noqa: BLE001
                 _publog(f"headless build: anim on {eid} failed: {exc}")
     try:
@@ -111,6 +123,42 @@ def _headless_build_shot(context, task):
     else:
         _apply_build_frame_range(context)
     return built
+
+def _bake_holder_armatures(context, holder, fs, fe):
+    """Bake each armature's pose to per-frame VISUAL keyframes (constraints/IK/
+    drivers solved, then constraints removed) so the Alembic export captures the
+    fully-resolved motion deterministically — instead of relying on live rig
+    evaluation frame-by-frame during a headless export, which can drop constraint/
+    IK-driven motion (e.g. an arm that follows an IK target). Operates on the
+    throwaway cache scene ONLY — it never touches any published or source file.
+    Returns the number of armatures baked."""
+    arms = [o for o in holder.all_objects if getattr(o, "type", "") == "ARMATURE"]
+    baked = 0
+    for arm in arms:
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            bpy.ops.object.select_all(action="DESELECT")
+            arm.select_set(True)
+            context.view_layer.objects.active = arm
+            bpy.ops.object.mode_set(mode="POSE")
+            bpy.ops.pose.select_all(action="SELECT")
+            bpy.ops.nla.bake(
+                frame_start=fs, frame_end=fe, step=1, only_selected=False,
+                visual_keying=True, clear_constraints=True,
+                use_current_action=True, bake_types={"POSE"})
+            baked += 1
+        except Exception as exc:  # noqa: BLE001 — fall back to live evaluation
+            _publog(f"cache: pose bake on {arm.name} failed ({exc}) — "
+                    f"exporting live rig evaluation instead")
+        finally:
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:  # noqa: BLE001
+                pass
+    return baked
 
 def _cache_shot_elements(context, task, only=None):
     """Bake rigged+animated elements to alembic and publish them. `only` limits
@@ -136,6 +184,12 @@ def _cache_shot_elements(context, task, only=None):
             continue
         print(f"[Flumen] cache:   [{i}/{len(todo)}] baking {eid} "
               f"({len(meshes)} mesh(es))…", flush=True)
+        # Bake the rig(s) to per-frame keys first, so the cache captures the fully
+        # solved motion rather than whatever live evaluation yields mid-export.
+        nbaked = _bake_holder_armatures(context, holder, fs, fe)
+        if nbaked:
+            print(f"[Flumen] cache:   baked {nbaked} rig(s) to per-frame keys",
+                  flush=True)
         try:
             bpy.ops.object.mode_set(mode="OBJECT")
         except Exception:  # noqa: BLE001

@@ -55,6 +55,13 @@ def _missing_libraries():
             pass
     return out
 
+def _is_environment(el):
+    """Environments are placed as a static unit and are NOT per-object animated
+    (publish already skips them in _snapshot_poses). So published animation is
+    never re-applied to them on build or cache — otherwise a stale placement/anim
+    entry in the manifest would move a backdrop that should stay put."""
+    return str((el or {}).get("asset", "")).startswith("environments/")
+
 def _element_content_broken(holder, missing_libs=None):
     """True when an element holder's content can't load: its publish file is
     gone from disk (placeholder data) or the holder is simply empty."""
@@ -961,7 +968,7 @@ def _element_update_notes(el, holder, anim_meta):
             notes.append(f"look {look_avail} available")
             update = True
     applied = str(holder.get("flumen_anim", "") or "")
-    if avail:
+    if avail and not _is_environment(el):    # environments are never animated
         if applied == avail:
             notes.append(f"anim {avail} ✓")
         elif applied:
@@ -1074,6 +1081,16 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if not it.present and eid in unloaded:
                 it.enabled = False
                 it.detail = "unloaded from this scene — tick to load it back"
+            # Diagnostic (System Console): the real per-row state, so a row that
+            # is stuck "needs rebuild" can be traced — is it broken (missing lib),
+            # or update (loaded file vs latest, or anim/look)?
+            import sys as _sys
+            print(f"[Flumen] build row: {eid!r} present={it.present} "
+                  f"broken={it.broken} update={it.update} "
+                  f"loaded={_element_loaded_file(holder) if holder else '-'!r} "
+                  f"cache_rel={bool(el.get('cache_rel'))} "
+                  f"anim_avail={(anim_meta.get(eid) or {}).get('version', '')!r} "
+                  f"| {it.detail}", file=_sys.stderr, flush=True)
             steps = el.get("available_steps") or []
             it.steps_csv = ",".join(steps)
             if steps and el.get("source_step") in steps:
@@ -1300,8 +1317,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                 print(f"[Flumen] look warning ({el.get('id')}): "
                       f"{el['look_error']}")
             # Re-apply this element's published animation (its own newest version).
+            # Environments are excluded — they are placed as a static unit, never
+            # animated, so a stale manifest entry must not move them.
             ael = anim_elements.get(el.get("id"))
-            if holder and ael and ael.get("blend_local") and ael.get("objects"):
+            if (holder and ael and ael.get("blend_local") and ael.get("objects")
+                    and not _is_environment(el)):
                 try:
                     animated += _apply_element_animation(
                         holder, ael["blend_local"], ael["objects"],
