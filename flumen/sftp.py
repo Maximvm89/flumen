@@ -17,6 +17,20 @@ from typing import Callable, Iterable
 from .config import SFTPCredentials
 
 
+def _local_is_current(local_path: str, remote_size: int,
+                      remote_mtime: float) -> bool:
+    """True when local_path already matches the remote file's size + mtime, so the
+    transfer can be skipped. The downloaders preserve the remote mtime locally, and
+    published files are versioned (a given path's bytes never change once written),
+    so a size + mtime match means identical content. The 2s tolerance covers
+    filesystems with coarse mtime granularity (e.g. FAT)."""
+    try:
+        st = os.stat(local_path)
+    except OSError:
+        return False
+    return st.st_size == remote_size and abs(st.st_mtime - remote_mtime) <= 2
+
+
 def parallel_walk(list_dir: "Callable[[str], list[dict]]", root: str,
                   workers: int = 8) -> list[dict]:
     """Breadth-first walk that lists directories concurrently.
@@ -195,12 +209,19 @@ class SFTPClient:
         self._sftp.put(local_path, remote_path)
 
     def download_file(self, remote_path: str, local_path: str) -> None:
-        """Download a single file, creating local parent dirs."""
+        """Download a single file, creating local parent dirs. Skips (and preserves
+        mtime) when an identical copy is already local — see download()."""
         import os
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         if self.dry_run:
             return
+        st = self._sftp.stat(remote_path)
+        if _local_is_current(local_path, int(st.st_size or 0),
+                             float(st.st_mtime or 0)):
+            return
         self._sftp.get(remote_path, local_path)
+        if st.st_mtime:
+            os.utime(local_path, (st.st_atime or st.st_mtime, st.st_mtime))
 
     def download_dir(self, remote_dir: str, local_dir: str) -> int:
         """Recursively download remote_dir into local_dir. Returns file count."""
@@ -217,7 +238,15 @@ class SFTPClient:
             if _stat.S_ISDIR(entry.st_mode):
                 count += self.download_dir(rpath, lpath)
             else:
-                self._sftp.get(rpath, lpath)
+                # Skip files already present + unchanged; preserve mtime so the
+                # next sync recognises them (listdir_attr already gave us stat,
+                # so no extra round-trip).
+                if not _local_is_current(lpath, int(entry.st_size or 0),
+                                         float(entry.st_mtime or 0)):
+                    self._sftp.get(rpath, lpath)
+                    if entry.st_mtime:
+                        os.utime(lpath, (entry.st_atime or entry.st_mtime,
+                                         entry.st_mtime))
                 count += 1
         return count
 
@@ -394,12 +423,20 @@ class SFTPClient:
             pass  # some servers disallow utime; diff will just show remote newer
 
     def download(self, remote_path: str, local_path: str) -> None:
-        """Download a file, creating local parents and preserving mtime."""
+        """Download a file, creating local parents and preserving mtime.
+
+        Skips the transfer when an identical copy (same size + mtime) is already
+        in the local mirror — a big speed-up for re-builds and re-renders, since
+        published files never change once written. One stat replaces a full
+        re-download of an unchanged file."""
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         if self.dry_run:
             return
-        self._sftp.get(remote_path, local_path)
         st = self._sftp.stat(remote_path)
+        if _local_is_current(local_path, int(st.st_size or 0),
+                             float(st.st_mtime or 0)):
+            return
+        self._sftp.get(remote_path, local_path)
         if st.st_mtime:
             os.utime(local_path, (st.st_atime or st.st_mtime, st.st_mtime))
 
