@@ -13,6 +13,10 @@ venv/
 build/
 dist/
 
+# --- local-only working notes (never commit) ---
+/CLAUDE.md
+/docs/ARCHITECTURE.md
+
 # --- OS cruft ---
 .DS_Store
 Thumbs.db
