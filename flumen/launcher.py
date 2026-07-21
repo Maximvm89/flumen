@@ -98,7 +98,8 @@ def sync_pipeline_config(cfg: ProjectConfig, creds: SFTPCredentials,
 def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | None = None,
            dry_run: bool = False, no_sync: bool = False,
            extra_env: dict | None = None, open_file: str | None = None,
-           log_path: str | None = None, background: bool = False) -> int:
+           log_path: str | None = None, background: bool = False,
+           wait: bool = False) -> int:
     """Launch Blender. `background=True` runs it headless (-b) and BLOCKS until
     it exits, returning Blender's exit code — used by jobs like 'Cache shot'
     that drive Blender to completion instead of opening a window."""
@@ -190,9 +191,12 @@ def launch(cfg: ProjectConfig, creds: SFTPCredentials, extra_args: list[str] | N
         except OSError:
             out = None
     try:
-        if background:
+        if background or wait:
             # Drive Blender to completion and return its exit code (the caller
-            # runs this on a worker thread so the UI stays responsive).
+            # runs this on a worker thread so the UI stays responsive). `wait`
+            # blocks even WITHOUT -b: a GUI Blender is needed for jobs whose rig
+            # evaluation (IK/constraints) doesn't fully solve headless — e.g. the
+            # Alembic cache — but we still wait for it to finish and quit itself.
             rc = subprocess.call(cmd, env=env,
                                  stdout=out, stderr=(subprocess.STDOUT if out
                                                      else None))

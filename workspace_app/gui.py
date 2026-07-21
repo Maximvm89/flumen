@@ -2523,8 +2523,12 @@ class MainWindow(QMainWindow):
             # log_path=None -> the job's output inherits the app's stdout so
             # progress is visible in the console (the addon still writes the
             # detail to ~/.flumen/publish.log via its own logger).
+            # GUI (not -b) + wait: the Alembic cache needs a full-window Blender so
+            # the rigs' IK/constraints solve — headless (-b) freezes IK-driven
+            # limbs in the bake. A window appears while it caches, then the script
+            # quits Blender itself; `wait` blocks until it exits.
             return launch(cfg, creds, extra_env=extra_env, open_file=None,
-                          background=True,
+                          background=False, wait=True,
                           extra_args=["--python", cache_script],
                           log_path=None)
 
