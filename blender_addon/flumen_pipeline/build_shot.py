@@ -677,10 +677,25 @@ def _diagnose_element_anim(coll, phase):
         for ln in lines:
             print(ln, file=_sys.stderr, flush=True)
 
+def _stable_obj_name(o):
+    """A per-holder STABLE identity for an object, used to key animation so it
+    re-applies correctly across rebuilds and for multiple instances of the same
+    asset. Blender collision-suffixes global names (a 2nd orso's 'BODY' becomes
+    'BODY.002', and which suffix lands where isn't stable across a rebuild), so
+    matching by o.name drops animation on duplicate instances. A library-override
+    object carries a reference to its SOURCE object, whose name is fixed in the
+    publish and unique within the linked collection — the stable key. Falls back
+    to o.name for non-override (locally created) objects like the camera rig."""
+    ov = getattr(o, "override_library", None)
+    ref = getattr(ov, "reference", None) if ov else None
+    return ref.name if ref is not None else o.name
+
 def _collect_element_animation(only_ids=None):
     """Gather each element's animation: the Action on every animated object inside an
-    'element__*' holder. Returns (set_of_actions, {element_id: {obj_name: action_name}})
-    for libraries.write + the manifest. `only_ids` limits to those element ids."""
+    'element__*' holder. Returns (set_of_actions, {element_id: {stable_name: action_name}})
+    for libraries.write + the manifest. Objects are keyed by their STABLE source
+    name (see _stable_obj_name) so animation survives a rebuild and works for
+    multiple instances of the same asset. `only_ids` limits to those element ids."""
     actions = set()
     elem_actions = {}
     for coll in bpy.data.collections:
@@ -696,7 +711,7 @@ def _collect_element_animation(only_ids=None):
             act = getattr(ad, "action", None) if ad else None
             if act is not None:
                 actions.add(act)
-                mapping[o.name] = act.name
+                mapping[_stable_obj_name(o)] = act.name
         if mapping:
             elem_actions[eid] = mapping
     return actions, elem_actions
@@ -809,7 +824,15 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
         base_count[b] = base_count.get(b, 0) + 1
     applied = 0
     for o in holder_objs:
-        key = o.name if o.name in action_map else None
+        # Match by STABLE source name first (the override reference — robust to
+        # Blender's collision suffixes and to multiple instances of the same
+        # asset, e.g. two orsos whose 'BODY' meshes rebuild under different
+        # global names). Then the exact global name (manifests published before
+        # this change were keyed that way), then the unique-base fallback.
+        ref = _stable_obj_name(o)
+        key = (ref if ref in action_map
+               else o.name if o.name in action_map
+               else None)
         if key is None and base_count.get(o.name.split(".")[0]) == 1:
             key = manifest_by_base.get(o.name.split(".")[0])
         act = loaded.get(action_map.get(key, "")) if key else None
