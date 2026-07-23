@@ -802,13 +802,14 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
         dbg["note"] = "no blend / empty map"
         return 0
     _diagnose_element_anim(holder, "build")
-    action_map, _dropped = _stale_content_filter(holder, action_map, content)
-    if _dropped:
-        dbg["note"] = f"stale-filter dropped {_dropped}"
+    # NOTE: the old _stale_content_filter (drop every non-armature key when the
+    # linked publish differs from capture) is intentionally NOT applied anymore.
+    # Animation is now matched by STABLE override-reference name, so a key only
+    # ever lands on the object whose source name matches — a stale/restructured
+    # key finds no match and is harmlessly ignored. The blanket filter was both
+    # unnecessary and destructive: it was deleting legitimate per-object keys
+    # (a 2nd instance's hide_viewport visibility) whenever it mis-fired.
     dbg["after_filter_keys"] = sorted(action_map or {})
-    if not action_map:
-        dbg["note"] = "stale-filter emptied the map"
-        return 0
     want = set(action_map.values())
     with bpy.data.libraries.load(anim_blend, link=False) as (src, dst):
         all_src = list(src.actions)       # every action name in the anim blend
