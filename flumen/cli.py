@@ -963,12 +963,19 @@ def cmd_resolve_assembly(args) -> int:
             # partially-cached shot still builds.
             cache = caches.get(r["id"]) if r.get("load") == "alembic" else None
             if cache:
-                clocal = ""
-                if not args.list:
-                    clocal = os.path.join(local_root, *cache["rel"].split("/"))
+                clocal_path = os.path.join(local_root, *cache["rel"].split("/"))
+                clocal, csource = "", "server"       # source: server | local
+                if args.list:
+                    # Preview: don't download; just note whether this cache would
+                    # come from the server or a local-only copy (e.g. cached with
+                    # --no-upload, not synced up), so the Build dialog can show it.
+                    if (not client.exists(rr + "/" + cache["rel"])
+                            and os.path.isfile(clocal_path)):
+                        csource = "local"
+                else:
+                    clocal = clocal_path
                     # Fetch from the server; but if it isn't there yet and a
-                    # local copy already exists (e.g. cached with --no-upload,
-                    # not synced up), use the local copy so lighting can build
+                    # local copy already exists, use it so lighting can build
                     # entirely offline.
                     try:
                         client.download(rr + "/" + cache["rel"], clocal)
@@ -978,8 +985,9 @@ def cmd_resolve_assembly(args) -> int:
                         print(f"note: cache {cache['rel']} not on the server — "
                               f"using the local copy at {clocal}",
                               file=sys.stderr)
+                        csource = "local"
                 r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
-                         cache_version=cache["version"])
+                         cache_version=cache["version"], cache_source=csource)
             elif r.get("load") == "alembic":
                 r = dict(r, load="link")             # no cache — link the geo
             rel = r.get("blend_rel") or ""
@@ -1005,7 +1013,8 @@ def cmd_resolve_assembly(args) -> int:
                      "camera_name": r.get("camera_name", ""),
                      "cache_rel": r.get("cache_rel", ""),
                      "cache_local": r.get("cache_local", ""),
-                     "cache_version": r.get("cache_version", 0)}
+                     "cache_version": r.get("cache_version", 0),
+                     "cache_source": r.get("cache_source", "")}
             # Look resolution at BUILD time: every asset element gets its
             # chosen look (element.look, else 'default') fetched so Build shot
             # can assign the materials — shading always comes from the look

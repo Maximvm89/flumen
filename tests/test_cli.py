@@ -776,6 +776,7 @@ def test_publish_cache_and_lighting_resolves_it(monkeypatch, capsys, tmp_path):
     assert sk["cache_rel"].endswith("skeleton_v001.abc")
     assert sk["cache_local"].endswith("skeleton_v001.abc")
     assert sk["cache_version"] == 1
+    assert sk["cache_source"] == "server"          # downloaded from the server
 
 
 def test_publish_cache_no_upload_writes_local_and_records(monkeypatch, capsys,
@@ -858,4 +859,5 @@ def test_lighting_uses_local_cache_when_not_on_server(monkeypatch, capsys,
     sk = next(e for e in res["elements"] if e["id"] == "skeleton")
     assert sk["load"] == "alembic"
     assert os.path.isfile(sk["cache_local"])       # the local copy is used
+    assert sk["cache_source"] == "local"           # flagged as local-only
     assert "using the local copy" in cap.err

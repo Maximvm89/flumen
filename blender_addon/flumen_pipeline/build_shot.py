@@ -1026,7 +1026,12 @@ def _element_detail(el, present):
     # Lighting: a resolved alembic cache is imported instead of the geometry.
     if el.get("cache_rel"):
         v = int(el.get("cache_version") or 0)
-        return f"load cache v{v:03d}" if v else "load cache"
+        label = f"load cache v{v:03d}" if v else "load cache"
+        # Flag where it comes from so the reviewer knows whether the shot is
+        # building from the server or a not-yet-uploaded local cache.
+        label += (" · LOCAL (not on server)" if el.get("cache_source") == "local"
+                  else " · server")
+        return label
     src = el.get("source_step") or "?"
     detail = f"link {src}"
     d = el.get("dressing")
