@@ -1070,6 +1070,11 @@ def _element_update_notes(el, holder, anim_meta):
     (which, on an animation task, is the layout's until the animator publishes).
     `anim_meta` is resolve-assembly's per-element anim info ({id: {version,…}})."""
     eid = str(el.get("id", ""))
+    # Lighting: a cache element imports a baked alembic (geometry + animation +
+    # look are already IN the cache), so the look/anim "will apply" notes don't
+    # apply and just clutter/truncate the row. Show only what it loads + source.
+    if el.get("cache_rel"):
+        return _element_detail(el, holder is not None), False
     avail = (anim_meta.get(eid) or {}).get("version", "")
     ld = el.get("look_data") or {}
     look_avail = (f"{ld.get('name', '')} v{int(ld.get('version', 0)):03d}"
@@ -1147,6 +1152,7 @@ class FLUMEN_AssemblyItem(bpy.types.PropertyGroup):
     present: bpy.props.BoolProperty(default=False)
     broken: bpy.props.BoolProperty(default=False)   # in scene but content missing
     update: bpy.props.BoolProperty(default=False)   # newer publish/anim available
+    is_cache: bpy.props.BoolProperty(default=False)  # lighting: loads a baked cache
     unload: bpy.props.BoolProperty(
         name="Unload", default=False,
         description="Remove this element from THIS scene (an optimised view — "
@@ -1206,6 +1212,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             it = rows.add()
             it.payload = json.dumps(el)
             it.kind = el.get("kind", "asset")
+            it.is_cache = bool(el.get("cache_rel"))   # lighting: loads a cache
             it.label = el.get("label") or el.get("id", "")
             eid = str(el.get("id", ""))
             holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
@@ -1256,6 +1263,12 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         box = col.box()
         for it in items:
             row = box.row(align=True)
+            # The step (Model/Rig…) picker is only meaningful for an asset that
+            # LINKS a published step and has more than one to choose. A lighting
+            # cache row imports a baked alembic — no step to pick — and a single-
+            # step asset has nothing to choose, so hide the dropdown in both.
+            show_step = (not it.is_cache
+                         and len([s for s in it.steps_csv.split(",") if s]) > 1)
             cb = row.row()
             # Any asset element can be re-ticked to UPDATE to the latest
             # publish (placement is captured and re-applied). A healthy camera
@@ -1276,22 +1289,24 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             elif it.broken:
                 row.label(text="missing on disk — rebuild")
             elif it.present and it.enabled and it.kind != "camera":
-                # updating: what's new, and which step to bring back in
+                # updating: what's new, and (for multi-step assets) which step
                 row.label(text=it.detail)
-                sub = row.row()
-                sub.prop(it, "step", text="")
+                if show_step:
+                    sub = row.row()
+                    sub.prop(it, "step", text="")
             elif it.present:
                 # in scene: version state (publish + anim), up to date or behind
                 row.label(text=it.detail)
             elif it.kind == "camera":
                 row.label(text=it.detail)
             else:
-                # asset not in scene yet: what will come in (incl. which anim
-                # applies) + a step dropdown (rig/model/…) to control the link.
+                # asset not in scene yet: what will come in, + a step dropdown
+                # only when there's actually a step to choose (not a cache).
                 row.label(text=it.detail)
-                sub = row.row()
-                sub.enabled = it.enabled
-                sub.prop(it, "step", text="")
+                if show_step:
+                    sub = row.row()
+                    sub.enabled = it.enabled
+                    sub.prop(it, "step", text="")
             if it.present:
                 # the unload toggle: build an optimised view by dropping what
                 # this scene doesn't need (breakdown untouched, reversible)
