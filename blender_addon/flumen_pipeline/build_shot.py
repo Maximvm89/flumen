@@ -783,19 +783,36 @@ def _stale_content_filter(holder, action_map, captured_content):
               f"against the new version to restore placements).")
     return kept, dropped
 
+# Read-only re-apply trace, inspectable from the Python console after a build:
+#   import flumen_pipeline.build_shot as B; [print(x) for x in B._ANIM_DEBUG_LOG]
+# Records, per element, what the animation re-apply received and matched — so a
+# case like "instance 2's visibility keys never land" can be seen exactly.
+_ANIM_DEBUG_LOG = []
+
 def _apply_element_animation(holder, anim_blend, action_map, content=""):
     """Append the published Actions and assign them onto this element's objects by
     name, so a freshly-built element comes back animated. `content` = the
     publish the animation was captured against (stale-placement guard)."""
+    dbg = {"holder": holder.name, "in_keys": sorted(action_map or {}),
+           "content": content, "have_blend": bool(anim_blend and anim_blend
+                                                   and os.path.isfile(anim_blend or "")),
+           "loaded": [], "matched": [], "applied": 0, "note": ""}
+    _ANIM_DEBUG_LOG.append(dbg)
     if not (anim_blend and action_map and os.path.isfile(anim_blend)):
+        dbg["note"] = "no blend / empty map"
         return 0
     _diagnose_element_anim(holder, "build")
     action_map, _dropped = _stale_content_filter(holder, action_map, content)
+    if _dropped:
+        dbg["note"] = f"stale-filter dropped {_dropped}"
+    dbg["after_filter_keys"] = sorted(action_map or {})
     if not action_map:
+        dbg["note"] = "stale-filter emptied the map"
         return 0
     want = set(action_map.values())
     with bpy.data.libraries.load(anim_blend, link=False) as (src, dst):
-        req_names = [a for a in src.actions if a in want]
+        all_src = list(src.actions)       # every action name in the anim blend
+        req_names = [a for a in all_src if a in want]
         dst.actions = list(req_names)     # a SEPARATE copy — Blender fills dst.actions
                                           # with datablocks on exit; req_names must stay
                                           # the name strings (else the lookup below
@@ -806,6 +823,9 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
     # manifest name. Same zip pattern as look material append.
     loaded = {name: blk for name, blk in zip(req_names, dst.actions)
               if blk is not None}
+    dbg["want"] = sorted(want)
+    dbg["blend_missing_wanted"] = sorted(want - set(all_src))  # capture never wrote these
+    dbg["loaded"] = sorted(loaded)
     # Exact names first, then a BASE-NAME fallback scoped to this holder:
     # model elements' object names carry scene-dependent .00N suffixes (every
     # model publish ships a 'PUBLISH' root empty — a layout with twelve model
@@ -836,6 +856,8 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
         if key is None and base_count.get(o.name.split(".")[0]) == 1:
             key = manifest_by_base.get(o.name.split(".")[0])
         act = loaded.get(action_map.get(key, "")) if key else None
+        dbg["matched"].append((o.name, ref, key, action_map.get(key),
+                               act is not None))
         if act is None:
             continue
         o.animation_data_create()
@@ -852,6 +874,7 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
         except Exception:  # noqa: BLE001
             pass
         applied += 1
+    dbg["applied"] = applied
     return applied
 
 def _build_camera_rig(context, element):
@@ -1273,6 +1296,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         task = active_task()
         if not task:
             return {"CANCELLED"}
+        _ANIM_DEBUG_LOG.clear()          # fresh trace for this build
         chosen, picks, rebuild, update = [], {}, set(), set()
         unloads = []
         present_ct, deselected_ct = 0, 0
@@ -1445,6 +1469,16 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                     holder["flumen_anim"] = ael.get("version", "")
                 except Exception as exc:  # noqa: BLE001
                     print("[Flumen] could not apply animation:", exc)
+            else:
+                # Record why the re-apply was skipped for this element, so a case
+                # like "instance 2 got no animation" is visible in _ANIM_DEBUG_LOG.
+                _ANIM_DEBUG_LOG.append({
+                    "holder": (holder.name if holder else None),
+                    "element_id": el.get("id"),
+                    "skipped": True, "has_holder": bool(holder),
+                    "has_ael": bool(ael),
+                    "ael_objects": sorted((ael or {}).get("objects") or {}),
+                    "is_env": _is_environment(el)})
 
         # Store linked-library paths relative to the shot .blend (cross-machine).
         try:
