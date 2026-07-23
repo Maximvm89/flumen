@@ -776,3 +776,37 @@ def test_publish_cache_and_lighting_resolves_it(monkeypatch, capsys, tmp_path):
     assert sk["cache_rel"].endswith("skeleton_v001.abc")
     assert sk["cache_local"].endswith("skeleton_v001.abc")
     assert sk["cache_version"] == 1
+
+
+def test_publish_cache_no_upload_writes_local_and_records(monkeypatch, capsys,
+                                                          tmp_path):
+    # --no-upload: bake into the local mirror + record the version, but never
+    # touch the server upload (the user syncs the big .abc themselves).
+    import os
+    from flumen import elements as E
+    srv = _DownloadSrv()
+    ent = "characters/skeleton"
+    for st in ("rig", "model"):
+        tasks.save_task(srv, "/r", tasks.new_task("asset", ent, st))
+        tasks.publish_task(srv, "/r", "m", [f"/tmp/skeleton_{st}_v001.blend"],
+                           tasks.make_id("asset", ent, st))
+    shot = "SEQ010/SH0010"
+    tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "animation"))
+    abc = tmp_path / "skeleton.abc"
+    abc.write_bytes(b"ABC-fake")
+    anim_id = tasks.make_id("shot", shot, "animation")
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    rc = cli.cmd_publish_cache(_args(task=anim_id, cache=[f"skeleton={abc}"],
+                                     anim=[], description="", no_upload=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "wrote (local) skeleton v001" in out and "not uploaded" in out
+    # the .abc landed in the local mirror at the server-relative cache path
+    rel = E.cache_dir_rel(shot, "animation") + "/" + E.cache_name("skeleton", 1)
+    assert (tmp_path / rel).is_file()
+    # the .abc itself was NOT uploaded to the "server" (only the task JSON is)
+    assert not any(k.endswith(".abc") for k in srv.files)
+    # but the task DOES record the cache version (so lighting can resolve it)
+    t = tasks.get_task(srv, "/r", anim_id)
+    recs = [p for p in t.get("publishes", []) if p.get("kind") == "cache"]
+    assert recs and recs[-1]["files"][0].endswith("skeleton_v001.abc")

@@ -2483,12 +2483,12 @@ class MainWindow(QMainWindow):
             chosen = dlg.selected_ids()
             if not chosen:
                 return
-            self._launch_cache_job(task, chosen)
+            self._launch_cache_job(task, chosen, upload=dlg.upload_after())
 
         self._busy_buttons(True)
         self._spawn(load_plan, show, busy_msg="Checking existing caches…")
 
-    def _launch_cache_job(self, task: dict, only_ids: list):
+    def _launch_cache_job(self, task: dict, only_ids: list, upload: bool = True):
         from flumen.launcher import launch
         local_root = (self.ed_local.text().strip()
                       or self.cfg.resolved_local_root())
@@ -2512,6 +2512,9 @@ class MainWindow(QMainWindow):
             # default cube/camera/light should leak in.
             "FLUMEN_NEW_SCENE": "1",
         }
+        if not upload:
+            # Bake into the local mirror only; the user uploads the .abc later.
+            extra_env["FLUMEN_CACHE_NO_UPLOAD"] = "1"
 
         import flumen as _flumen
         cache_script = os.path.join(os.path.dirname(_flumen.__file__),
@@ -3286,11 +3289,23 @@ class CacheShotDialog(QDialog):
         btns.addStretch(1)
         root.addLayout(btns)
 
+        self.chk_upload = QCheckBox("Upload caches to the server after baking")
+        self.chk_upload.setChecked(True)
+        self.chk_upload.setToolTip(
+            "Untick to bake the .abc files into your LOCAL project folder only "
+            "(no slow upload) — then upload them yourself, e.g. FileZilla. The "
+            "shot still records the cache versions, so a Lighting build finds "
+            "them once the files are on the server.")
+        root.addWidget(self.chk_upload)
+
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("Cache")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         root.addWidget(bb)
+
+    def upload_after(self) -> bool:
+        return self.chk_upload.isChecked()
 
     def _select_stale(self):
         for b, row in zip(self._boxes, self._plan):

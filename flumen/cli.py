@@ -1225,6 +1225,8 @@ def cmd_publish_cache(args) -> int:
     if not pairs:
         print("error: no --cache given", file=sys.stderr)
         return 1
+    no_upload = getattr(args, "no_upload", False)
+    local_root = cfg.resolved_local_root() or os.getcwd()
     with SFTPClient(creds) as client:
         task = T.get_task(client, rr, args.task)
         if not task or task.get("type") != "shot":
@@ -1236,7 +1238,15 @@ def cmd_publish_cache(args) -> int:
         for eid, path in pairs:
             ver = E.next_cache_version(task, eid)
             rel = cache_dir + "/" + E.cache_name(eid, ver)
-            client.upload(path, rr + "/" + rel)
+            if no_upload:
+                # Write into the local mirror at the exact server-relative path,
+                # so a manual sync (FileZilla) lands it where the record expects.
+                dest = os.path.join(local_root, *rel.split("/"))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                import shutil
+                shutil.copy2(path, dest)
+            else:
+                client.upload(path, rr + "/" + rel)
             files.append(rel)
             published.append((eid, ver, rel))
         rec = {"time": _time.time(), "by": creds.user, "files": files,
@@ -1247,10 +1257,19 @@ def cmd_publish_cache(args) -> int:
                               for eid, _v, _r in published}}
         task["publishes"] = (task.get("publishes") or []) + [rec]
         T.save_task(client, rr, task, actor=creds.user)
-        from . import ledger
-        ledger.record_uploads(client, rr, creds.user, files)
+        if not no_upload:
+            from . import ledger
+            ledger.record_uploads(client, rr, creds.user, files)
+    verb = "wrote (local)" if no_upload else "cached"
     for eid, ver, rel in published:
-        print(f"cached {eid} v{ver:03d} -> {cfg.remote_root}/{rel}")
+        print(f"{verb} {eid} v{ver:03d} -> "
+              f"{'local mirror' if no_upload else cfg.remote_root}/{rel}")
+    if no_upload:
+        local_dir = os.path.join(local_root, *cache_dir.split("/"))
+        print(f"\nNOTE: caches written LOCALLY, not uploaded. The shot already "
+              f"records these versions — upload the cache folder to the server "
+              f"(e.g. FileZilla) before a Lighting build uses them:\n"
+              f"  {local_dir}\n  ->  {rr}/{cache_dir}")
     return 0
 
 
@@ -1617,6 +1636,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="element_id=anim_version the cache was baked from "
                           "(repeatable)")
     pc2.add_argument("--description", default="", help="publish note")
+    pc2.add_argument("--no-upload", action="store_true",
+                     help="write the .abc into the LOCAL project mirror only "
+                          "(no server upload); still records the versions so "
+                          "lighting finds them once you upload the files yourself")
     pc2.set_defaults(func=cmd_publish_cache)
 
     lan = sub.add_parser("list-animations", parents=[common],

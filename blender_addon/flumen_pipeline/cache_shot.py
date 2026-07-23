@@ -176,9 +176,12 @@ def _cache_shot_elements(context, task, only=None):
     if not pairs:
         return [], failed
     total_mb = sum(os.path.getsize(p) for _e, p in pairs) / 1e6
-    print(f"[Flumen] cache: uploading {len(pairs)} cache(s) ({total_mb:.0f} MB) "
-          f"to the server…", flush=True)
+    no_upload = os.environ.get("FLUMEN_CACHE_NO_UPLOAD") == "1"
+    print(f"[Flumen] cache: {'writing (LOCAL, no upload)' if no_upload else 'uploading'} "
+          f"{len(pairs)} cache(s) ({total_mb:.0f} MB)…", flush=True)
     args = ["publish-cache", "--task", task["id"]]
+    if no_upload:
+        args.append("--no-upload")
     for eid, path in pairs:
         args += ["--cache", f"{eid}={path}"]
         if anim_of.get(eid):
