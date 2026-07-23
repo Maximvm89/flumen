@@ -810,3 +810,52 @@ def test_publish_cache_no_upload_writes_local_and_records(monkeypatch, capsys,
     t = tasks.get_task(srv, "/r", anim_id)
     recs = [p for p in t.get("publishes", []) if p.get("kind") == "cache"]
     assert recs and recs[-1]["files"][0].endswith("skeleton_v001.abc")
+
+
+def test_lighting_uses_local_cache_when_not_on_server(monkeypatch, capsys,
+                                                      tmp_path):
+    # cache locally (--no-upload) then build lighting fully offline: the .abc is
+    # not on the server, but the local mirror copy is used instead of failing.
+    import json
+    import os
+    from flumen import turntable, elements as E
+    monkeypatch.setattr(turntable, "_load_project_settings", lambda _r: {})
+
+    class MissingCacheSrv(_DownloadSrv):
+        def download(self, remote, local):        # server has no .abc yet
+            if remote.endswith(".abc"):
+                raise IOError("cache not on server")
+            return super().download(remote, local)
+
+    srv = MissingCacheSrv()
+    ent = "characters/skeleton"
+    for st in ("rig", "model"):
+        tasks.save_task(srv, "/r", tasks.new_task("asset", ent, st))
+        tasks.publish_task(srv, "/r", "m", [f"/tmp/skeleton_{st}_v001.blend"],
+                           tasks.make_id("asset", ent, st))
+    shot = "SEQ010/SH0010"
+    tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "animation"))
+    tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "lighting"))
+    asm = E.empty_assembly(shot)
+    E.add_element(asm, E.new_element(ent))
+    E.save_assembly(srv, "/r", shot, asm)
+    abc = tmp_path / "skeleton.abc"
+    abc.write_bytes(b"ABC-fake")
+    anim_id = tasks.make_id("shot", shot, "animation")
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+
+    rc = cli.cmd_publish_cache(_args(task=anim_id, cache=[f"skeleton={abc}"],
+                                     anim=[], description="", no_upload=True))
+    assert rc == 0
+    capsys.readouterr()
+
+    lit_id = tasks.make_id("shot", shot, "lighting")
+    rc = cli.cmd_resolve_assembly(_args(task=lit_id, shot=None, step=None,
+                                        list=False, only=[], pick=[]))
+    assert rc == 0
+    cap = capsys.readouterr()
+    res = json.loads(cap.out.strip().splitlines()[-1])
+    sk = next(e for e in res["elements"] if e["id"] == "skeleton")
+    assert sk["load"] == "alembic"
+    assert os.path.isfile(sk["cache_local"])       # the local copy is used
+    assert "using the local copy" in cap.err

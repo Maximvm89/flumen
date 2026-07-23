@@ -966,7 +966,18 @@ def cmd_resolve_assembly(args) -> int:
                 clocal = ""
                 if not args.list:
                     clocal = os.path.join(local_root, *cache["rel"].split("/"))
-                    client.download(rr + "/" + cache["rel"], clocal)
+                    # Fetch from the server; but if it isn't there yet and a
+                    # local copy already exists (e.g. cached with --no-upload,
+                    # not synced up), use the local copy so lighting can build
+                    # entirely offline.
+                    try:
+                        client.download(rr + "/" + cache["rel"], clocal)
+                    except Exception:  # noqa: BLE001
+                        if not os.path.isfile(clocal):
+                            raise
+                        print(f"note: cache {cache['rel']} not on the server — "
+                              f"using the local copy at {clocal}",
+                              file=sys.stderr)
                 r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
                          cache_version=cache["version"])
             elif r.get("load") == "alembic":
