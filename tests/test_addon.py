@@ -210,3 +210,30 @@ def test_dressing_collect_local_extras():
                                   override_prop, linked_data, prop_root,
                                   light, cam])
     assert [o.name for o in out] == ["cable", "crate_quick"]
+
+
+def test_look_mesh_matching_handles_instance_suffixes():
+    # look re-apply must map a look manifest's clean mesh names onto a cache
+    # instance's collision-suffixed meshes — both Blender '.001' and Alembic's
+    # underscore form '_001' (the .abc can't store dots).
+    from flumen_pipeline import looks
+
+    class O:
+        def __init__(self, n):
+            self.name = n
+
+    m = looks._match_meshes_by_name
+    # first instance: clean names, exact match
+    r = m(["Skeleton_Base", "Skeleton_Head"],
+          [O("Skeleton_Base"), O("Skeleton_Head")])
+    assert r["Skeleton_Base"].name == "Skeleton_Base"
+    # 2nd instance from a cache: underscore-suffixed names still match
+    r = m(["Skeleton_Base", "Skeleton_Head"],
+          [O("Skeleton_Base_001"), O("Skeleton_Head_001")])
+    assert r["Skeleton_Base"].name == "Skeleton_Base_001"
+    assert r["Skeleton_Head"].name == "Skeleton_Head_001"
+    # ambiguous base (two BODY meshes) paired by sorted order
+    r = m(["BODY", "BODY.001"], [O("BODY.002"), O("BODY.003")])
+    assert r["BODY"].name == "BODY.002" and r["BODY.001"].name == "BODY.003"
+    assert looks._base_name("X_001") == "X" and looks._base_name("X.001") == "X"
+    assert looks._base_name("arm_01") == "arm_01"    # 2-digit: not a suffix

@@ -178,12 +178,25 @@ def _activate_base_image(mat):
             pass
 
 
+import re as _re
+# A trailing Blender collision suffix ('.001') OR the underscore form ('_001')
+# that Alembic writes — the .abc format can't store dots in names, so a cache's
+# 2nd instance 'Skeleton_Base.001' comes back as 'Skeleton_Base_001'.
+_SUFFIX_RE = _re.compile(r"[._]\d{3,}$")
+
+
+def _base_name(name):
+    """Strip a trailing collision suffix (dot or underscore form) so a cache
+    instance's suffixed mesh matches the look manifest's clean name."""
+    return _SUFFIX_RE.sub("", name)
+
+
 def _match_meshes_by_name(manifest_names, meshes):
     """Map each look-manifest mesh name to a holder mesh object, robust to
-    Blender's per-instance collision suffixes. Exact name first; then pair the
-    remaining same-BASE names in sorted order, so a 2nd instance's cache meshes
-    (orso_1's 'BODY.002'/'BODY.003') map to the manifest's 'BODY'/'BODY.001'
-    even though the plain base 'BODY' is ambiguous. Returns {mesh_name: obj}."""
+    Blender's per-instance collision suffixes (both '.001' and Alembic's '_001').
+    Exact name first; then pair the remaining same-BASE names in sorted order, so
+    a 2nd instance's cache meshes ('Skeleton_Base_001') map to the manifest's
+    'Skeleton_Base' even though the plain name differs. Returns {mesh_name: obj}."""
     from collections import defaultdict
     by_name = {o.name: o for o in meshes}
     result, used, remaining = {}, set(), []
@@ -197,12 +210,12 @@ def _match_meshes_by_name(manifest_names, meshes):
     holder_by_base = defaultdict(list)
     for o in meshes:
         if o.name not in used:
-            holder_by_base[o.name.split(".")[0]].append(o)
+            holder_by_base[_base_name(o.name)].append(o)
     for lst in holder_by_base.values():
         lst.sort(key=lambda o: o.name)
     man_by_base = defaultdict(list)
     for mn in remaining:
-        man_by_base[mn.split(".")[0]].append(mn)
+        man_by_base[_base_name(mn)].append(mn)
     for base, mns in man_by_base.items():
         objs = holder_by_base.get(base, [])
         for mn, o in zip(sorted(mns), objs):
