@@ -504,6 +504,11 @@ def _snapshot_poses(context):
     captured in the Action and survive a rebuild:
 
       * pose bones + rig objects — moved when they differ from rest (identity),
+      * bone NUMERIC custom properties (IK/FK switches, IK stretch, pole/parent
+        switches, tail_follow…) — the rig-control state that decides how a limb
+        is driven. Unkeyed, these reset to the rig default on rebuild (e.g. an
+        arm posed in FK with IK_FK unkeyed flips to IK and shows a T-pose), so
+        they are the classic "lost bits" of a rebuilt Rigify character.
       * every OTHER object in an element holder (meshes/empties of a
         model-linked element, the camera object) — moved when it differs from
         its LINKED REFERENCE, i.e. the transform its publish shipped with.
@@ -545,6 +550,38 @@ def _snapshot_poses(context):
             if ok:
                 keyed += 1
 
+    def snap_props(pb, prefix, animated):
+        """Key the bone's NUMERIC custom properties (IK/FK switches, IK stretch,
+        pole/parent switches, tail_follow, rubber_tweak … — the rig-control props
+        that decide how a limb is driven) so the animator's setup survives a
+        rebuild. Without this, an unkeyed switch resets to the rig default on
+        Build shot: e.g. arms posed in FK but with IK_FK unkeyed flip to IK and
+        show a T-pose. The numeric filter skips Rigify metadata (rigify_type is a
+        string, rigify_parameters a group). Already-animated props are left alone."""
+        nonlocal keyed
+        try:
+            keys = list(pb.keys())
+        except Exception:  # noqa: BLE001
+            return
+        for k in keys:
+            if k.startswith("_") or k in ("rigify_type", "rigify_parameters"):
+                continue
+            try:
+                val = pb[k]
+            except Exception:  # noqa: BLE001
+                continue
+            # scalars only — skip arrays/strings/groups (Rigify metadata, etc.)
+            if not isinstance(val, (int, float, bool)):
+                continue
+            full = prefix + ('["%s"]' % k)
+            if full in animated:                       # already animated — leave it
+                continue
+            try:
+                if pb.keyframe_insert(data_path='["%s"]' % k, frame=start):
+                    keyed += 1
+            except Exception:  # noqa: BLE001 — non-animatable / read-only prop
+                pass
+
     def rest_of(obj):
         """The transform baseline 'unmoved' is measured against: the linked
         reference's values for an override (what the publish shipped), the
@@ -574,7 +611,9 @@ def _snapshot_poses(context):
                 animated = _animated_paths(o)
                 snap(o, "", animated, rest_of(o))       # the rig object itself
                 for pb in o.pose.bones:
-                    snap(pb, 'pose.bones["%s"]' % pb.name, animated, identity)
+                    prefix = 'pose.bones["%s"]' % pb.name
+                    snap(pb, prefix, animated, identity)
+                    snap_props(pb, prefix, animated)     # IK/FK switches et al.
             elif is_env:
                 continue                                # backdrop — no capture
             elif o.parent is None:
