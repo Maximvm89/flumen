@@ -586,6 +586,58 @@ def _snapshot_poses(context):
     scene.frame_set(prev)
     return keyed
 
+def _nla_strip_count(obj):
+    """How many NLA strips this object carries — animation the active-action
+    capture does NOT see (a strip's action is not `animation_data.action`)."""
+    ad = getattr(obj, "animation_data", None)
+    n = 0
+    for tr in getattr(ad, "nla_tracks", []) or []:
+        n += len(getattr(tr, "strips", []) or [])
+    return n
+
+def _diagnose_element_anim(coll, phase):
+    """READ-ONLY inventory of an element holder's animation, printed to the
+    System Console. Reveals where 'lost bits' come from: objects whose motion is
+    in NLA strips (not captured), parented control/IK-target objects with no
+    action of their own (not captured, and not keyed by _snapshot_poses which
+    only keys parentless objects), and how many F-curves each captured object
+    actually carries. `phase` is 'publish' or 'build'. No behavior change."""
+    import sys as _sys
+    eid = coll.name[len(ELEMENT_HOLDER_PREFIX):]
+    objs = list(coll.all_objects)
+    captured = uncaptured = nla = 0
+    lines = []
+    for o in objs:
+        ad = getattr(o, "animation_data", None)
+        act = getattr(ad, "action", None) if ad else None
+        nstrips = _nla_strip_count(o)
+        nla += nstrips
+        nfc = len(_action_fcurves(o)) if act else 0
+        parented = getattr(o, "parent", None) is not None
+        if act:
+            captured += 1
+            flag = ""
+        elif nstrips:
+            uncaptured += 1
+            flag = "  <== NLA only, NOT captured"
+        elif getattr(o, "type", "") in ("EMPTY", "ARMATURE"):
+            # a control/target object with no action: only captured if snapshot
+            # keys it, and snapshot skips PARENTED objects — the IK-target trap.
+            flag = "  <== no action" + (", PARENTED (snapshot skips)" if parented
+                                        else "")
+        else:
+            flag = ""
+        lines.append(
+            f"    - {o.name!r} [{getattr(o, 'type', '?')}] "
+            f"action={act.name if act else None!r} fcurves={nfc} "
+            f"nla_strips={nstrips} parented={parented}{flag}")
+    print(f"[Flumen] anim-diag ({phase}) {eid!r}: {len(objs)} object(s), "
+          f"{captured} with active action, {uncaptured} NLA-only, "
+          f"{nla} NLA strip(s) total", file=_sys.stderr, flush=True)
+    if os.environ.get("FLUMEN_ANIM_DEBUG"):
+        for ln in lines:
+            print(ln, file=_sys.stderr, flush=True)
+
 def _collect_element_animation(only_ids=None):
     """Gather each element's animation: the Action on every animated object inside an
     'element__*' holder. Returns (set_of_actions, {element_id: {obj_name: action_name}})
@@ -598,6 +650,7 @@ def _collect_element_animation(only_ids=None):
         eid = coll.name[len(ELEMENT_HOLDER_PREFIX):]
         if only_ids is not None and eid not in only_ids:
             continue
+        _diagnose_element_anim(coll, "publish")
         mapping = {}
         for o in coll.all_objects:
             ad = getattr(o, "animation_data", None)
@@ -682,6 +735,7 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
     publish the animation was captured against (stale-placement guard)."""
     if not (anim_blend and action_map and os.path.isfile(anim_blend)):
         return 0
+    _diagnose_element_anim(holder, "build")
     action_map, _dropped = _stale_content_filter(holder, action_map, content)
     if not action_map:
         return 0
