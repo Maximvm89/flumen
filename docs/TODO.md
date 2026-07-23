@@ -36,41 +36,45 @@ Running backlog of things to build/fix. Newest context at the top of each sectio
 
 ## Caching (Alembic) — PAUSED, revisit
 
-- [ ] **IK/constraint-driven parts frozen in the cache.** Baking a rigged character
-  to Alembic (`cache_shot.py::_cache_shot_elements`, the `bpy.ops.wm.alembic_export`
-  at ~line 164) loses the parts driven by IK/constraints rather than direct FK weight
-  deform: **orso's arms are frozen** and the **teeth sit in the wrong place**, while
-  the FK-deformed body bakes correctly. Established by testing:
-  - The *source* animation file and a GUI **Build shot** both animate the arms fine —
-    so the rig + the rebuild-from-published are correct. The loss is in the **Alembic
-    export** step itself.
-  - A pre-export pose bake (`nla.bake`) was tried and **reverted** (commit `9620f4e`):
-    it ran under headless `-b`, where IK can't solve, so it baked a frozen rest pose
-    onto the *whole* rig (broke everything).
-  - Switching the cache job to a **GUI Blender** (not `-b`) so rigs evaluate — done
-    (commit `29f6c40`, `launch(wait=True)`) — did **not** fix it alone: the export
-    operator still doesn't solve constraints while sampling frames.
-  - **Next step to try:** now that caching runs in GUI (IK *does* solve there), re-add
-    a pose bake to plain keyframes BEFORE export — armature poses *and* bone-parented/
-    constrained objects (teeth) — the operation that failed under `-b` should work in
-    GUI. Verify with the standalone export/import snippet before shipping.
+- [x] **RESOLVED (v0.18.0–v0.18.2): "arms frozen / teeth wrong / lost visibility on
+  rebuild" was NEVER an Alembic export bug — it was the animation publish→rebuild
+  round trip.** The cache just inherited a broken rebuild. Three real root causes,
+  all now fixed in `build_shot.py`:
+  1. **Rig-control custom properties not captured** (`f7cf295`). `_snapshot_poses`
+     keyed transforms but not bone custom props, so an unkeyed Rigify `IK_FK` switch
+     reset to the rig default on rebuild → arms posed in FK flipped to IK → T-pose.
+     Fix: `_snapshot_poses` now also keys each pose bone's numeric custom properties.
+  2. **Global-name matching broke duplicate instances** (`280bc59`). Animation was
+     keyed to objects by collision-suffixed global names; a 2nd instance (orso_1)
+     rebuilt under different suffixes → no match. Fix: match by stable override-
+     reference (source) name via `_stable_obj_name`.
+  3. **`_stale_content_filter` deleted per-object keys** (`bc2e437`) — the actual
+     visibility-loss culprit, proved by `_ANIM_DEBUG_LOG`. It dropped every non-
+     armature key on a (mis-fired) content mismatch, eating a 2nd instance's
+     `hide_viewport` keys. Now not applied — reference-name matching already prevents
+     wrong-object landing, so the filter was obsolete and destructive.
+  Confirmed working on the real orso 2-instance shot. `_stale_content_filter` is now
+  defined-but-unused; `_ANIM_DEBUG_LOG` diagnostic left in (silent, cleared per build).
 - [ ] **Cache file size.** orso baked to a **~1 GB** `.abc` (single character), making
   upload/download very slow. Likely the render-level Subdivision Surface baked per
   frame (`evaluation_mode="RENDER"`). Levers: cap/apply subdiv before bake or export
-  at viewport eval; drop per-frame `normals` (lighting recomputes). Deferred until the
-  animation-correctness bug above is fixed (don't optimise a broken cache).
+  at viewport eval; drop per-frame `normals` (lighting recomputes). Still open, now
+  worth doing since the cache is correct.
+- [ ] **Reminder: animated visibility must use the "Disable in Viewports" (monitor)
+  toggle keyed, NOT the eye icon.** The eye icon (`hide_set`) is temporary/per-viewlayer
+  and never captured. Also note: animated `hide_viewport` does NOT survive Alembic
+  export (documented Blender limitation) — so for the LIGHTING/cache build, a visibility
+  sidecar is still needed if shows/hides must reach the render. Not yet built.
 
-## Build shot (lighting)
+## Build shot (multiple instances)
 
-- [ ] **Duplicate instances share one linked datablock → broken + perpetual
-  "rebuild".** Placing several copies of the same asset (`skeleton`, `skeleton_1..4`;
-  `fantasma_1..10`) logs `WARNING Append: ID 'GRskeleton' is already linked` per copy,
-  and the duplicates' geometry falls apart (exploding vertebrae, mesh named
-  `Skeleton_Vertebrae02_GEO_004`). Suspected root of the "4 skeletons always show
-  needs-rebuild" behaviour too. Investigate `build_shot.py::_link_collection_override`
-  for the multi-copy case — each instance needs its own independent override, not a
-  shared linked group. (Diagnose before editing; this is a tricky corner of Blender's
-  override system.)
+- [ ] **Verify the skeletons.** The `WARNING Append: ID 'GRskeleton' is already linked`
+  + exploding vertebrae on `skeleton_1..4` was hypothesised to be a separate override-
+  independence bug, but it may have been the same animation round-trip bugs now fixed
+  above (wrong action → wrong instance scrambled the deform). **Test:** rebuild a shot
+  with the multiple skeletons; if they come back clean, there is no separate bug. If
+  they still explode, investigate `build_shot.py::_link_collection_override` for the
+  multi-copy override case. (User to check when convenient.)
 
 ## Rendering
 
