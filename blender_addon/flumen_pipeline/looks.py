@@ -191,6 +191,13 @@ def _base_name(name):
     return _SUFFIX_RE.sub("", name)
 
 
+# Read-only trace of look-apply matching, inspectable from the Python console:
+#   import sys; L=[m for n,m in sys.modules.items()
+#                  if n.endswith("flumen_pipeline.looks")][0]
+#   [print(x) for x in L._LOOK_DEBUG_LOG]
+_LOOK_DEBUG_LOG = []
+
+
 def _match_meshes_by_name(manifest_names, meshes):
     """Map each look-manifest mesh name to a holder mesh object, robust to
     Blender's per-instance collision suffixes (both '.001' and Alembic's '_001').
@@ -251,6 +258,13 @@ def _apply_element_look(holder, look_data):
         _activate_base_image(mat)          # Workbench draws the ACTIVE image
     meshes = [o for o in holder.all_objects if getattr(o, "type", "") == "MESH"]
     mapping = _match_meshes_by_name(list(assignments), meshes)
+    unmatched = [mn for mn in assignments if mn not in mapping]
+    _LOOK_DEBUG_LOG.append({
+        "holder": getattr(holder, "name", "?"),
+        "meshes": len(meshes), "manifest": len(assignments),
+        "matched": len(mapping), "unmatched_sample": unmatched[:4],
+        "mesh_sample": [o.name for o in meshes[:2]],
+        "manifest_sample": list(assignments)[:2]})
     assigned = 0
     for mesh_name, obj in mapping.items():
         slot_mats = assignments[mesh_name]
