@@ -45,6 +45,8 @@ ACTIONS = {
                           "icon": "OUTLINER_OB_GROUP_INSTANCE"},
     "flumen.load_animation": {"text": "Load animation…", "icon": "ANIM_DATA"},
     "flumen.cache_shot": {"text": "Cache shot (Alembic)…", "icon": "FILE_CACHE"},
+    "flumen.reapply_cache_looks": {"text": "Reapply looks on caches",
+                                   "icon": "MATERIAL"},
     "flumen.add_lights": {"text": "Add LIGHTS collection", "icon": "OUTLINER_COLLECTION"},
     "flumen.load_lights": {"text": "Load lights from another shot…",
                            "icon": "LIGHT"},
@@ -100,6 +102,13 @@ DEFAULT_MENUS = {
     # Unlisted asset steps (a project may add its own): generic asset menu.
     "asset:*": (["flumen.apply_look", SEPARATOR]
                 + _TASK_CORE + _ASSET_TOOLS + _TAIL),
+    # Lighting: build imports caches; a dedicated look re-apply for the caches,
+    # plus the light-rig tools.
+    "shot:lighting": (["flumen.build_shot", "flumen.reapply_cache_looks",
+                       "flumen.preview_playblast", SEPARATOR,
+                       "flumen.add_lights", "flumen.load_lights",
+                       "flumen.publish_lights", SEPARATOR]
+                      + _TASK_CORE + _TAIL),
     # Shots: Build shot resolves per step (rigs now, caches when they land).
     "shot:*": (["flumen.build_shot", "flumen.load_animation",
                 "flumen.cycle_format", "flumen.preview_playblast", SEPARATOR]

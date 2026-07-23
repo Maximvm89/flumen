@@ -1697,3 +1697,78 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
             return json.loads(out.splitlines()[-1]) if out else []
         except Exception:  # noqa: BLE001
             return None
+
+
+def _is_cache_holder(holder):
+    """True when the element holder's content is an imported ALEMBIC cache — its
+    meshes carry a MeshSequenceCache modifier — rather than a linked rig/model."""
+    for o in holder.all_objects:
+        if getattr(o, "type", "") != "MESH":
+            continue
+        for m in getattr(o, "modifiers", []) or []:
+            if getattr(m, "type", "") == "MESH_SEQUENCE_CACHE":
+                return True
+    return False
+
+class FLUMEN_OT_reapply_cache_looks(bpy.types.Operator):
+    bl_idname = "flumen.reapply_cache_looks"
+    bl_label = "Reapply looks on caches"
+    bl_description = ("Lighting: re-fetch each cached character's published look "
+                      "(per the shot's element look rules) and re-assign it onto "
+                      "every imported Alembic cache in the scene — instances "
+                      "included. Only touches caches, never linked rigs/models")
+
+    def execute(self, context):
+        task = active_task()
+        if not task or task.get("type") != "shot":
+            self.report({"ERROR"}, "Open a lighting shot task from the "
+                                   "Workspace app.")
+            return {"CANCELLED"}
+        data = self._resolve(task)
+        if not data:
+            self.report({"ERROR"}, "Couldn't resolve the shot's looks — check "
+                                   "your connection and retry.")
+            return {"CANCELLED"}
+        looked = missing = skipped = 0
+        for el in data.get("elements") or []:
+            eid = str(el.get("id", ""))
+            holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
+            if holder is None or not _is_cache_holder(holder):
+                continue                       # only imported alembic caches
+            ld = el.get("look_data")
+            if not (isinstance(ld, dict) and ld.get("blend_local")):
+                if el.get("look_error"):
+                    missing += 1
+                continue
+            try:
+                n = _apply_element_look(holder, ld)
+            except Exception as exc:  # noqa: BLE001
+                print("[Flumen] reapply look failed on", eid, exc)
+                n = 0
+            if n:
+                holder["flumen_look"] = (f"{ld.get('name', '')} "
+                                         f"v{int(ld.get('version', 0)):03d}")
+                looked += 1
+            else:
+                skipped += 1
+        parts = [f"Re-applied looks on {looked} cache(s)"]
+        if skipped:
+            parts.append(f"{skipped} matched no meshes")
+        if missing:
+            parts.append(f"{missing} have no published look")
+        self.report({"INFO"} if looked else {"WARNING"}, "; ".join(parts) + ".")
+        return {"FINISHED"} if looked else {"CANCELLED"}
+
+    def _resolve(self, task):
+        # Resolve the assembly to fetch each element's look (blend + manifest);
+        # caches already local are skipped by the download's size+mtime check.
+        cmd, td = _toolkit_cmd(["resolve-assembly", "--task", task["id"]])
+        if cmd is None:
+            return None
+        env = dict(os.environ, FLUMEN_VERBOSE="1")
+        try:
+            out = subprocess.check_output(cmd, cwd=td, text=True, env=env,
+                                          **_no_window()).strip()
+            return json.loads(out.splitlines()[-1]) if out else None
+        except Exception:  # noqa: BLE001
+            return None

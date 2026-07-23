@@ -26,7 +26,7 @@ from .startup import (  # session-startup hooks (called from __init__) + scaffol
     scaffold_surface_scene, _purge_orphan_data)
 from .build_shot import (  # build-shot machinery used by remaining publish code + CLASSES
     ELEMENT_HOLDER_PREFIX, FLUMEN_AssemblyItem, FLUMEN_AnimItem,
-    FLUMEN_OT_build_shot, FLUMEN_OT_load_animation,
+    FLUMEN_OT_build_shot, FLUMEN_OT_load_animation, FLUMEN_OT_reapply_cache_looks,
     _snapshot_poses, _collect_element_animation, _element_anim_hashes,
     _element_loaded_file, _project_rel)
 from .dressing_ops import (  # dressing_ops feature (moved out)
@@ -2127,6 +2127,7 @@ CLASSES = (
     FLUMEN_OT_build_shot,
     FLUMEN_AnimItem,                # PropertyGroup — register before the operator
     FLUMEN_OT_load_animation,
+    FLUMEN_OT_reapply_cache_looks,
     FLUMEN_OT_cache_shot,
     FLUMEN_OT_add_lights,
     FLUMEN_OT_publish_lights,

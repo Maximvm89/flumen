@@ -130,6 +130,7 @@
     ],
     "shot:lighting": [
       "flumen.build_shot",
+      "flumen.reapply_cache_looks",
       "flumen.preview_playblast",
       "---",
       "flumen.add_lights",

@@ -178,13 +178,47 @@ def _activate_base_image(mat):
             pass
 
 
+def _match_meshes_by_name(manifest_names, meshes):
+    """Map each look-manifest mesh name to a holder mesh object, robust to
+    Blender's per-instance collision suffixes. Exact name first; then pair the
+    remaining same-BASE names in sorted order, so a 2nd instance's cache meshes
+    (orso_1's 'BODY.002'/'BODY.003') map to the manifest's 'BODY'/'BODY.001'
+    even though the plain base 'BODY' is ambiguous. Returns {mesh_name: obj}."""
+    from collections import defaultdict
+    by_name = {o.name: o for o in meshes}
+    result, used, remaining = {}, set(), []
+    for mn in manifest_names:
+        o = by_name.get(mn)
+        if o is not None and o.name not in used:
+            result[mn] = o
+            used.add(o.name)
+        else:
+            remaining.append(mn)
+    holder_by_base = defaultdict(list)
+    for o in meshes:
+        if o.name not in used:
+            holder_by_base[o.name.split(".")[0]].append(o)
+    for lst in holder_by_base.values():
+        lst.sort(key=lambda o: o.name)
+    man_by_base = defaultdict(list)
+    for mn in remaining:
+        man_by_base[mn.split(".")[0]].append(mn)
+    for base, mns in man_by_base.items():
+        objs = holder_by_base.get(base, [])
+        for mn, o in zip(sorted(mns), objs):
+            result[mn] = o
+    return result
+
+
 def _apply_element_look(holder, look_data):
-    """Apply a published look onto a LINKED shot element. The mesh datablocks
-    are linked (read-only), so materials go on OBJECT-level slots — those are
-    override-editable. Assignment matches the look manifest's mesh names with
-    the same per-holder base-name fallback the anim apply uses (the manifest
-    carries the surface file's clean names; this scene may have suffixed them).
-    Returns how many meshes got the look."""
+    """Apply a published look onto a shot element's meshes — a LINKED rig/model or
+    an imported ALEMBIC cache, and any number of instances. For linked (read-only)
+    mesh data the materials go on OBJECT-level slots (override-safe); for local
+    editable mesh data (alembic caches, locally-modeled geometry) they go straight
+    onto the mesh material list (set/appended as needed). Matching pairs the look
+    manifest's clean mesh names to this scene's (possibly suffixed) objects via
+    _match_meshes_by_name, so multiple instances each get the look. Returns how
+    many meshes got the look."""
     blend = look_data.get("blend_local") or ""
     if not (blend and os.path.isfile(blend)):
         return 0
@@ -203,29 +237,38 @@ def _apply_element_look(holder, look_data):
     for mat in mats.values():
         _activate_base_image(mat)          # Workbench draws the ACTIVE image
     meshes = [o for o in holder.all_objects if getattr(o, "type", "") == "MESH"]
-    by_name = {o.name: o for o in meshes}
+    mapping = _match_meshes_by_name(list(assignments), meshes)
     assigned = 0
-    for mesh_name, slot_mats in assignments.items():
-        obj = by_name.get(mesh_name)
-        if obj is None:                       # suffix drift: unique base match
-            base = mesh_name.split(".")[0]
-            cands = [o for o in meshes if o.name.split(".")[0] == base]
-            obj = cands[0] if len(cands) == 1 else None
-        if obj is None:
-            continue
+    for mesh_name, obj in mapping.items():
+        slot_mats = assignments[mesh_name]
+        me = getattr(obj, "data", None)
+        # Local (editable) mesh data — imported alembic cache or local model —
+        # takes materials directly; a linked mesh's slots are read-only, so use
+        # object-level overrides instead.
+        local = me is not None and getattr(me, "library", None) is None
         ok = False
         for i, mname in enumerate(slot_mats):
-            if i >= len(obj.material_slots):
-                break                          # linked mesh defines the slots
             mat = mats.get(mname) if mname else None
-            slot = obj.material_slots[i]
-            try:
-                if slot.link != "OBJECT":
-                    slot.link = "OBJECT"       # object slots are override-safe
-                slot.material = mat
-                ok = True
-            except Exception:  # noqa: BLE001
-                pass
+            if local:
+                try:
+                    if i < len(me.materials):
+                        me.materials[i] = mat
+                    else:
+                        me.materials.append(mat)
+                    ok = True
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                if i >= len(obj.material_slots):
+                    break                      # linked mesh defines the slots
+                slot = obj.material_slots[i]
+                try:
+                    if slot.link != "OBJECT":
+                        slot.link = "OBJECT"   # object slots are override-safe
+                    slot.material = mat
+                    ok = True
+                except Exception:  # noqa: BLE001
+                    pass
         assigned += bool(ok)
     return assigned
 
