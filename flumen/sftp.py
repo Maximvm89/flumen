@@ -178,13 +178,28 @@ class SFTPClient:
             raise ConnectionError(
                 f"cannot reach {where} ({exc}) — check your network/VPN and "
                 f"the host/port in .env") from exc
+        # Throughput tuning. Paramiko's defaults (a ~2 MB flow-control window and
+        # a rekey every ~1 GB) throttle transfers well below the link: the window
+        # bounds how much unacknowledged data is in flight, so on any real latency
+        # it's the main cap on upload/download speed, and the byte-based rekey
+        # stalls right in the middle of a big cache upload. A large window + no
+        # mid-transfer rekey is the low-risk win here (native clients like FileZilla
+        # also parallelise across connections — that's a separate, bigger change).
+        # Both tunable via env for a server that dislikes the larger frames.
+        win = int(os.environ.get("FLUMEN_SFTP_WINDOW", str(2 ** 27)))    # 128 MB
+        pkt = int(os.environ.get("FLUMEN_SFTP_PACKET", str(2 ** 16)))    # 64 KB
         try:
-            self._transport = paramiko.Transport(sock)
+            self._transport = paramiko.Transport(
+                sock, default_window_size=win, default_max_packet_size=pkt)
             self._transport.connect(
                 username=self.creds.user,
                 password=self.creds.password if not pkey else None,
                 pkey=pkey,
             )
+            # Effectively disable byte/packet-triggered rekey so a big transfer
+            # isn't interrupted by a key renegotiation (time-based rekey stays).
+            self._transport.packetizer.REKEY_BYTES = 2 ** 40
+            self._transport.packetizer.REKEY_PACKETS = 2 ** 40
         except paramiko.AuthenticationException as exc:
             self.close()
             _close_quietly(sock)
