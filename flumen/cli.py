@@ -1191,6 +1191,53 @@ def cmd_publish_lights(args) -> int:
     return 0
 
 
+def cmd_publish_shot(args) -> int:
+    """Publish a lighting shot's full work file AS-IS — the render ground truth.
+    Uploads the .blend (and its sidecar *.deps.json dependency manifest, if given)
+    into the task's publish/ folder, recorded with kind 'shot'. The file keeps its
+    work-version name, so each publish is a distinct, non-overwriting version.
+    cmd_render opens the newest such publish and fetches any missing deps."""
+    import time as _time
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import tasks as T
+    rr = cfg.remote_root.rstrip("/")
+    if not os.path.isfile(args.local):
+        print(f"error: shot file not found: {args.local}", file=sys.stderr)
+        return 1
+    with SFTPClient(creds) as client:
+        task = T.get_task(client, rr, args.task)
+        if not task or task.get("type") != "shot":
+            print(f"error: not a shot task: {args.task}", file=sys.stderr)
+            return 1
+        pub_dir = T.task_dir_rel(task) + "/publish"
+        blend_rel = pub_dir + "/" + os.path.basename(args.local)
+        # Never overwrite an existing publish — Publish shot always saves a new
+        # work version first, so a clash means a double-publish of the same file.
+        if client.exists(rr + "/" + blend_rel):
+            print(f"error: already published: {blend_rel} — save a new work "
+                  f"version first.", file=sys.stderr)
+            return 1
+        client.upload(args.local, rr + "/" + blend_rel)
+        files = [blend_rel]
+        if args.deps and os.path.isfile(args.deps):
+            deps_rel = pub_dir + "/" + os.path.basename(args.deps)
+            client.upload(args.deps, rr + "/" + deps_rel)
+            files.append(deps_rel)
+        rec = {"time": _time.time(), "by": creds.user, "files": files,
+               "description": args.description or "shot publish", "kind": "shot"}
+        task["publishes"] = (task.get("publishes") or []) + [rec]
+        if args.status:
+            task["status"] = args.status
+        T.save_task(client, rr, task, actor=creds.user)
+        from . import ledger
+        ledger.record_uploads(client, rr, creds.user, files)
+    print(f"published shot -> {cfg.remote_root}/{blend_rel}")
+    if args.status:
+        print(f"task {args.task} -> {args.status}")
+    return 0
+
+
 def cmd_list_light_rigs(args) -> int:
     """Print every shot's newest published light rig as JSON — feeds the
     'Load lights from another shot' picker."""
@@ -1639,6 +1686,17 @@ def build_parser() -> argparse.ArgumentParser:
     pl2.add_argument("--status", default="", help="set task status after publish")
     pl2.add_argument("--description", default="", help="publish note")
     pl2.set_defaults(func=cmd_publish_lights)
+
+    ps3 = sub.add_parser("publish-shot", parents=[common],
+                         help="publish a lighting shot's full work file (render "
+                              "ground truth)")
+    ps3.add_argument("--task", required=True, help="lighting shot task id")
+    ps3.add_argument("--local", required=True, help="the shot .blend to upload")
+    ps3.add_argument("--deps", default="",
+                     help="sidecar *.deps.json dependency manifest to publish")
+    ps3.add_argument("--status", default="", help="set task status after publish")
+    ps3.add_argument("--description", default="", help="publish note")
+    ps3.set_defaults(func=cmd_publish_shot)
 
     llr = sub.add_parser("list-light-rigs", parents=[common],
                          help="list every shot's newest light rig (JSON)")

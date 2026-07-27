@@ -19,6 +19,7 @@ from ._common import (  # shared toolkit-shell + logging plumbing
     _preflight_server, _shell_toolkit, _shell_json, _apply_one, active_task)
 from .lights import (  # lighting operators (registered via CLASSES below)
     FLUMEN_OT_add_lights, FLUMEN_OT_publish_lights, FLUMEN_OT_load_lights)
+from .publish_shot import FLUMEN_OT_publish_shot  # full-scene render publish
 from .looks import (  # look-apply operator + build-time element-look helper
     FLUMEN_OT_apply_look, _apply_element_look)
 from .startup import (  # session-startup hooks (called from __init__) + scaffolds
@@ -2132,6 +2133,7 @@ CLASSES = (
     FLUMEN_OT_add_lights,
     FLUMEN_OT_publish_lights,
     FLUMEN_OT_load_lights,
+    FLUMEN_OT_publish_shot,
     FLUMEN_OT_turntable_framing,
     FLUMEN_OT_preview_turntable,
     FLUMEN_OT_render_look_turntable,

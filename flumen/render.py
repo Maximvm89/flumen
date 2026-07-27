@@ -1,10 +1,13 @@
-"""Final shot render: open the lighting task's latest saved work file headless,
+"""Final shot render: open the lighting task's newest PUBLISHED shot file headless,
 apply the project's final render settings (with optional per-shot overrides),
 render a PNG sequence into 06_renders, encode a review MP4 into 07_dailies, and
 record it on the task.
 
-The lighter assembles + lights the shot and saves a work file; this renders
-exactly that. Reuses the turntable/playblast encode + record plumbing.
+The lighter runs 'Publish shot' to save + publish the whole scene as the render
+ground truth; this renders exactly that published file (never an unpublished work
+file), auto-fetching any linked cache/library the render machine is missing at the
+exact versions the shot uses. Reuses the turntable/playblast encode + record
+plumbing.
 """
 
 from __future__ import annotations
@@ -27,24 +30,60 @@ def render_video_rel(entity: str) -> str:
     return f"07_dailies/{entity}/lighting/{leaf}_lighting_render.mp4"
 
 
-def _latest_work_blend(client, cfg, task, local_root: str) -> str | None:
-    """The newest .blend in the lighting task's work folder — local if present,
-    otherwise fetched from the server (work files sync there)."""
+def _published_shot_blend(client, cfg, task, local_root: str):
+    """The newest PUBLISHED shot .blend (kind 'shot') for this lighting task — the
+    render ground truth — fetched into the local mirror. Returns (blend_local,
+    deps_rel), or (None, '') if nothing has been published (render is
+    published-only: the lighter must run 'Publish shot' first)."""
     from . import tasks as T
-    work_rel = T.task_work_rel(task)
-    work_dir = os.path.join(local_root, *work_rel.split("/"))
-    local = sorted(glob.glob(os.path.join(work_dir, "*.blend")), reverse=True)
-    if local:
-        return local[0]
+    shots = T.published_shot_files(task)
+    if not shots:
+        return None, ""
+    top = shots[0]
     rr = cfg.remote_root.rstrip("/")
-    names = sorted((e["name"] for e in client.listdir(rr + "/" + work_rel)
-                    if e["name"].endswith(".blend")), reverse=True)
-    if not names:
-        return None
-    os.makedirs(work_dir, exist_ok=True)
-    dest = os.path.join(work_dir, names[0])
-    client.download(rr + "/" + work_rel + "/" + names[0], dest)
-    return dest
+    dest = os.path.join(local_root, *top["rel"].split("/"))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    client.download(rr + "/" + top["rel"], dest)
+    return dest, top.get("deps_rel") or ""
+
+
+def _ensure_dependencies(client, cfg, deps_rel: str, local_root: str):
+    """Download any dependency the published shot references (linked library,
+    alembic cache, texture) that is missing from the local mirror, at the EXACT
+    rel the lighting file used. Returns (fetched, missing): rels pulled now, and
+    rels not found on the server (the exact version is gone — render can't be
+    faithful, so the caller flags these and aborts)."""
+    import json
+    from .cli import _fetch_sidecar_textures
+    rr = cfg.remote_root.rstrip("/")
+    fetched, missing = [], []
+    if not deps_rel:
+        return fetched, missing
+    txt = client.read_text(rr + "/" + deps_rel)
+    try:
+        manifest = json.loads(txt) if txt else {}
+    except ValueError:
+        manifest = {}
+    tex_seen: set = set()
+    for d in manifest.get("deps") or []:
+        rel = d.get("rel") or ""
+        if not rel:
+            continue
+        local = os.path.join(local_root, *rel.split("/"))
+        if os.path.isfile(local):
+            continue                                 # already mirrored
+        if not client.exists(rr + "/" + rel):
+            missing.append(rel)                      # exact version gone
+            continue
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        client.download(rr + "/" + rel, local)
+        fetched.append(rel)
+        # Linked publishes reference //textures/* — pull the sidecar images too,
+        # else a fresh render machine shows pink where a cache/env was fetched.
+        if d.get("kind") == "library" and rel.endswith(".blend"):
+            _fetch_sidecar_textures(client, rr, rel, os.path.dirname(local),
+                                    tex_seen)
+    return fetched, missing
 
 
 def run_render(cfg, creds, task_id: str, samples: int | None = None,
@@ -75,14 +114,29 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
             print(f"error: not a shot task: {task_id}")
             return 1
         entity = task["entity"]
-        blend = None if dry_run else _latest_work_blend(client, cfg, task,
-                                                        local_root)
+        blend, missing_deps = None, []
+        if not dry_run:
+            blend, deps_rel = _published_shot_blend(client, cfg, task, local_root)
+            if blend:
+                fetched, missing_deps = _ensure_dependencies(
+                    client, cfg, deps_rel, local_root)
+                if fetched:
+                    print(f"fetched {len(fetched)} missing dependency file(s) "
+                          f"for the render (exact versions the shot uses).")
 
     settings = _load_project_settings(local_root)
     rnd = _project_render(settings)
     if not dry_run and not blend:
-        print("error: no lighting work file to render — the lighter must save "
-              "the shot into the task first.")
+        print("error: no PUBLISHED shot to render — run 'Publish shot' from the "
+              "lighting task first. Render uses the published file as ground "
+              "truth, not the work file.")
+        return 1
+    if not dry_run and missing_deps:
+        print("error: the published shot references dependency file(s) that are "
+              "no longer on the server (exact versions gone):")
+        for rel in missing_deps:
+            print(f"  missing: {rel}")
+        print("re-cache the missing element(s) and Publish shot again, then retry.")
         return 1
 
     frames_rel = render_frames_rel(entity)
@@ -91,7 +145,7 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
     video_local = os.path.join(local_root, *video_rel.split("/"))
 
     if dry_run:
-        print(f"(dry-run) would render {entity} lighting work file")
+        print(f"(dry-run) would render {entity} newest PUBLISHED lighting shot")
         print(f"          PNG sequence -> {frames_rel}")
         print(f"          review video -> {video_rel}")
         return 0

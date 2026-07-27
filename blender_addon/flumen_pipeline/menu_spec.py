@@ -51,6 +51,8 @@ ACTIONS = {
     "flumen.load_lights": {"text": "Load lights from another shot…",
                            "icon": "LIGHT"},
     "flumen.publish_lights": {"text": "Publish lights", "icon": "OUTLINER_OB_LIGHT"},
+    "flumen.publish_shot": {"text": "Publish shot (for render)",
+                            "icon": "RENDER_ANIMATION"},
     "flumen.cycle_format": {"text": "Preview format (16:9 ⇄ 9:16)",
                             "icon": "ARROW_LEFTRIGHT"},
     "flumen.preview_playblast": {"text": "Preview playblast",
@@ -107,7 +109,8 @@ DEFAULT_MENUS = {
     "shot:lighting": (["flumen.build_shot", "flumen.reapply_cache_looks",
                        "flumen.preview_playblast", SEPARATOR,
                        "flumen.add_lights", "flumen.load_lights",
-                       "flumen.publish_lights", SEPARATOR]
+                       "flumen.publish_lights", SEPARATOR,
+                       "flumen.publish_shot", SEPARATOR]
                       + _TASK_CORE + _TAIL),
     # Shots: Build shot resolves per step (rigs now, caches when they land).
     "shot:*": (["flumen.build_shot", "flumen.load_animation",

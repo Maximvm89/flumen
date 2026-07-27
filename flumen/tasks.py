@@ -118,6 +118,29 @@ def published_files(task: dict, ext: str = ".blend") -> list[dict]:
     return out
 
 
+def published_shot_files(task: dict) -> list[dict]:
+    """Full-scene shot publishes (records with kind 'shot') — the render ground
+    truth — newest first. Each entry: {rel, name, deps_rel, time, by,
+    description}. `deps_rel` is the sibling *.deps.json dependency manifest
+    published with the .blend, or '' if none. Distinct from published_files so a
+    lighting task's light-rig .blends never get mistaken for a renderable shot."""
+    import os as _os
+    out = []
+    for rec in task.get("publishes") or []:
+        if rec.get("kind") != "shot":
+            continue
+        files = rec.get("files") or []
+        blend = next((f for f in files if f.endswith(".blend")), None)
+        if not blend:
+            continue
+        deps = next((f for f in files if f.endswith(".deps.json")), "")
+        out.append({"rel": blend, "name": _os.path.basename(blend),
+                    "deps_rel": deps, "time": rec.get("time"),
+                    "by": rec.get("by"), "description": rec.get("description", "")})
+    out.sort(key=lambda r: r["name"], reverse=True)  # _v003 before _v002
+    return out
+
+
 def published_looks(task: dict) -> list[dict]:
     """Named looks a surface task has published, latest version of each. A look
     file is '<asset>_surface_<look>_vNNN.blend'; the look name is parsed against the

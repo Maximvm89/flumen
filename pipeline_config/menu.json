@@ -137,6 +137,8 @@
       "flumen.load_lights",
       "flumen.publish_lights",
       "---",
+      "flumen.publish_shot",
+      "---",
       "flumen.add_review_camera",
       "flumen.render_review",
       "flumen.save_to_task",
