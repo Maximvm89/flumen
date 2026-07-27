@@ -1447,9 +1447,12 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                 # per-piece placement keys on environments (placed as a unit).
                 holder["flumen_asset"] = el.get("asset", "")
             # Environment element with a set-dressing: link each manifest prop
-            # under the holder and place it at its published transform.
+            # under the holder and place it at its published transform, plus the
+            # dresser's local 'extras' geometry. A dressing can be extras-only
+            # (no placed props), so fire on either.
             dressing = el.get("dressing")
-            if holder and isinstance(dressing, dict) and dressing.get("props"):
+            if (holder and isinstance(dressing, dict)
+                    and (dressing.get("props") or dressing.get("extras"))):
                 d_built, d_skipped = _apply_dressing_props(context, holder, el)
                 if d_built:
                     holder["flumen_dressing"] = (f"{dressing.get('name', '')} "
