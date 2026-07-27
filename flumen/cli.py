@@ -1051,10 +1051,12 @@ def cmd_resolve_assembly(args) -> int:
                     # a missing 'default' just means no look published yet.
                     entry["look_error"] = (f"no published look '{lname}' "
                                            f"on {r['asset']}")
-            # Environment element with a named set-dressing: resolve the newest
-            # published version of that name, inline its manifest and fetch each
-            # prop's publish so Build shot only has to link + place.
-            if r.get("dressing"):
+            # Environment element with a named set-dressing: LIGHTING ONLY.
+            # Set dressing is a lighting concern — layout/animation builds skip
+            # it entirely (no resolve, no download). In lighting, resolve the
+            # newest published version of the named dressing, inline its manifest
+            # and fetch each prop's publish so Build shot only has to link + place.
+            if r.get("dressing") and step == "lighting":
                 d = E.newest_dressing(client, rr, r["asset"], r["dressing"])
                 if not d:
                     entry["dressing_error"] = (f"no published dressing "
