@@ -1206,6 +1206,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         missing_libs = _missing_libraries()
         anim_meta = ((data.get("anim") or {}).get("elements")) or {}
         unloaded = _scene_unloaded_ids(context.scene)
+        is_lighting = task.get("step") == "lighting"
         rows = context.window_manager.flumen_build_items
         rows.clear()
         for el in listed:
@@ -1228,6 +1229,16 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             # row to keep what's in the scene (e.g. unpublished local anim on
             # that element — an update re-applies the newest PUBLISHED one).
             it.enabled = (not it.present) or it.broken or it.update
+            # Lighting builds from baked caches. An animated asset with no cache
+            # yet would fall back to its rig/model — don't auto-import that; leave
+            # it unticked so the lighter opts in. Environments (static link +
+            # set-dressing) and the camera have no cache by nature and still
+            # build by default.
+            if (is_lighting and it.kind == "asset" and not it.is_cache
+                    and not _is_environment(el)):
+                it.enabled = False
+                if not it.present:
+                    it.detail = "no cache yet — tick to link the rig"
             # Deliberately unloaded from this scene: stays out until the
             # artist opts back in — never silently rebuilt by a routine Build.
             if not it.present and eid in unloaded:
