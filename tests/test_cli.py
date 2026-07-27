@@ -476,7 +476,9 @@ def test_resolve_assembly_inlines_dressing_props(monkeypatch, capsys, tmp_path):
     srv = _DownloadSrv()
     env = _seed_env_with_dressing(srv)
     shot = "SEQ010/SH0010"
-    shot_task = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    # Set dressing resolves only at the lighting step (a lighting concern) —
+    # layout/animation builds skip it entirely.
+    shot_task = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "lighting"))
     asm = E.empty_assembly(shot)
     E.add_element(asm, E.new_element(env, dressing="night_market"))
     E.save_assembly(srv, "/r", shot, asm)
@@ -527,7 +529,7 @@ def test_resolve_assembly_missing_dressing_warns_not_fatal(monkeypatch, capsys,
     tasks.publish_task(srv, "/r", "marco", ["/tmp/market_square_model_v004.blend"],
                        tasks.make_id("asset", env, "model"))
     shot = "SEQ010/SH0010"
-    shot_task = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    shot_task = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "lighting"))
     asm = E.empty_assembly(shot)
     E.add_element(asm, E.new_element(env, dressing="never_published"))
     E.save_assembly(srv, "/r", shot, asm)
@@ -541,6 +543,34 @@ def test_resolve_assembly_missing_dressing_warns_not_fatal(monkeypatch, capsys,
     assert el["blend_local"]                              # env still resolves
     assert "never_published" in el["dressing_error"]
     assert "dressing" not in el or not isinstance(el.get("dressing"), dict)
+
+
+def test_resolve_assembly_skips_dressing_off_lighting(monkeypatch, capsys,
+                                                      tmp_path):
+    """Set dressing is a lighting concern: a layout/animation build resolves the
+    environment but neither resolves nor downloads its associated dressing."""
+    import json
+    from flumen import turntable, elements as E
+    monkeypatch.setattr(turntable, "_load_project_settings", lambda _r: {})
+    srv = _DownloadSrv()
+    env = _seed_env_with_dressing(srv)
+    shot = "SEQ010/SH0010"
+    shot_task = tasks.save_task(srv, "/r", tasks.new_task("shot", shot, "layout"))
+    asm = E.empty_assembly(shot)
+    E.add_element(asm, E.new_element(env, dressing="night_market"))
+    E.save_assembly(srv, "/r", shot, asm)
+
+    _patch(monkeypatch, srv, local_root=str(tmp_path))
+    rc = cli.cmd_resolve_assembly(_args(task=shot_task["id"], shot=None, step=None,
+                                        list=False, only=[], pick=[]))
+    assert rc == 0
+    res = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    el = res["elements"][0]
+    assert el["blend_local"]                              # env itself still builds
+    assert "dressing" not in el                           # no dressing off lighting
+    assert "dressing_error" not in el
+    # and nothing dressing-related was downloaded (no lantern prop, no manifest)
+    assert not any("lantern" in r for r, _ in srv.downloads)
 
 
 def test_review_still_uploads_and_notifies(monkeypatch, capsys, tmp_path):
