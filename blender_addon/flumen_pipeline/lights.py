@@ -177,11 +177,27 @@ class FLUMEN_OT_load_lights(bpy.types.Operator):
         if not blend or not os.path.isfile(blend):
             self.report({"ERROR"}, "Rig file not found after fetch.")
             return {"CANCELLED"}
+        # Blender refuses to append a file into itself — libraries.load raises
+        # "Cannot load from the current blend file." This happens when the light
+        # rig publish IS the file currently open (e.g. opened to inspect it):
+        # fetch-lights returns that same path. Report it plainly instead of a raw
+        # traceback. normcase so the Windows path compare is case-insensitive.
+        # (Mirrors the self-file guard in looks._append_materials.)
+        if (bpy.data.filepath and os.path.normcase(os.path.abspath(blend))
+                == os.path.normcase(os.path.abspath(bpy.data.filepath))):
+            self.report({"ERROR"}, "That light rig is the file you currently have "
+                        "open — open your shot's work file first, then Load lights.")
+            return {"CANCELLED"}
         # Append the light objects (a COPY — editable per shot) into LIGHTS.
         target = _lights_collection(context, create=True)
         before = set(bpy.data.objects)
-        with bpy.data.libraries.load(blend, link=False) as (src, dst):
-            dst.objects = [n for n in src.objects]
+        try:
+            with bpy.data.libraries.load(blend, link=False) as (src, dst):
+                dst.objects = [n for n in src.objects]
+        except Exception as exc:  # noqa: BLE001 — corrupt/incompatible rig, etc.
+            self.report({"ERROR"}, f"Couldn't read the light rig "
+                        f"'{os.path.basename(blend)}': {exc}")
+            return {"CANCELLED"}
         added = 0
         for o in dst.objects:
             if o is None or o.type != "LIGHT":
