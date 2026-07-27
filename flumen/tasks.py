@@ -118,6 +118,29 @@ def published_files(task: dict, ext: str = ".blend") -> list[dict]:
     return out
 
 
+def openable_publishes(task: dict) -> list[dict]:
+    """Published .blend files that are real, openable work scenes — what the
+    Workspace app offers under 'Open latest publish' / 'Open version', newest
+    first. Excludes light rigs (records with kind 'lights') and actions-only
+    …_anim.blend artifacts: both are PARTIAL library files with no scene, so
+    Blender opens them as an empty 'Library file, loading empty scene' — they
+    must never be offered as a workfile. A full-scene shot publish (kind 'shot')
+    stays openable."""
+    import os as _os
+    out = []
+    for rec in task.get("publishes") or []:
+        if rec.get("kind") == "lights":
+            continue
+        for rel in rec.get("files") or []:
+            if not rel.endswith(".blend") or rel.endswith("_anim.blend"):
+                continue
+            out.append({"rel": rel, "name": _os.path.basename(rel),
+                        "time": rec.get("time"), "by": rec.get("by"),
+                        "description": rec.get("description", "")})
+    out.sort(key=lambda r: r["name"], reverse=True)  # _v003 before _v002
+    return out
+
+
 def published_shot_files(task: dict) -> list[dict]:
     """Full-scene shot publishes (records with kind 'shot') — the render ground
     truth — newest first. Each entry: {rel, name, deps_rel, time, by,

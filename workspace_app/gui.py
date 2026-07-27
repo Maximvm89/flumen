@@ -2350,10 +2350,9 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         # Surface publishes are look libraries (no scene) — not openable as workfiles.
-        # Anim artifacts (…_anim.blend) are actions-only and also not openable.
+        # openable_publishes drops light rigs + …_anim.blend (partial library files).
         pubs = ([] if t.get("step") == "surface"
-                else [p for p in tasksmod.published_files(t)
-                      if not p["name"].endswith("_anim.blend")])
+                else tasksmod.openable_publishes(t))
         act_open = menu.addAction("Open latest publish")
         act_open.setEnabled(bool(pubs))
         # A task with no local work file yet still needs an entry point: offer a
@@ -2672,11 +2671,10 @@ class MainWindow(QMainWindow):
         if start_new:
             blend_rel = None
         # Open priority: chosen version > latest published > latest local work file.
-        # Skip …_anim.blend (actions-only artifacts), never an openable workfile.
+        # openable_publishes skips light rigs + …_anim.blend (never openable scenes).
         if (blend_rel is None and not work_latest and not start_new
                 and task.get("step") != "surface"):
-            pubs = [p for p in tasksmod.published_files(task)
-                    if not p["name"].endswith("_anim.blend")]
+            pubs = tasksmod.openable_publishes(task)
             blend_rel = pubs[0]["rel"] if pubs else None
         open_file = None
         if blend_rel:

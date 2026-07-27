@@ -82,6 +82,27 @@ def test_published_shot_files_filters_kind_and_orders():
     assert all("lights" not in s["name"] for s in shots)
 
 
+# ---- tasks.openable_publishes ---------------------------------------------
+
+def test_openable_publishes_excludes_light_rigs_and_anim():
+    task = tasks.new_task("shot", "SEQ010/SH0010", "lighting")
+    task["publishes"] = [
+        {"kind": "lights", "by": "n",
+         "files": [PUB + "SH0010_lighting_lights_v002.blend"]},
+        {"kind": "shot", "by": "m", "files": [
+            PUB + "SEQ010_SH0010_lighting_v009.blend",
+            PUB + "SEQ010_SH0010_lighting_v009.deps.json"]},
+        {"by": "a", "files": [
+            "04_sequences/SEQ010/SH0010/animation/publish/"
+            "SH0010_animation_v001_anim.blend"]},
+    ]
+    names = [p["name"] for p in tasks.openable_publishes(task)]
+    # only the full-scene shot publish is openable
+    assert names == ["SEQ010_SH0010_lighting_v009.blend"]
+    assert not any("lights" in n or n.endswith("_anim.blend")
+                   or n.endswith(".json") for n in names)
+
+
 # ---- cmd_publish_shot ------------------------------------------------------
 
 def test_publish_shot_uploads_blend_and_deps(monkeypatch, capsys, tmp_path):
