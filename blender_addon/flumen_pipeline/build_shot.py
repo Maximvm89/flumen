@@ -1079,10 +1079,19 @@ def _element_update_notes(el, holder, anim_meta):
     ld = el.get("look_data") or {}
     look_avail = (f"{ld.get('name', '')} v{int(ld.get('version', 0)):03d}"
                   if ld else "")
+    # Set dressing versions on its OWN track — the dresser re-publishes without
+    # touching the env model, so a geometry-only update check misses it. --list
+    # inlines {name, version}; the label matches the holder's flumen_dressing
+    # stamp so a newer dressing flags an update (and pre-ticks the env row).
+    dr = el.get("dressing") or {}
+    dress_avail = (f"{dr.get('name', '')} v{int(dr.get('version', 0)):03d}"
+                   if isinstance(dr, dict) and dr.get("name") else "")
     if holder is None:                       # not in the scene yet
         base = _element_detail(el, False)
         if look_avail:
             base += f"  ·  look {look_avail} will apply"
+        if dress_avail:
+            base += f"  ·  dressing {dress_avail} will apply"
         if avail:
             base += f"  ·  anim {avail} will apply"
         return base, False
@@ -1116,6 +1125,16 @@ def _element_update_notes(el, holder, anim_meta):
             update = True
         else:
             notes.append(f"look {look_avail} available")
+            update = True
+    if dress_avail:
+        cur_dress = str(holder.get("flumen_dressing", "") or "")
+        if cur_dress == dress_avail:
+            notes.append(f"dressing {dress_avail} ✓")
+        elif cur_dress:
+            notes.append(f"new dressing {dress_avail} (scene has {cur_dress})")
+            update = True
+        else:
+            notes.append(f"dressing {dress_avail} available")
             update = True
     applied = str(holder.get("flumen_anim", "") or "")
     if avail and not _is_environment(el):    # environments are never animated
