@@ -1267,10 +1267,27 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             extras_coll = None
             try:
                 if extras:
+                    # A stale '<base>_extras' left in the working file from an
+                    # earlier publish makes collections.new() fall back to a
+                    # suffixed '<base>_extras.001', while the manifest still names
+                    # the base — so Build shot links the OLD (partial) collection
+                    # and newly-added geometry goes missing. Purge any leftover
+                    # extras collections first (the objects live in the artist's
+                    # real collections, so they survive), then create a clean one.
+                    for c in list(bpy.data.collections):
+                        if (c.name == extras_coll_name
+                                or c.name.startswith(extras_coll_name + ".")):
+                            try:
+                                if c.name in context.scene.collection.children:
+                                    context.scene.collection.children.unlink(c)
+                                bpy.data.collections.remove(c)
+                            except Exception:  # noqa: BLE001
+                                pass
                     # Collections may hold an object many times over — an ADD
                     # link is enough; the artist's layout is untouched and the
                     # temp collection is removed after the copy is written.
                     extras_coll = bpy.data.collections.new(extras_coll_name)
+                    extras_coll_name = extras_coll.name   # the name ACTUALLY made
                     context.scene.collection.children.link(extras_coll)
                     for o in extras:
                         try:

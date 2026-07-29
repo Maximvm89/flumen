@@ -263,7 +263,12 @@ def _link_collection_override(context, blend_local, coll_name, holder):
     if not candidates:
         return None, "no linkable collection (republish the rig/model)"
 
-    linked = None
+    # Link each candidate and keep the FULLEST. A stale publish can leave a
+    # PARTIAL '<base>' collection beside a more complete '<base>.001' (older
+    # geometry in one, newly-added props in the other) — and the manifest may
+    # name the partial one. Picking the candidate with the most objects (not the
+    # first non-empty) recovers the full dressing even from such a publish.
+    linked, best = None, -1
     for cand in candidates:
         with bpy.data.libraries.load(blend_local, link=True,
                                      relative=True) as (src, dst):
@@ -271,19 +276,24 @@ def _link_collection_override(context, blend_local, coll_name, holder):
         got = next((c for c in dst.collections if c is not None), None)
         if got is None:
             continue
-        if len(got.all_objects) > 0:
-            if cand != coll_name:
-                print(f"[Flumen] '{coll_name}' is empty in this publish — "
-                      f"linked '{cand}' instead (old name-clash publish; "
-                      f"republish to clean it up).")
-            linked = got
-            break
-        # empty candidate: unlink it again and try the next
-        try:
-            bpy.data.collections.remove(got)
-        except Exception:  # noqa: BLE001
-            pass
-    if linked is None:
+        n = len(got.all_objects)
+        if n > best:
+            if linked is not None:
+                try:
+                    bpy.data.collections.remove(linked)   # a smaller variant
+                except Exception:  # noqa: BLE001
+                    pass
+            linked, best = got, n
+            if cand != coll_name and n > 0:
+                print(f"[Flumen] '{coll_name}': linked fuller variant '{cand}' "
+                      f"({n} objects) — stale/partial publish; republish to "
+                      f"clean it up.")
+        else:
+            try:
+                bpy.data.collections.remove(got)          # not the fullest
+            except Exception:  # noqa: BLE001
+                pass
+    if linked is None or best == 0:
         return None, (f"collection '{coll_name}' has no content in this "
                       f"publish — republish the asset")
 
