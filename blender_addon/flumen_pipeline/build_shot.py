@@ -1544,6 +1544,28 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                     "ael_objects": sorted((ael or {}).get("objects") or {}),
                     "is_env": _is_environment(el)})
 
+        # Updating/rebuilding an element CLEARS its old content but leaves the old
+        # publish's library orphaned — e.g. an environment updated model v008 ->
+        # v009 keeps BOTH linked, a broken library graph that can crash Blender's
+        # UI when the work file is reopened. Purge orphaned LINKED data and sweep
+        # the now-empty library entries (as the unload path does), so a superseded
+        # version is genuinely gone. do_local_ids stays False — only drop stale
+        # linked publishes, never local data the build just created.
+        if update or rebuild:
+            try:
+                for _ in range(3):
+                    bpy.data.orphans_purge(do_local_ids=False,
+                                           do_linked_ids=True,
+                                           do_recursive=True)
+            except Exception:  # noqa: BLE001
+                pass
+            for lib in list(bpy.data.libraries):
+                try:
+                    if not lib.users_id:
+                        bpy.data.libraries.remove(lib)
+                except Exception:  # noqa: BLE001
+                    pass
+
         # Store linked-library paths relative to the shot .blend (cross-machine).
         try:
             bpy.ops.file.make_paths_relative()
