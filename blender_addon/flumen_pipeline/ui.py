@@ -79,16 +79,24 @@ class FLUMEN_PT_turntable(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # Turntable framing is per-asset — hide the panel in a shot context,
-        # and for environments/dressing (they never render turntables).
-        task = _ops.active_task()
-        ctx = menu_spec.task_ctx(task)
-        return menu_spec.matches({"type_not": ["shot"],
-                                  "step_not": ["dressing"],
-                                  "category_not": ["environments"]}, ctx)
+        # ALWAYS visible, so the "Flumen" N-panel category is never EMPTY. If this
+        # were the only panel and it polled out (e.g. in a shot task, where a
+        # turntable doesn't apply), a file saved with the "Flumen" tab active would
+        # crash Blender on open — its ui_handler_panel dereferences a null panel
+        # for an active category that has no visible panels. Applicability is now
+        # decided in draw() (a one-line note) instead of by hiding the panel.
+        return True
 
     def draw(self, context):
         layout = self.layout
+        # Per-asset only: for shots / environments / dressing show a note rather
+        # than the framing UI, but keep the panel present (see poll).
+        ctx = menu_spec.task_ctx(_ops.active_task())
+        if not menu_spec.matches({"type_not": ["shot"],
+                                  "step_not": ["dressing"],
+                                  "category_not": ["environments"]}, ctx):
+            layout.label(text="Turntable framing — asset tasks only", icon="INFO")
+            return
         loc = _ops.active_publish_locator()
         if not loc:
             layout.label(text="No PUBLISH locator yet", icon="INFO")
