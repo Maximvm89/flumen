@@ -2481,32 +2481,43 @@ class MainWindow(QMainWindow):
             return els, P.delivery_formats(settings)
 
         def show(loaded):
+            # A raised exception inside a Qt slot only reaches stderr — the user
+            # just sees NOTHING happen. Surface it instead of dying silently.
             self._busy_buttons(False)
-            elems, fmts = loaded
-            if not elems:
-                QMessageBox.information(
-                    self, "Nothing to sweatbox",
-                    "This shot has no resolvable elements yet (no published "
-                    "rigs/animation).")
-                return
-            dlg = SweatboxDialog(entity, elems, fmts, self)
-            if dlg.exec() != QDialog.Accepted:
-                return
-            open_after = dlg.action_mode() == "open"
-            if dlg.source_mode() == "file":
-                # Skip the rebuild entirely — use the .blend the artist picked.
-                path = dlg.blend_path()
-                if open_after:
-                    self._open_blend_in_blender(task, path)
-                else:
-                    self._launch_sweatbox_job(task, None, dlg.selected_formats(),
-                                              prebuilt=path)
-                return
-            chosen = dlg.selected_ids()
-            if not chosen:
-                return
-            self._launch_sweatbox_job(task, chosen, dlg.selected_formats(),
-                                      open_after=open_after)
+            try:
+                elems, fmts = loaded
+                if not elems:
+                    QMessageBox.information(
+                        self, "Nothing to sweatbox",
+                        "This shot has no resolvable elements yet (no published "
+                        "rigs/animation).")
+                    return
+                dlg = SweatboxDialog(entity, elems, fmts, self)
+                if dlg.exec() != QDialog.Accepted:
+                    return
+                open_after = dlg.action_mode() == "open"
+                if dlg.source_mode() == "file":
+                    # Skip the rebuild — use the .blend the artist picked.
+                    path = dlg.blend_path()
+                    if open_after:
+                        self._open_blend_in_blender(task, path)
+                    else:
+                        self._launch_sweatbox_job(task, None,
+                                                  dlg.selected_formats(),
+                                                  prebuilt=path)
+                    return
+                chosen = dlg.selected_ids()
+                if not chosen:
+                    return
+                self._launch_sweatbox_job(task, chosen, dlg.selected_formats(),
+                                          open_after=open_after)
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()          # -> ~/.flumen/workspace.log
+                QMessageBox.critical(
+                    self, "Sweatbox could not open",
+                    f"{type(exc).__name__}: {exc}\n\n"
+                    f"Full traceback in ~/.flumen/workspace.log")
 
     def _open_blend_in_blender(self, task: dict, blend: str):
         """Open a .blend in Blender with this task's context, so the add-on's

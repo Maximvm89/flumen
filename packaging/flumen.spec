@@ -19,6 +19,7 @@ datas = [(os.path.join(ROOT, "flumen", "blender_turntable.py"), "flumen"),
          (os.path.join(ROOT, "flumen", "blender_playblast.py"), "flumen"),
          (os.path.join(ROOT, "flumen", "blender_render.py"), "flumen"),
          (os.path.join(ROOT, "flumen", "blender_cache_shot.py"), "flumen"),
+         (os.path.join(ROOT, "flumen", "blender_sweatbox.py"), "flumen"),
          (os.path.join(ROOT, "flumen", "blender_bootstrap.py"), "flumen"),
          (os.path.join(ROOT, "packaging", "flumen.png"), ".")]  # runtime window icon
 datas += collect_data_files("imageio_ffmpeg")
@@ -27,6 +28,9 @@ ICON = os.path.join(ROOT, "packaging", "flumen.ico")  # embedded in the .exe fil
 
 hiddenimports = ["paramiko", "yaml", "dotenv", "syncsketch", "zstandard", "PIL", "PIL.Image", "PIL.ImageDraw",
                  "PIL.ImageFont"]
+# Force every flumen module in: some are reached only by a dynamic
+# __import__("flumen.turntable", …) that PyInstaller's static analysis can't see.
+hiddenimports += collect_submodules("flumen")
 
 cli_a = Analysis(
     [os.path.join(ROOT, "packaging", "entry_flumen.py")],
