@@ -526,6 +526,22 @@ def cache_name(element_id: str, version: int) -> str:
     return f"{element_id}_v{version:03d}{CACHE_SUFFIX}"
 
 
+CACHE_VIS_SUFFIX = ".vis.json"
+
+
+def cache_vis_rel(cache_rel: str) -> str:
+    """The per-frame visibility sidecar that rides beside a cache .abc:
+    '…/cache/gatto_mummia_v007.abc' -> '…/cache/gatto_mummia_v007.vis.json'.
+
+    Alembic carries no animated visibility, so the cache job samples it and
+    publishes this alongside; the lighting build replays it on import. The same
+    convention is DUPLICATED in the add-on (build_shot._apply_cache_visibility),
+    which can't import the toolkit at runtime — change both together."""
+    if cache_rel.endswith(CACHE_SUFFIX):
+        return cache_rel[:-len(CACHE_SUFFIX)] + CACHE_VIS_SUFFIX
+    return cache_rel + CACHE_VIS_SUFFIX
+
+
 _CACHE_RE = re.compile(r"^(.+)_v(\d+)\.abc$")
 
 

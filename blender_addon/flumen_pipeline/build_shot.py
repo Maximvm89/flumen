@@ -27,7 +27,7 @@ from . import dressing as dressing_mod
 from ._common import (
     _prefs, _pref_local_root, _toolkit_cmd, PUBLISH_LOG, _publog, _no_window,
     _preflight_server, _shell_toolkit, _shell_json, _apply_one, active_task)
-from .looks import _apply_element_look
+from .looks import _apply_element_look, _match_meshes_by_name
 
 
 ELEMENT_HOLDER_PREFIX = "element__"
@@ -390,7 +390,59 @@ def _import_alembic_cache(context, element):
                 holder.objects.link(o)
             except Exception:  # noqa: BLE001
                 pass
+    _apply_cache_visibility(path, new)
     return holder, None
+
+
+def _apply_cache_visibility(cache_path, objects):
+    """Replay a cache's per-frame visibility from its '.vis.json' sidecar.
+
+    Alembic carries no animated visibility, so the cache job samples it and
+    ships it beside the .abc (see cache_shot._sample_visibility). Without this a
+    rig that swaps variants mid-shot — the cat's bandages — comes into lighting
+    with EVERY variant permanently visible. Keys go on both hide_viewport (so the
+    lighter sees it) and hide_render (so it renders), with CONSTANT interpolation
+    so a swap is a hard cut. Silently does nothing for caches published before
+    the sidecar existed."""
+    side = cache_path[:-len(".abc")] + ".vis.json" if cache_path.endswith(".abc") \
+        else cache_path + ".vis.json"
+    if not os.path.isfile(side):
+        return 0
+    try:
+        with open(side, encoding="utf-8") as fh:
+            data = json.load(fh) or {}
+        wanted = data.get("objects") or {}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Flumen] cache visibility: unreadable sidecar {side}: {exc}")
+        return 0
+    if not wanted:
+        return 0
+    # The .abc rewrites '.001' collision suffixes as '_001' — reuse the same
+    # matcher the cache look re-apply uses.
+    matched = _match_meshes_by_name(list(wanted), objects)
+    applied = 0
+    for name, keys in wanted.items():
+        o = matched.get(name)
+        if o is None:
+            continue
+        for prop in ("hide_viewport", "hide_render"):
+            try:
+                for frame, visible in keys:
+                    setattr(o, prop, not visible)
+                    o.keyframe_insert(prop, frame=frame)
+            except Exception:  # noqa: BLE001
+                continue
+        # Boolean swaps must not interpolate — hold each value until the next.
+        ad = getattr(o, "animation_data", None)
+        for fc in _action_fcurves(o):
+            if fc.data_path in ("hide_viewport", "hide_render"):
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "CONSTANT"
+        applied += 1
+    if applied:
+        print(f"[Flumen] cache visibility: replayed animated visibility on "
+              f"{applied}/{len(wanted)} mesh(es) from {os.path.basename(side)}.")
+    return applied
 
 def _named_holder(context, name):
     """A scene collection by exact name (created + linked if absent)."""

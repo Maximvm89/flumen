@@ -988,6 +988,16 @@ def cmd_resolve_assembly(args) -> int:
                               f"using the local copy at {clocal}",
                               file=sys.stderr)
                         csource = "local"
+                    # Per-frame visibility sidecar (same stem as the .abc).
+                    # Best-effort: caches published before this existed have
+                    # none, and the build just gets no visibility animation.
+                    srel = E.cache_vis_rel(cache["rel"])
+                    try:
+                        client.download(rr + "/" + srel,
+                                        os.path.join(local_root,
+                                                     *srel.split("/")))
+                    except Exception:  # noqa: BLE001
+                        pass
                 r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
                          cache_version=cache["version"], cache_source=csource)
             elif r.get("load") == "alembic":
@@ -1282,6 +1292,18 @@ def cmd_publish_cache(args) -> int:
         if "=" in spec:
             k, v = spec.split("=", 1)
             anim_of[k] = v
+    # Per-frame visibility sidecars, uploaded next to their .abc under the same
+    # stem ('gatto_mummia_v007.vis.json') so the lighting build finds them by
+    # convention — Alembic itself carries no animated visibility.
+    vis_of = {}
+    for spec in getattr(args, "vis", None) or []:
+        if "=" in spec:
+            k, v = spec.split("=", 1)
+            if os.path.isfile(v):
+                vis_of[k] = v
+            else:
+                print(f"warning: visibility sidecar not found, skipping: {v}",
+                      file=sys.stderr)
     pairs = []
     for spec in args.cache or []:
         if "=" not in spec:
@@ -1320,6 +1342,18 @@ def cmd_publish_cache(args) -> int:
                 client.upload(path, rr + "/" + rel)
             files.append(rel)
             published.append((eid, ver, rel))
+            # Visibility sidecar rides alongside, same stem as the .abc.
+            side = vis_of.get(eid)
+            if side:
+                srel = E.cache_vis_rel(rel)
+                if no_upload:
+                    sdest = os.path.join(local_root, *srel.split("/"))
+                    os.makedirs(os.path.dirname(sdest), exist_ok=True)
+                    import shutil as _sh
+                    _sh.copy2(side, sdest)
+                else:
+                    client.upload(side, rr + "/" + srel)
+                files.append(srel)
         rec = {"time": _time.time(), "by": creds.user, "files": files,
                "description": args.description or "cache", "kind": "cache",
                # anim version each element was baked from — lets the cache
@@ -1724,6 +1758,10 @@ def build_parser() -> argparse.ArgumentParser:
     pc2.add_argument("--anim", action="append", default=[],
                      help="element_id=anim_version the cache was baked from "
                           "(repeatable)")
+    pc2.add_argument("--vis", action="append", default=[],
+                     help="element_id=/local/path.vis.json — per-frame visibility "
+                          "sidecar for that cache (Alembic can't carry animated "
+                          "visibility); uploaded beside the .abc (repeatable)")
     pc2.add_argument("--description", default="", help="publish note")
     pc2.add_argument("--no-upload", action="store_true",
                      help="write the .abc into the LOCAL project mirror only "

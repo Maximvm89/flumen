@@ -472,6 +472,17 @@ def test_cache_name_and_parse_roundtrip():
     assert E.parse_cache_name("not_a_cache.blend") is None
 
 
+def test_cache_vis_rel_sidecar_convention():
+    """The visibility sidecar rides beside its .abc under the same stem. The
+    add-on derives the same path independently (build_shot._apply_cache_visibility)
+    — if this changes, change it there too."""
+    rel = "04_sequences/SEQ010/SH0010/animation/publish/cache/gatto_mummia_v007.abc"
+    assert E.cache_vis_rel(rel) == rel[:-len(".abc")] + ".vis.json"
+    assert E.cache_vis_rel(rel).endswith("/gatto_mummia_v007.vis.json")
+    # Non-.abc input still gets a sidecar name rather than losing its extension.
+    assert E.cache_vis_rel("x/y.blend") == "x/y.blend.vis.json"
+
+
 def test_published_caches_newest_per_element():
     s = FakeSrv()
     shot = "SEQ010/SH0010"
