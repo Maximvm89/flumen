@@ -57,6 +57,18 @@ def holder_of(o):
                     stack.append(p)
     return (o.users_collection[0].name if o.users_collection else "?")
 
+import re as _re
+_SUF = _re.compile(r"[._]\d{3,}$")
+
+def stable(o):
+    """Blender renames per-instance copies ('BODY' -> 'BODY.002'), and the
+    suffix differs between the animator's scene and a rebuild — so keying on
+    the raw name reports the same mesh as MISSING here and EXTRA there. Use
+    the library-override source name, falling back to the stripped name."""
+    ov = getattr(o, "override_library", None)
+    ref = getattr(ov, "reference", None) if ov else None
+    return _SUF.sub("", ref.name if ref is not None else o.name)
+
 targets = [o for o in sc.objects if o.type == "MESH"
            and (not match or match.lower() in o.name.lower())]
 res = {}
@@ -68,7 +80,7 @@ for o in targets:
         try: vis = bool(o.visible_get(view_layer=vl))
         except Exception: vis = not o.hide_viewport
         rows.append(1 if vis else 0)
-    res[f"{holder_of(o)}/{o.name}"] = {"vis": rows}
+    res[f"{holder_of(o)}/{stable(o)}"] = {"vis": rows}
 
 # --- pass 2: deformed geometry (needs the object IN the depsgraph) ---
 def _unhide(o):
@@ -89,7 +101,7 @@ def _unhide(o):
 for o in targets:
     _unhide(o)
 for o in targets:
-    key = f"{holder_of(o)}/{o.name}"
+    key = f"{holder_of(o)}/{stable(o)}"
     rows = []
     for f in range(start, end + 1, step):
         sc.frame_set(f)
