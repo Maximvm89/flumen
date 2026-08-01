@@ -301,7 +301,8 @@ def _fake_constraint(name, **props):
 class _FakeStack(list):
     """A constraint collection: iterable, plus .new(type=…)."""
     def new(self, type=""):  # noqa: A002 — mirrors Blender's signature
-        c = _fake_constraint("", influence=1.0)
+        c = _fake_constraint("", influence=1.0, target=None)
+        c.bl_rna.properties["target"].type = "POINTER"
         c.type = type
         self.append(c)
         return c
@@ -353,3 +354,30 @@ def test_constraints_ride_the_anim_manifest_bindings():
     assert m["bindings"] == bindings
     assert m["hashes"] == {"pipistrello": "h"}   # kept: bindings make it known
     assert m["elements"] == {}
+
+
+def test_constraint_with_unbuilt_target_element_is_skipped_not_created():
+    """Rebuild without the skeleton ticked: benda's Copy Transforms targets an
+    element that isn't in the scene. Creating it dead (empty target) or via a
+    name fallback (every armature is 'rig' — it could pin to the WRONG one)
+    are both worse than skipping loudly and letting Load animation re-apply
+    it once the element is built."""
+    from flumen_pipeline import constraints as C
+    stack = _FakeStack()
+    spec = {"name": "hand off", "type": "COPY_TRANSFORMS",
+            "props": {"influence": 1.0,
+                      "target": {"element": "skeleton", "obj": "rig",
+                                 "name": "rig"}}}
+    orig = C.resolve_ref
+    C.resolve_ref = lambda ref: None          # element not built
+    try:
+        trace = []
+        assert C._apply_one(stack, spec, trace) is False
+        assert len(stack) == 0                # NOT created dead
+        assert any("unresolved" in t[1] for t in trace)
+        # once the element exists, the same spec applies cleanly
+        C.resolve_ref = lambda ref: "the-skeleton-rig"
+        assert C._apply_one(stack, spec, trace) is True
+        assert stack[0].target == "the-skeleton-rig"
+    finally:
+        C.resolve_ref = orig

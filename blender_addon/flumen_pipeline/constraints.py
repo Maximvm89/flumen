@@ -79,20 +79,29 @@ def _ref_of(ob):
 
 
 def resolve_ref(ref):
-    """The object a captured reference points at now, or None. Scoped to the
-    recorded element first: several instances of one asset share a stable name
-    ('rig' in orso and in orso_1), so an unscoped search would attach the sheet
-    to the wrong bear."""
+    """The object a captured reference points at now, or None. STRICTLY scoped
+    to the recorded element: several instances of one asset share a stable name
+    (every character's armature is 'rig'), so any wider search risks pinning
+    the bandage to the wrong character — silently, which is worse than not
+    pinning it at all. Element recorded but not built -> None, and the caller
+    refuses to create the constraint. Only a ref with NO element (a local
+    object like the camera rig) may search the whole scene, and then only on
+    an unambiguous match."""
     if not isinstance(ref, dict):
         return None
     want = ref.get("obj") or ""
     eid = ref.get("element") or ""
     if eid:
         holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
-        if holder is not None:
-            for o in holder.all_objects:
-                if _stable(o) == want:
-                    return o
+        if holder is None:
+            return None                   # target's element isn't in the scene
+        for o in holder.all_objects:
+            if _stable(o) == want:
+                return o
+        for o in holder.all_objects:      # renamed source: exact scene name
+            if o.name == (ref.get("name") or ""):
+                return o
+        return None
     exact = bpy.data.objects.get(ref.get("name") or "")
     if exact is not None:
         return exact
@@ -191,14 +200,36 @@ def digest(snap):
     return json.dumps(snap, sort_keys=True, separators=(",", ":"))
 
 
-def _apply_one(stack, spec, trace):
+def _apply_one(stack, spec, trace, where=""):
     """Add one captured constraint to a constraint stack. Skips a constraint
     that is already there BY NAME — the rig's own, or a second restore pass —
-    so this never duplicates. Returns True when one was created."""
+    so this never duplicates. Returns True when one was created.
+
+    Every recorded object target must resolve BEFORE the constraint is
+    created: a Copy Transforms whose target element wasn't built would either
+    sit dead (empty target) or — via any name fallback — pin to the WRONG
+    same-named object. Neither is acceptable, so the constraint is skipped
+    with a loud console line naming the element to build; re-running Load
+    animation after building it re-creates the constraint (the by-name guard
+    doesn't block it, since it was never made)."""
     name = spec.get("name") or ""
     if name and name in {c.name for c in stack}:
         trace.append((name, "exists"))
         return False
+    props = spec.get("props") or {}
+    targets = {}
+    for ident, val in props.items():
+        if isinstance(val, dict) and "obj" in val:      # a serialised pointer
+            tgt = resolve_ref(val)
+            if tgt is None:
+                miss = val.get("element") or val.get("name") or "?"
+                trace.append((name, f"target unresolved: {miss}"))
+                print(f"[Flumen] CONSTRAINT NOT RESTORED {where}'{name}' — "
+                      f"its target (element '{miss}') is not in the scene. "
+                      f"Build that element, then re-apply with Load "
+                      f"animation.")
+                return False
+            targets[ident] = tgt
     try:
         con = stack.new(type=spec.get("type", ""))
     except Exception as exc:  # noqa: BLE001 — unknown/unsupported type
@@ -206,7 +237,7 @@ def _apply_one(stack, spec, trace):
         return False
     if name:
         con.name = name
-    for ident, val in (spec.get("props") or {}).items():
+    for ident, val in props.items():
         if ident.startswith("_"):
             continue
         try:
@@ -215,13 +246,8 @@ def _apply_one(stack, spec, trace):
             continue
         try:
             if prop.type == "POINTER":
-                if val is not None:
-                    tgt = resolve_ref(val)
-                    if tgt is None:
-                        trace.append((name, f"target unresolved: "
-                                            f"{val.get('name')}"))
-                        continue
-                    setattr(con, ident, tgt)
+                if ident in targets:
+                    setattr(con, ident, targets[ident])
             elif isinstance(val, list) and val and isinstance(val[0], list):
                 from mathutils import Matrix
                 setattr(con, ident, Matrix(val))
@@ -259,7 +285,8 @@ def restore(holder, bindings):
                          "note": "object not found"})
             continue
         for spec in snap.get("object") or []:
-            made += _apply_one(ob.constraints, spec, trace)
+            made += _apply_one(ob.constraints, spec, trace,
+                               where=f"({holder.name}/{ob.name}) ")
         pose = getattr(ob, "pose", None)
         for bone, specs in (snap.get("bones") or {}).items():
             pb = pose.bones.get(bone) if pose else None
@@ -267,6 +294,7 @@ def restore(holder, bindings):
                 trace.append((bone, "bone not found"))
                 continue
             for spec in specs:
-                made += _apply_one(pb.constraints, spec, trace)
+                made += _apply_one(pb.constraints, spec, trace,
+                                   where=f"({holder.name}/{bone}) ")
         _LOG.append({"holder": holder.name, "object": ob.name, "trace": trace})
     return made
