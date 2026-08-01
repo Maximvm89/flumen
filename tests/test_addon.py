@@ -286,3 +286,70 @@ def test_classify_anim_status_flags_a_stale_base():
     assert c("M", hist, "v025", "v029")[0] == "unchanged"
     assert operators._ver_num("animation v025") == 25
     assert operators._ver_num("") == 0
+
+
+# --- animator-added constraints ---------------------------------------------
+def _fake_constraint(name, **props):
+    """A constraint stand-in: name lookup is all _apply_one's guard needs."""
+    c = _ns(name=name, **props)
+    c.bl_rna = _ns(properties={k: _ns(identifier=k, type="FLOAT",
+                                      is_readonly=False, is_array=False)
+                               for k in props})
+    return c
+
+
+class _FakeStack(list):
+    """A constraint collection: iterable, plus .new(type=…)."""
+    def new(self, type=""):  # noqa: A002 — mirrors Blender's signature
+        c = _fake_constraint("", influence=1.0)
+        c.type = type
+        self.append(c)
+        return c
+
+
+def test_constraint_digest_is_order_independent_and_sees_a_retarget():
+    """The publish dialog decides 'changed' from a content hash. A constraint
+    retarget or an influence tweak must move it, while re-reading the SAME
+    stack must not — otherwise every publish reads as changed."""
+    from flumen_pipeline import constraints as C
+    a = {"bones": {"wing": [{"name": "hand off", "type": "CHILD_OF",
+                             "props": {"influence": 0.75, "subtarget": "root"}}]}}
+    b = {"bones": {"wing": [{"type": "CHILD_OF", "name": "hand off",
+                             "props": {"subtarget": "root", "influence": 0.75}}]}}
+    assert C.digest(a) == C.digest(b)          # key order is not content
+    c = json.loads(json.dumps(a))
+    c["bones"]["wing"][0]["props"]["influence"] = 0.5
+    assert C.digest(c) != C.digest(a)
+
+
+def test_constraint_apply_never_duplicates_an_existing_one():
+    """Restore runs against a rig that already carries the RIGGER's stack, and
+    a shot can be rebuilt twice. Both must be no-ops: matching by name is what
+    stops the bat growing a second 'hand off' on every build."""
+    from flumen_pipeline import constraints as C
+    stack = _FakeStack([_fake_constraint("RIGGER copy rot")])
+    spec = {"name": "hand off", "type": "CHILD_OF", "props": {"influence": 0.5}}
+    trace = []
+    assert C._apply_one(stack, spec, trace) is True
+    assert [x.name for x in stack] == ["RIGGER copy rot", "hand off"]
+    assert stack[1].influence == 0.5
+    assert C._apply_one(stack, spec, trace) is False        # second build
+    assert len(stack) == 2
+    # a name the rig already uses is left alone, never overwritten
+    assert C._apply_one(stack, {"name": "RIGGER copy rot", "type": "CHILD_OF",
+                                "props": {}}, trace) is False
+    assert len(stack) == 2
+
+
+def test_constraints_ride_the_anim_manifest_bindings():
+    """An element whose only publishable state is a constraint (no action of
+    its own) must still reach the manifest — the build reads constraints out of
+    'bindings', and build_anim_manifest drops empty maps."""
+    from flumen_pipeline import anim
+    bindings = {"pipistrello": {"rig": {"constraints": {
+        "bones": {"wing": [{"name": "hand off", "type": "CHILD_OF",
+                            "props": {}}]}}}}}
+    m = anim.build_anim_manifest(7, {}, {"pipistrello": "h"}, {}, bindings)
+    assert m["bindings"] == bindings
+    assert m["hashes"] == {"pipistrello": "h"}   # kept: bindings make it known
+    assert m["elements"] == {}

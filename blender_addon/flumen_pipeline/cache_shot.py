@@ -13,6 +13,7 @@ from .build_shot import (
     ELEMENT_HOLDER_PREFIX, _ELEMENT_LOADERS, _action_fcurves,
     _apply_build_frame_range, _apply_dressing_props, _apply_element_animation,
     _is_environment)
+from . import constraints as _constraints
 from ._common import (
     _no_window, _publog, _toolkit_cmd, active_task)
 from .looks import _apply_element_look
@@ -110,6 +111,23 @@ def _headless_build_shot(context, task, only=None):
                             f"objects matched the manifest by name")
             except Exception as exc:  # noqa: BLE001
                 _publog(f"headless build: anim on {eid} failed: {exc}")
+    # Second pass, after EVERY element exists: animator-added constraints
+    # (a Child Of on the bat targets the bear's sheet — cross-element, so the
+    # target may not exist while the loop is mid-flight). Same order as the
+    # interactive build.
+    for el in elements:
+        eid = str(el.get("id", ""))
+        ael = anim_elements.get(eid)
+        holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
+        if not (holder and ael and ael.get("bindings")) or _is_environment(el):
+            continue
+        try:
+            got = _constraints.restore(holder, ael["bindings"])
+            if got:
+                print(f"[Flumen] cache:   restored {got} animator "
+                      f"constraint(s) on {eid}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            _publog(f"headless build: constraints on {eid} failed: {exc}")
     try:
         bpy.ops.file.make_paths_relative()
     except Exception:  # noqa: BLE001

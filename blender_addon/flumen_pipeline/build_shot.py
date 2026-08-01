@@ -24,6 +24,7 @@ from . import textures
 from . import look as look_mod
 from . import anim as anim_mod
 from . import dressing as dressing_mod
+from . import constraints as _constraints
 from ._common import (
     _prefs, _pref_local_root, _toolkit_cmd, PUBLISH_LOG, _publog, _no_window,
     _preflight_server, _shell_toolkit, _shell_json, _apply_one, active_task)
@@ -894,6 +895,13 @@ def _collect_element_animation(only_ids=None):
                 if getattr(ad, "use_tweak_mode", False):
                     entry["tweak"] = True
                 b[tag] = entry
+            # Constraints the ANIMATOR added (Child Of handing the sheet from
+            # the bat to the bear…). They live only in the local override, so a
+            # rebuild loses them and the pose animated against them breaks.
+            # Captured even on an object with no action of its own.
+            csnap = _constraints.snapshot(o)
+            if csnap:
+                b["constraints"] = csnap
             if not b:
                 continue
             stable = _stable_obj_name(o)
@@ -988,6 +996,14 @@ def _element_anim_hashes(only_ids=None):
                         for fc in _strip_fcurves(s):
                             parts.append(f"{head}/{fc.data_path}"
                                          f"#{fc.array_index}={_kfs(fc)}")
+            # Animator-added constraints are published state too: adding or
+            # retargeting one must read as 'changed' in the publish dialog.
+            # Appended only when there ARE any, so elements without them keep
+            # their historical hash (no spurious 'changed' after this upgrade).
+            csnap = _constraints.snapshot(o)
+            if csnap:
+                parts.append(f"{o.name}/constraints="
+                             f"{_constraints.digest(csnap)}")
         if parts:
             blob = "|".join(sorted(parts)).encode("utf-8")
             out[eid] = hashlib.sha1(blob).hexdigest()
@@ -2028,6 +2044,26 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                     "ael_objects": sorted((ael or {}).get("objects") or {}),
                     "is_env": _is_environment(el)})
 
+        # SECOND PASS: animator-added constraints. Deliberately after the whole
+        # element loop — a Child Of on the bat's bone targets the bear's sheet,
+        # and while the loop is still running that element may not exist yet, so
+        # the target would resolve to None and the constraint land dead.
+        constrained = 0
+        for el in elements:
+            ael = anim_elements.get(el.get("id"))
+            holder = bpy.data.collections.get(
+                ELEMENT_HOLDER_PREFIX + str(el.get("id", "")))
+            if not (holder and ael and ael.get("bindings")) \
+                    or _is_environment(el):
+                continue
+            try:
+                constrained += _constraints.restore(holder, ael["bindings"])
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Flumen] could not restore constraints on "
+                      f"{el.get('id')}: {exc}")
+        if constrained:
+            print(f"[Flumen] restored {constrained} animator constraint(s)")
+
         # Updating/rebuilding an element CLEARS its old content but leaves the old
         # publish's library orphaned — e.g. an environment updated model v008 ->
         # v009 keeps BOTH linked, a broken library graph that can crash Blender's
@@ -2238,6 +2274,12 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
                 except Exception as exc:  # noqa: BLE001
                     print("[Flumen] load animation failed:", exc)
                     n = 0
+                # Constraint targets live in OTHER elements, which are already in
+                # the scene here (unlike a build, this loads onto a live shot).
+                try:
+                    n += _constraints.restore(holder, bmap or {})
+                except Exception as exc:  # noqa: BLE001
+                    print("[Flumen] could not restore constraints:", exc)
                 if n:
                     objs += n
                     els += 1

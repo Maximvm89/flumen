@@ -46,8 +46,10 @@ def build_anim_manifest(version: int, element_actions: dict,
     version must not smear them onto renamed/restructured objects. `bindings`
     ({element_id: {object_name: {level: {action, slot, nla}}}}) is the newer,
     richer capture — slot identifiers, data-block + shape-key actions, NLA
-    stacks; consumers that predate it simply ignore the key. An element may be
-    bindings-only (e.g. all its motion lives in NLA strips)."""
+    stacks, and the animator-added CONSTRAINTS under a 'constraints' key (see
+    constraints.py); consumers that predate any of these simply ignore the keys.
+    An element may be bindings-only (all its motion lives in NLA strips, or it
+    only carries a Child Of onto another element)."""
     elements = {eid: dict(objs) for eid, objs in (element_actions or {}).items()
                 if objs}
     kept_bindings = {eid: b for eid, b in (bindings or {}).items() if b}
