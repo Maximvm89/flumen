@@ -40,11 +40,12 @@ def _resolve_assembly(task, list_only=False, only=None, picks=None):
         _publog(f"resolve-assembly failed: {exc}")
         return None
 
-def _headless_build_shot(context, task):
+def _headless_build_shot(context, task, only=None):
     """Build every resolvable element into the scene (no dialog): link/import,
     stamp, apply the element's look and published animation, place the camera,
     set the frame range. Additive — an element already in the scene is left
-    alone. For the headless 'Cache shot' path. Returns the count built."""
+    alone. `only` (a set of element ids) restricts the build to those elements
+    (the Sweatbox picker); None builds all. Returns the count built."""
     data = _resolve_assembly(task)
     if not data:
         return 0
@@ -56,6 +57,8 @@ def _headless_build_shot(context, task):
           flush=True)
     for i, el in enumerate(elements, 1):
         eid = str(el.get("id", ""))
+        if only is not None and eid not in only:
+            continue                              # not picked in the Sweatbox list
         if bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid) is not None:
             continue                              # already present — additive
         loader = _ELEMENT_LOADERS.get(el.get("kind"))
@@ -246,7 +249,10 @@ def headless_build_and_save():
         scaffold_empty_scene()               # no default cube/camera/light leak
     except Exception:  # noqa: BLE001
         pass
-    n = _headless_build_shot(ctx, task)
+    # Restrict to the elements ticked in the app's Sweatbox picker (all if unset).
+    only_env = os.environ.get("FLUMEN_SWEATBOX_ONLY", "")
+    only = set(x for x in only_env.split(",") if x) if only_env else None
+    n = _headless_build_shot(ctx, task, only=only)
     _publog(f"sweatbox: built {n} element(s); saving -> {out}", echo=True)
     if n == 0:
         print("[Flumen] sweatbox: nothing built — no render to make.")

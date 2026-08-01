@@ -2457,15 +2457,50 @@ class MainWindow(QMainWindow):
                     busy_msg=f"Rendering {task.get('entity')} (final — slow)…")
 
     def _sweatbox_shot(self, task: dict):
-        """Right-click 'Sweatbox': REBUILD the shot fresh from published data
-        (latest rigs + latest animation + environment with set-dressing), then
-        render it headless with the Material-Preview look (studio HDRI, the
-        shot's own lights ignored, higher EEVEE quality) and publish it to
-        Dailies as a '<shot>_sweatbox.mp4' review clip — judge shading/animation
-        without opening Blender or lighting the shot. Two headless Blender passes
-        (build+save, then render) on the Job thread. Like Cache shot, it always
-        assembles the ANIMATION step, so it reflects the newest published rigs
-        and animation regardless of which task row was clicked."""
+        """Right-click 'Sweatbox': show an element picker (like Blender's Build
+        shot list), then REBUILD the chosen elements fresh from published data
+        (latest rigs + animation + environment with set-dressing) and render a
+        Material-Preview shaded playblast to Dailies. Resolves the element list
+        on the Job thread, then hands the ticked ids to the rebuild job."""
+        if not self.cfg:
+            return
+        from flumen import elements as E
+        remote = self.cfg.remote_root
+        entity = task.get("entity", "")
+
+        def load():
+            settings = self._conn_do(
+                lambda c: __import__("flumen.turntable", fromlist=["x"])
+                ._load_project_settings(self.cfg.resolved_local_root()))
+            # Animation step = latest rigs + anim, same assembly Cache shot uses.
+            return self._conn_do(
+                lambda c: E.resolved_elements(c, remote, entity, "animation",
+                                              settings=settings))
+
+        def show(elems):
+            self._busy_buttons(False)
+            if not elems:
+                QMessageBox.information(
+                    self, "Nothing to sweatbox",
+                    "This shot has no resolvable elements yet (no published "
+                    "rigs/animation).")
+                return
+            dlg = SweatboxDialog(entity, elems, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            chosen = dlg.selected_ids()
+            if not chosen:
+                return
+            self._launch_sweatbox_job(task, chosen)
+
+        self._busy_buttons(True)
+        self._spawn(load, show, busy_msg="Resolving shot elements…")
+
+    def _launch_sweatbox_job(self, task: dict, only_ids: list):
+        """Rebuild the picked elements from published data (headless) then render
+        the Material-Preview sweatbox and publish it to Dailies. Two headless
+        passes on the Job thread. Assembles the ANIMATION step (latest rigs +
+        animation), like Cache shot, regardless of which task row was clicked."""
         if not self.cfg:
             return
         from flumen.launcher import launch
@@ -2488,6 +2523,7 @@ class MainWindow(QMainWindow):
             "FLUMEN_TASK_STEP": "animation",
             "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
             "FLUMEN_SWEATBOX_OUT": build_out,
+            "FLUMEN_SWEATBOX_ONLY": ",".join(only_ids),   # the ticked elements
             "FLUMEN_NEW_SCENE": "1",           # clean scene — build from published
         }
         import flumen as _flumen
@@ -3389,6 +3425,66 @@ class CacheShotDialog(QDialog):
 
     def selected_ids(self) -> list:
         return [row["id"] for b, row in zip(self._boxes, self._plan)
+                if b.isChecked()]
+
+
+class SweatboxDialog(QDialog):
+    """Pick which elements to rebuild into the Sweatbox (like Blender's Build
+    shot list). All ticked by default — untick to leave an element out."""
+
+    def __init__(self, shot_entity, elements, parent=None):
+        super().__init__(parent)
+        self._els = list(elements or [])
+        self.setWindowTitle(f"Sweatbox — {shot_entity}")
+        self.setMinimumWidth(560)
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(
+            "Tick the elements to rebuild into the sweatbox (latest rig + "
+            "animation; the environment brings its set-dressing). Untick to "
+            "skip. Keep the camera ticked — the render needs it."))
+        self.table = QTableWidget(len(self._els), 3)
+        self.table.setHorizontalHeaderLabels(["Include", "Element", "Type"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self._boxes = []
+        for i, el in enumerate(self._els):
+            cb = QCheckBox()
+            cb.setChecked(True)
+            self._boxes.append(cb)
+            w = QWidget()
+            lay = QHBoxLayout(w)
+            lay.setContentsMargins(6, 0, 0, 0)
+            lay.addWidget(cb)
+            lay.addStretch(1)
+            self.table.setCellWidget(i, 0, w)
+            self.table.setItem(i, 1, QTableWidgetItem(
+                el.get("label") or el.get("id", "")))
+            asset = str(el.get("asset", ""))
+            typ = ("environment" if asset.startswith("environments/")
+                   else "camera" if el.get("kind") == "camera"
+                   else asset or el.get("kind", "asset"))
+            self.table.setItem(i, 2, QTableWidgetItem(typ))
+        self.table.resizeColumnsToContents()
+        root.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        b_all = QPushButton("Select all")
+        b_all.clicked.connect(lambda: [b.setChecked(True) for b in self._boxes])
+        b_none = QPushButton("Select none")
+        b_none.clicked.connect(lambda: [b.setChecked(False) for b in self._boxes])
+        btns.addWidget(b_all)
+        btns.addWidget(b_none)
+        btns.addStretch(1)
+        root.addLayout(btns)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Sweatbox")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def selected_ids(self) -> list:
+        return [el["id"] for b, el in zip(self._boxes, self._els)
                 if b.isChecked()]
 
 
