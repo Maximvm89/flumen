@@ -254,8 +254,15 @@ def _link_collection_override(context, blend_local, coll_name, holder):
         available = list(src.collections)
     candidates = []
     if coll_name:
+        # ONLY numeric name-clash suffixes ('house.001', 'house.002') count as
+        # variants of coll_name — never a real nested sub-collection that merely
+        # shares the base name ('house.work' is house's CHILD, not a copy of it).
+        # Matching the latter would link a child, then remove it as "not fuller"
+        # and gut the parent — leaving an empty override (env with no walls).
+        import re
+        variant = re.compile(re.escape(coll_name) + r"\.\d+$")
         dotted = sorted((n for n in available
-                         if n != coll_name and n.split(".")[0] == coll_name),
+                         if n != coll_name and variant.match(n)),
                         reverse=True)
         candidates = ([coll_name] if coll_name in available else []) + dotted
     if not candidates and available:
@@ -1073,6 +1080,46 @@ def _element_loaded_file(holder):
                 return os.path.basename(lib.filepath or "")
     return ""
 
+
+def _holder_libs(holder):
+    """{library basename: object count} for every distinct library the holder's
+    objects link (directly or via an override reference)."""
+    from collections import Counter
+    counts = Counter()
+    for o in holder.all_objects:
+        lib = getattr(o, "library", None)
+        if lib is None:
+            ov = getattr(o, "override_library", None)
+            ref = getattr(ov, "reference", None) if ov else None
+            lib = getattr(ref, "library", None) if ref else None
+        if lib is None:
+            continue
+        try:
+            base = os.path.basename(bpy.path.abspath(lib.filepath))
+        except Exception:  # noqa: BLE001
+            base = os.path.basename(lib.filepath or "")
+        if base:
+            counts[base] += 1
+    return counts
+
+
+def _loaded_step_file(holder, latest):
+    """Basename of the library in `holder` that matches `latest`'s publish stem
+    (everything before the _vNNN), so a mixed holder — e.g. an environment that
+    holds BOTH the model override and the dressing override — reports the version
+    of the SAME step it is being compared against, not whichever library the
+    object iterator happened to hit first. Picks the most-used matching library
+    (an orphaned old version lingers with few/no holder objects). Falls back to
+    the first-library heuristic when nothing matches the stem."""
+    import re
+    stem = re.sub(r"_v\d+\.blend$", "_", os.path.basename(latest or ""))
+    if stem:
+        matches = {b: n for b, n in _holder_libs(holder).items()
+                   if b.startswith(stem)}
+        if matches:
+            return max(matches, key=matches.get)
+    return _element_loaded_file(holder)
+
 def _element_update_notes(el, holder, anim_meta):
     """(detail text, update_available) for a Build-shot row: compares what the
     scene HAS against what the server would deliver — the loaded publish vs the
@@ -1102,13 +1149,16 @@ def _element_update_notes(el, holder, anim_meta):
             base += f"  ·  look {look_avail} will apply"
         if dress_avail:
             base += f"  ·  dressing {dress_avail} will apply"
-        if avail:
+        if avail and not _is_environment(el):   # environments are never animated
             base += f"  ·  anim {avail} will apply"
         return base, False
     notes, update = [], False
     if el.get("kind") != "camera" and el.get("blend_rel"):
         latest = os.path.basename(el["blend_rel"])
-        loaded = _element_loaded_file(holder)
+        # Match the SAME step's library (model vs dressing) — an environment
+        # holder mixes both, and a first-object heuristic would compare the model
+        # publish against a dressing library and flag a phantom "new model".
+        loaded = _loaded_step_file(holder, latest)
         if loaded and loaded != latest:
             import re
             lv = _publish_version_label(loaded)
@@ -1288,7 +1338,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if steps and el.get("source_step") in steps:
                 it.step = el["source_step"]      # default to the resolved step
         return context.window_manager.invoke_props_dialog(
-            self, width=620, title="Build shot", confirm_text="Build")
+            self, width=900, title="Build shot", confirm_text="Build")
 
     def draw(self, context):
         col = self.layout.column()
