@@ -434,6 +434,40 @@ def cmd_fetch_publish(args) -> int:
     return 0
 
 
+def cmd_fetch_deps(args) -> int:
+    """Fetch every library a .blend links that the local mirror lacks. Blender
+    loads a missing library as EMPTY, silently — a work file from another
+    artist linking an older publish opens looking broken with no error. The
+    Workspace app runs this preflight automatically on open; the command is
+    the manual form for a file that's already on disk."""
+    cfg = ProjectConfig.load(args.config)
+    creds = SFTPCredentials.from_env(args.env)
+    from . import blend_deps
+    blend = os.path.expanduser(args.blend)
+    if not os.path.isfile(blend):
+        print(f"error: no such file: {blend}", file=sys.stderr)
+        return 1
+    local_root = cfg.resolved_local_root()
+    if not local_root:
+        print("error: no local_root configured", file=sys.stderr)
+        return 1
+    missing = blend_deps.missing_libraries(blend, local_root)
+    if not missing:
+        print("all linked libraries resolve — nothing to fetch")
+        return 0
+    if args.dry_run:
+        for rel, _ in missing:
+            print(f"would fetch: {rel}")
+        return 0
+    with SFTPClient(creds) as client:
+        fetched, failed = blend_deps.fetch_missing_libraries(
+            client, cfg.remote_root, local_root, blend, log=print)
+    print(f"fetched {len(fetched)} file(s)"
+          + (f", {len(failed)} unavailable: {', '.join(failed)}" if failed
+             else ""))
+    return 1 if failed else 0
+
+
 def cmd_list_looks(args) -> int:
     """Print the named looks a surface task has published, as JSON. Feeds the
     Blender 'Apply look' dropdown."""
@@ -1541,6 +1575,13 @@ def build_parser() -> argparse.ArgumentParser:
     fp.add_argument("--into", help="local folder to download into "
                                    "(default: local mirror of the publish folder)")
     fp.set_defaults(func=cmd_fetch_publish)
+
+    fd = sub.add_parser("fetch-deps", parents=[common],
+                        help="fetch the libraries a .blend links that the "
+                             "local mirror lacks (missing links open EMPTY)")
+    fd.add_argument("blend", help="the .blend to scan (at its normal depth "
+                                  "in the local mirror)")
+    fd.set_defaults(func=cmd_fetch_deps)
 
     ll = sub.add_parser("list-looks", parents=[common],
                         help="list a surface task's published looks (JSON)")

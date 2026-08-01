@@ -2578,6 +2578,17 @@ class MainWindow(QMainWindow):
         }
 
         def work():
+            # Same missing-library preflight as _open_task_in_blender: never
+            # let Blender open a file whose links silently load empty.
+            if os.path.isfile(blend):
+                from flumen import blend_deps
+                _, failed = self._conn_do(
+                    lambda c: blend_deps.fetch_missing_libraries(
+                        c, cfg.remote_root, local_root, blend,
+                        log=lambda m: print(f"[open] {m}", flush=True)))
+                if failed:
+                    print(f"[open] WARNING: {len(failed)} linked file(s) "
+                          f"unavailable: {', '.join(failed)}", flush=True)
             return launch(cfg, creds, extra_env=extra_env, open_file=blend)
 
         def done(rc):
@@ -2593,9 +2604,6 @@ class MainWindow(QMainWindow):
         self._busy_buttons(True)
         self._spawn(work, done,
                     busy_msg=f"Opening {os.path.basename(blend)} in Blender…")
-
-        self._busy_buttons(True)
-        self._spawn(load, show, busy_msg="Resolving shot elements…")
 
     def _launch_sweatbox_job(self, task: dict, only_ids: list | None,
                              only_formats: list | None = None,
@@ -2644,6 +2652,17 @@ class MainWindow(QMainWindow):
 
         def work():
             if prebuilt:                       # use the artist's file as-is
+                # A prebuilt file renders HEADLESS — a library missing from
+                # this machine's mirror wouldn't error, the character would
+                # just render empty. Fetch what the file links first.
+                from flumen import blend_deps
+                _, failed = self._conn_do(
+                    lambda c: blend_deps.fetch_missing_libraries(
+                        c, cfg.remote_root, local_root, prebuilt,
+                        log=lambda m: print(f"[sweatbox] {m}", flush=True)))
+                if failed:
+                    print(f"[sweatbox] WARNING: {len(failed)} linked file(s) "
+                          f"unavailable: {', '.join(failed)}", flush=True)
                 return P.run_playblast(cfg, creds, prebuilt, anim_id,
                                        sweatbox=True, label=label,
                                        only_formats=only_formats)
@@ -2960,6 +2979,20 @@ class MainWindow(QMainWindow):
             if blend_rel:
                 self._conn_do(lambda c: c.download(
                     core.remote_path_for(remote_root, blend_rel), open_file))
+            # Preflight: fetch every library the file links that this machine's
+            # mirror lacks. Blender loads a missing library as EMPTY, silently —
+            # a work file from another artist linking an older publish (their
+            # benda_rig_v003 vs our v006-only mirror) opens looking broken with
+            # no error anywhere.
+            if open_file and os.path.isfile(open_file):
+                from flumen import blend_deps
+                fetched, failed = self._conn_do(
+                    lambda c: blend_deps.fetch_missing_libraries(
+                        c, remote_root, local_root, open_file,
+                        log=lambda m: print(f"[open] {m}", flush=True)))
+                if failed:
+                    print(f"[open] WARNING: {len(failed)} linked file(s) "
+                          f"unavailable: {', '.join(failed)}", flush=True)
             # Surface/rig shade or rig the published model — pre-fetch it so the
             # "Load published model" button (and auto-load) work offline-fast.
             if (task.get("step") in ("surface", "rig", "dressing")
