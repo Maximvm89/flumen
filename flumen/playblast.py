@@ -132,7 +132,8 @@ def _open_locally(path: str) -> None:
 
 def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                   dry_run: bool = False, preview: bool = False,
-                  sweatbox: bool = False, label: str = "") -> int:
+                  sweatbox: bool = False, label: str = "",
+                  only_formats: list | None = None) -> int:
     """Open the published shot .blend headless, render its frame range through the
     scene camera into a PNG sequence, encode an MP4, upload it to 07_dailies and
     attach it to the task's latest publish record. Mirrors run_turntable.
@@ -147,7 +148,12 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     quality, so an animator can judge how shaders read and animate even before
     the shot is lit. It uploads to dailies as a '<label>_sweatbox.mp4' review
     clip, kept separate from the normal '_playblast.mp4'. `label` overrides the
-    dailies filename stem (defaults to the shot .blend basename)."""
+    dailies filename stem (defaults to the shot .blend basename).
+
+    `only_formats` renders just these delivery-format names (e.g. ['9x16']) —
+    the Sweatbox's per-format tick boxes. The project's PRIMARY format still
+    defines the nesting base, so a narrow format rendered alone is framed
+    identically to the same format rendered alongside the wide one."""
     from .sftp import SFTPClient
     from . import tasks
     from .launcher import find_blender, _resolve_ocio
@@ -181,6 +187,17 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     formats = delivery_formats(settings) or [
         {"name": "", "resolution_x": pb["resolution_x"],
          "resolution_y": pb["resolution_y"]}]
+    # The project's FIRST format is the nesting base (a narrower format renders
+    # as a centred slice of it). Capture it before filtering so ticking only
+    # 9x16 still yields the same framing it has in a full dual-format render.
+    base_fmt = formats[0]
+    if only_formats:
+        keep = [f for f in formats if f["name"] in only_formats]
+        if keep:
+            formats = keep
+        else:
+            print(f"warning: none of {only_formats} match the project's "
+                  f"delivery formats — rendering all.")
     t = task or {"entity": "?", "step": "?"}
 
     def _out_local(fmt_name: str) -> str:
@@ -229,6 +246,10 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         "FLUMEN_PB_SAMPLES": str(pb.get("sweatbox_samples", 64) if sweatbox
                                  else pb.get("samples", 16)),
         "FLUMEN_PB_RESPCT": str(pb.get("resolution_percentage", 100)),
+        # Nesting base = the project's primary format, independent of which
+        # formats were ticked (see only_formats).
+        "FLUMEN_PB_BASE": (f"{base_fmt['resolution_x']}x"
+                           f"{base_fmt['resolution_y']}"),
     })
     if len(formats) > 1 or formats[0]["name"]:
         env["FLUMEN_PB_FORMATS"] = formats_env(formats)

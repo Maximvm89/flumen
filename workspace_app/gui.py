@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QInputDialog, QMenu, QPlainTextEdit, QCheckBox, QSpinBox,
     QListWidget, QListWidgetItem, QProgressBar, QScrollArea,
     QStyledItemDelegate, QDateEdit, QDoubleSpinBox, QCalendarWidget,
+    QRadioButton, QButtonGroup,
 )
 
 from flumen.config import (ProjectConfig, SFTPCredentials, CACHED_CONFIG,
@@ -2473,34 +2474,92 @@ class MainWindow(QMainWindow):
                 lambda c: __import__("flumen.turntable", fromlist=["x"])
                 ._load_project_settings(self.cfg.resolved_local_root()))
             # Animation step = latest rigs + anim, same assembly Cache shot uses.
-            return self._conn_do(
+            els = self._conn_do(
                 lambda c: E.resolved_elements(c, remote, entity, "animation",
                                               settings=settings))
+            from flumen import playblast as P
+            return els, P.delivery_formats(settings)
 
-        def show(elems):
+        def show(loaded):
             self._busy_buttons(False)
+            elems, fmts = loaded
             if not elems:
                 QMessageBox.information(
                     self, "Nothing to sweatbox",
                     "This shot has no resolvable elements yet (no published "
                     "rigs/animation).")
                 return
-            dlg = SweatboxDialog(entity, elems, self)
+            dlg = SweatboxDialog(entity, elems, fmts, self)
             if dlg.exec() != QDialog.Accepted:
+                return
+            open_after = dlg.action_mode() == "open"
+            if dlg.source_mode() == "file":
+                # Skip the rebuild entirely — use the .blend the artist picked.
+                path = dlg.blend_path()
+                if open_after:
+                    self._open_blend_in_blender(task, path)
+                else:
+                    self._launch_sweatbox_job(task, None, dlg.selected_formats(),
+                                              prebuilt=path)
                 return
             chosen = dlg.selected_ids()
             if not chosen:
                 return
-            self._launch_sweatbox_job(task, chosen)
+            self._launch_sweatbox_job(task, chosen, dlg.selected_formats(),
+                                      open_after=open_after)
+
+    def _open_blend_in_blender(self, task: dict, blend: str):
+        """Open a .blend in Blender with this task's context, so the add-on's
+        'Save into task' and publish actions target the right place."""
+        if not self.cfg or not blend:
+            return
+        from flumen.launcher import launch
+        local_root = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+        self.cfg.local_root = local_root
+        cfg, creds = self.cfg, self._creds()
+        extra_env = {
+            "FLUMEN_TASK_ID": task.get("id", ""),
+            "FLUMEN_TASK_TYPE": task.get("type", ""),
+            "FLUMEN_TASK_ENTITY": task.get("entity", ""),
+            "FLUMEN_TASK_STEP": task.get("step", ""),
+            "FLUMEN_TASK_TITLE": task.get("title", ""),
+            "FLUMEN_TASK_WORK_DIR": os.path.join(
+                local_root, *tasksmod.task_work_rel(task).split("/")),
+        }
+
+        def work():
+            return launch(cfg, creds, extra_env=extra_env, open_file=blend)
+
+        def done(rc):
+            self._busy_buttons(False)
+            if rc == 0:
+                self.status.showMessage(f"Opened {os.path.basename(blend)} "
+                                        f"in Blender.")
+            else:
+                QMessageBox.warning(self, "Could not open Blender",
+                                    "Blender did not start — see "
+                                    "~/.flumen/blender.log.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done,
+                    busy_msg=f"Opening {os.path.basename(blend)} in Blender…")
 
         self._busy_buttons(True)
         self._spawn(load, show, busy_msg="Resolving shot elements…")
 
-    def _launch_sweatbox_job(self, task: dict, only_ids: list):
+    def _launch_sweatbox_job(self, task: dict, only_ids: list | None,
+                             only_formats: list | None = None,
+                             open_after: bool = False,
+                             prebuilt: str = ""):
         """Rebuild the picked elements from published data (headless) then render
         the Material-Preview sweatbox and publish it to Dailies. Two headless
         passes on the Job thread. Assembles the ANIMATION step (latest rigs +
-        animation), like Cache shot, regardless of which task row was clicked."""
+        animation), like Cache shot, regardless of which task row was clicked.
+
+        `open_after` stops after the rebuild and opens the result in Blender
+        instead of rendering. `prebuilt` skips the rebuild and sweatboxes that
+        .blend as-is (the dialog's 'use an existing .blend')."""
         if not self.cfg:
             return
         from flumen.launcher import launch
@@ -2523,7 +2582,7 @@ class MainWindow(QMainWindow):
             "FLUMEN_TASK_STEP": "animation",
             "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
             "FLUMEN_SWEATBOX_OUT": build_out,
-            "FLUMEN_SWEATBOX_ONLY": ",".join(only_ids),   # the ticked elements
+            "FLUMEN_SWEATBOX_ONLY": ",".join(only_ids or []),  # ticked elements
             "FLUMEN_NEW_SCENE": "1",           # clean scene — build from published
         }
         import flumen as _flumen
@@ -2531,36 +2590,52 @@ class MainWindow(QMainWindow):
                                     "blender_sweatbox.py")
         # Dailies clip stem: the shot code (playblast_rel appends '_sweatbox' and
         # nests it under 07_dailies/<entity>/animation/).
-        label = entity.split("/")[-1] or "shot"
+        label = (os.path.splitext(os.path.basename(prebuilt))[0] if prebuilt
+                 else entity.split("/")[-1] or "shot")
 
         def work():
+            if prebuilt:                       # use the artist's file as-is
+                return P.run_playblast(cfg, creds, prebuilt, anim_id,
+                                       sweatbox=True, label=label,
+                                       only_formats=only_formats)
             # Phase 1: headless rebuild from published data -> build_out.
             rc = launch(cfg, creds, extra_env=extra_env, open_file=None,
                         background=True,
                         extra_args=["--python", build_script], log_path=None)
             if rc != 0 or not os.path.isfile(build_out):
                 return rc or 1
+            if open_after:                     # stop here and hand it over
+                return 0
             # Phase 2: render the rebuilt shot with the sweatbox look + publish.
             return P.run_playblast(cfg, creds, build_out, anim_id,
-                                   sweatbox=True, label=label)
+                                   sweatbox=True, label=label,
+                                   only_formats=only_formats)
 
         def done(rc):
             self._busy_buttons(False)
-            if rc == 0:
-                self.status.showMessage(
-                    f"Sweatbox rebuilt + rendered for {task.get('entity')} — "
-                    f"shaded review clip in Dailies.")
-            else:
+            if rc != 0:
                 QMessageBox.warning(
                     self, "Sweatbox failed",
                     "The sweatbox returned an error — a missing published "
                     "rig/animation/environment, no camera, or nothing built. "
                     "See ~/.flumen/blender.log.")
+                return
+            if open_after:
+                # Open the freshly built shot in Blender, in this task's context.
+                self._open_blend_in_blender(task, build_out)
+                return
+            self.status.showMessage(
+                f"Sweatbox rendered for {task.get('entity')} — shaded review "
+                f"clip in Dailies.")
 
         self._busy_buttons(True)
         self._spawn(work, done,
-                    busy_msg=f"Sweatbox: rebuilding + rendering "
-                             f"{task.get('entity')} (headless)…")
+                    busy_msg=(f"Sweatbox: rendering {os.path.basename(prebuilt)}…"
+                              if prebuilt else
+                              f"Building {task.get('entity')} (headless)…"
+                              if open_after else
+                              f"Sweatbox: rebuilding + rendering "
+                              f"{task.get('entity')} (headless)…"))
 
     def _cache_shot(self, task: dict, work_abs: str):
         """Right-click 'Cache shot': show a dialog of the shot's rigged
@@ -3432,12 +3507,42 @@ class SweatboxDialog(QDialog):
     """Pick which elements to rebuild into the Sweatbox (like Blender's Build
     shot list). All ticked by default — untick to leave an element out."""
 
-    def __init__(self, shot_entity, elements, parent=None):
+    def __init__(self, shot_entity, elements, formats=None, parent=None):
         super().__init__(parent)
         self._els = list(elements or [])
+        self._formats = list(formats or [])
         self.setWindowTitle(f"Sweatbox — {shot_entity}")
         self.setMinimumWidth(560)
         root = QVBoxLayout(self)
+
+        # --- source: rebuild from published data, or an existing .blend -------
+        self.rb_rebuild = QRadioButton("Rebuild the shot from published data")
+        self.rb_rebuild.setChecked(True)
+        self.rb_file = QRadioButton("Use an existing .blend:")
+        src_grp = QButtonGroup(self)
+        src_grp.addButton(self.rb_rebuild)
+        src_grp.addButton(self.rb_file)
+        root.addWidget(self.rb_rebuild)
+        frow = QHBoxLayout()
+        frow.addWidget(self.rb_file)
+        self.ed_blend = QLineEdit()
+        self.ed_blend.setPlaceholderText("pick a .blend to sweatbox as-is…")
+        b_browse = QPushButton("Browse…")
+        b_browse.clicked.connect(self._pick_blend)
+        frow.addWidget(self.ed_blend, 1)
+        frow.addWidget(b_browse)
+        root.addLayout(frow)
+
+        # --- what to do with it ----------------------------------------------
+        self.rb_render = QRadioButton("Render the sweatbox and publish to Dailies")
+        self.rb_render.setChecked(True)
+        self.rb_open = QRadioButton("Just build it and open in Blender (no render)")
+        act_grp = QButtonGroup(self)
+        act_grp.addButton(self.rb_render)
+        act_grp.addButton(self.rb_open)
+        root.addWidget(self.rb_render)
+        root.addWidget(self.rb_open)
+
         root.addWidget(QLabel(
             "Tick the elements to rebuild into the sweatbox (latest rig + "
             "animation; the environment brings its set-dressing). Untick to "
@@ -3477,15 +3582,83 @@ class SweatboxDialog(QDialog):
         btns.addStretch(1)
         root.addLayout(btns)
 
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Sweatbox")
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        root.addWidget(bb)
+        # Delivery formats: one tick box per project format (16x9 / 9x16), both
+        # on by default. Untick one to render only the other; with none ticked
+        # there is nothing to render, so the confirm button is disabled.
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("Formats:"))
+        self._fmt_boxes = []
+        for f in self._formats:
+            cb = QCheckBox(f"{f['name']}  ({f['resolution_x']}×{f['resolution_y']})")
+            cb.setChecked(True)
+            cb.toggled.connect(self._refresh_ok)
+            self._fmt_boxes.append((cb, f["name"]))
+            fmt_row.addWidget(cb)
+        fmt_row.addStretch(1)
+        if self._formats:
+            root.addLayout(fmt_row)
+
+        self.bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.bb.accepted.connect(self.accept)
+        self.bb.rejected.connect(self.reject)
+        root.addWidget(self.bb)
+        # Nothing to build or nothing to render -> can't proceed.
+        for b in self._boxes:
+            b.toggled.connect(self._refresh_ok)
+        for w in (self.rb_rebuild, self.rb_file, self.rb_render, self.rb_open):
+            w.toggled.connect(self._refresh_ok)
+        self.ed_blend.textChanged.connect(self._refresh_ok)
+        self._refresh_ok()
+
+    def _pick_blend(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a .blend to sweatbox", "", "Blender files (*.blend)")
+        if path:
+            self.ed_blend.setText(path)
+            self.rb_file.setChecked(True)
+
+    def source_mode(self) -> str:
+        return "file" if self.rb_file.isChecked() else "rebuild"
+
+    def action_mode(self) -> str:
+        return "open" if self.rb_open.isChecked() else "render"
+
+    def blend_path(self) -> str:
+        return self.ed_blend.text().strip()
+
+    def _refresh_ok(self):
+        ok = self.bb.button(QDialogButtonBox.Ok)
+        rebuilding = self.source_mode() == "rebuild"
+        rendering = self.action_mode() == "render"
+        # The element list only applies to a rebuild; formats only to a render.
+        self.table.setEnabled(rebuilding)
+        for cb, _n in self._fmt_boxes:
+            cb.setEnabled(rendering)
+        self.ed_blend.setEnabled(not rebuilding)
+
+        has_el = any(b.isChecked() for b in self._boxes)
+        has_fmt = (not self._formats) or any(cb.isChecked()
+                                             for cb, _n in self._fmt_boxes)
+        path_ok = bool(self.blend_path()) and os.path.isfile(self.blend_path())
+        why = ""
+        if rebuilding and not has_el:
+            why = "Tick at least one element to build."
+        elif not rebuilding and not path_ok:
+            why = "Choose an existing .blend file."
+        elif rendering and not has_fmt:
+            why = "Tick at least one delivery format to render."
+        ok.setEnabled(not why)
+        ok.setToolTip(why)
+        ok.setText("Sweatbox" if rendering
+                   else "Build & open" if rebuilding else "Open")
 
     def selected_ids(self) -> list:
         return [el["id"] for b, el in zip(self._boxes, self._els)
                 if b.isChecked()]
+
+    def selected_formats(self) -> list:
+        """Ticked delivery-format names ([] when the project defines none)."""
+        return [n for cb, n in self._fmt_boxes if cb.isChecked()]
 
 
 class RenderShotDialog(QDialog):

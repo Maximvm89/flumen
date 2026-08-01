@@ -66,6 +66,32 @@ def test_run_playblast_dry_run_sweatbox(tmp_path, capsys):
     assert "sweatbox.blend_sweatbox" not in out
 
 
+def test_run_playblast_only_formats(tmp_path, capsys, monkeypatch):
+    """The Sweatbox's per-format tick boxes: only the ticked formats render."""
+    from flumen import turntable as T
+    monkeypatch.setattr(T, "_load_project_settings", lambda root: {"formats": [
+        {"name": "16x9", "resolution_x": 1920, "resolution_y": 1080},
+        {"name": "9x16", "resolution_x": 1080, "resolution_y": 1920}]})
+    cfg = types.SimpleNamespace(resolved_local_root=lambda: str(tmp_path),
+                                remote_root="/r", blender_path=None)
+
+    def run(only):
+        playblast.run_playblast(cfg, creds=None, shot_blend="/x/s.blend",
+                                task_id="shot-x-animation", dry_run=True,
+                                sweatbox=True, label="SH0010",
+                                only_formats=only)
+        return capsys.readouterr().out
+
+    both = run(None)
+    assert "SH0010_sweatbox_16x9.mp4" in both and "SH0010_sweatbox_9x16.mp4" in both
+    wide = run(["16x9"])
+    assert "SH0010_sweatbox_16x9.mp4" in wide and "9x16" not in wide
+    tall = run(["9x16"])
+    assert "SH0010_sweatbox_9x16.mp4" in tall and "16x9" not in tall
+    # An unknown name must not silently render nothing.
+    assert "SH0010_sweatbox_16x9.mp4" in run(["nope"])
+
+
 def test_delivery_formats_parse_and_env():
     settings = {"formats": [
         {"name": "16x9", "resolution_x": 1920, "resolution_y": 1080},

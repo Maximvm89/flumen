@@ -190,9 +190,9 @@ def _sync_render_visibility(scene):
         monitor toggle and collection-level hiding all folded in),
       * collections: render toggles neutralized — the per-object flags above
         now carry every decision,
-      * keyed monitor toggles: their keyframes are mirrored onto hide_render,
-        so mid-shot show/hide swaps render too. (The eye can't be keyed in
-        Blender — animators key the monitor icon for timed swaps.)
+      * mid-shot show/hide swaps: re-synced on EVERY frame by a handler (see
+        _install_visibility_sync), so a rig that flips variants mid-shot renders
+        the same variant the viewport shows.
     Runs on the loaded publish copy in memory; nothing is saved back."""
     try:
         vl = bpy.context.view_layer
@@ -206,7 +206,7 @@ def _sync_render_visibility(scene):
             coll.hide_render = False
         except Exception:  # noqa: BLE001
             pass
-    synced = keyed = 0
+    synced = 0
     for o in scene.objects:
         try:
             vis = o.visible_get(view_layer=vl) if vl else not o.hide_viewport
@@ -218,24 +218,46 @@ def _sync_render_visibility(scene):
                 synced += 1
         except Exception:  # noqa: BLE001
             continue                      # pure-linked object — leave as authored
-        # Mid-shot swaps: mirror any hide_viewport keys onto hide_render.
-        ad = getattr(o, "animation_data", None)
-        act = getattr(ad, "action", None) if ad else None
-        for fc in (getattr(act, "fcurves", []) or []) if act else []:
-            if fc.data_path != "hide_viewport":
-                continue
-            try:
-                for kp in fc.keyframe_points:
-                    o.hide_render = bool(round(kp.co[1]))
-                    o.keyframe_insert("hide_render", frame=kp.co[0])
-                keyed += 1
-            except Exception:  # noqa: BLE001
-                pass
-    if synced or keyed:
+    if synced:
         print(f"[playblast] viewport-visibility sync: {synced} object(s) "
-              f"aligned to what the viewport shows"
-              + (f", {keyed} animated toggle(s) mirrored" if keyed else "")
-              + ".")
+              f"aligned to what the viewport shows.")
+    _install_visibility_sync(scene)
+
+
+def _install_visibility_sync(scene):
+    """Keep hide_render == what the viewport shows, re-evaluated EVERY frame.
+
+    A mid-shot visibility swap is rarely a keyframe on the mesh: rigs drive it
+    with a DRIVER reading a rig switch (e.g. the cat's bandage variants, driven
+    from pose.bones[...]['bandages']), and drivers only ever touch hide_viewport
+    — which renders ignore. Reading F-curves can't see drivers at all, and on
+    Blender 4.4+ slotted actions `Action.fcurves` does not even exist (it raises
+    AttributeError), so the old keyframe-mirroring pass silently did nothing and
+    every frame rendered the visibility of the FIRST frame.
+
+    visible_get() is the ground truth — it folds in the eye icon, the monitor
+    toggle, drivers, keyframes and collection hiding — so sample it per frame
+    and mirror it onto hide_render, which is what the render honours."""
+    def _sync(scn, *_a):
+        try:
+            vl = bpy.context.view_layer
+        except Exception:  # noqa: BLE001
+            return
+        for o in scn.objects:
+            try:
+                want = not o.visible_get(view_layer=vl)
+                if o.hide_render != want:
+                    o.hide_render = want
+            except Exception:  # noqa: BLE001
+                continue      # pure-linked / non-overridable — leave as authored
+    for handler in (bpy.app.handlers.frame_change_post,
+                    bpy.app.handlers.render_pre):
+        try:
+            handler.append(_sync)
+        except Exception:  # noqa: BLE001
+            pass
+    print("[playblast] per-frame visibility sync installed (drivers + keys + "
+          "eye/monitor toggles follow the viewport).")
 
 
 def _sync_viewport_colors():
@@ -469,7 +491,16 @@ def main():
     # horizontal one. Achieved by locking the camera's vertical sensor size to
     # the primary's effective vertical size for those passes.
     cam = scene.camera.data
+    # The nesting base is the PROJECT's primary format, passed in separately —
+    # rendering only the narrow format (a Sweatbox tick box) must not turn that
+    # format into its own base, or it would be framed differently than in a
+    # full dual-format render. Falls back to the first rendered format.
     base_x, base_y = formats[0][1], formats[0][2]
+    try:
+        bx, by = _env("FLUMEN_PB_BASE", "").lower().split("x", 1)
+        base_x, base_y = int(bx), int(by)
+    except ValueError:
+        pass
     orig_fit, orig_h = cam.sensor_fit, cam.sensor_height
     if orig_fit == "VERTICAL":
         nest_h = None            # vertical FOV already fixed -> formats nest
