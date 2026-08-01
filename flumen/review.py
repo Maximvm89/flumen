@@ -37,7 +37,8 @@ def version_from_turntable(turntable_rel: str) -> str:
     Also strips the '_playblast' suffix used for shot playblasts; a delivery
     format rides along as a tag: '…_playblast_9x16.mp4' -> '… · 9x16'."""
     base = os.path.splitext(os.path.basename(turntable_rel or ""))[0]
-    m = re.match(r"^(.*)_(?:turntable|playblast)(?:_([0-9A-Za-z]+))?$", base)
+    m = re.match(r"^(.*)_(?:turntable|playblast|sweatbox)(?:_([0-9A-Za-z]+))?$",
+                 base)
     if m:
         return m.group(1) + (f" · {m.group(2)}" if m.group(2) else "")
     return base
@@ -128,6 +129,30 @@ def review_items(task_list: list[dict],
                     "status": st,
                     "task_status": task.get("status", ""),
                 })
+        # Sweatboxes — task-level records like stills, never publish-attached:
+        # the artist shown is whoever RAN the sweatbox, not the last publisher.
+        for rec in task.get("sweatboxes") or []:
+            st = review_status(rec)
+            if statuses is not None and st not in statuses:
+                continue
+            files = rec.get("files") or []
+            for rel in files:
+                out.append({
+                    "task_id": task.get("id", ""),
+                    "entity": task.get("entity", ""),
+                    "step": task.get("step", ""),
+                    "version": version_from_turntable(rel),
+                    "clip": os.path.basename(rel),
+                    "source": rel,
+                    "sheet": "",
+                    "kind": _review_kind(task.get("step", "")),
+                    "by": rec.get("by", ""),
+                    "description": rec.get("description", ""),
+                    "time": rec.get("time"),
+                    "date": item_date(rec),
+                    "status": st,
+                    "task_status": task.get("status", ""),
+                })
         # Review stills (the Blender 'Render review still' tool) — task-level
         # records, independent of publishes: a still can precede any publish.
         for rec in task.get("stills") or []:
@@ -189,6 +214,11 @@ def set_status_on_task(task: dict, turntable_rel: str, status: str) -> bool:
         if rec.get("file") == turntable_rel:
             rec["review_status"] = status
             hit = True
+    for rec in task.get("sweatboxes") or []:
+        # any format of the run sets the shared status, like dual playblasts
+        if turntable_rel in (rec.get("files") or []):
+            rec["review_status"] = status
+            hit = True
     if hit and status == "approved":
         task["status"] = "done"
     return hit
@@ -243,6 +273,15 @@ def delete_review(sftp, remote_root: str, item: dict,
     if len(kept) != len(stills):
         task["stills"] = kept
         hit = True
+    for rec in task.get("sweatboxes") or []:
+        files = rec.get("files") or []
+        if item.get("source") in files:
+            rec["files"] = [r for r in files if r != item.get("source")]
+            hit = True
+    task["sweatboxes"] = [r for r in (task.get("sweatboxes") or [])
+                          if r.get("files")]
+    if not task["sweatboxes"]:
+        task.pop("sweatboxes", None)
     if hit:
         tasks.save_task(sftp, remote_root, task)
     return hit

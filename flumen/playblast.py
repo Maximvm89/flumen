@@ -7,6 +7,7 @@ plumbing; the render is a fast Workbench/EEVEE pass over the shot camera.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 PB_DEFAULTS = {
@@ -130,6 +131,23 @@ def _open_locally(path: str) -> None:
         print(f"could not auto-open {path}: {exc}")
 
 
+def _next_sweatbox_label(sftp, remote_root: str, task: dict,
+                         base: str) -> str:
+    """'<base>_vNNN' with the next free sweatbox number for this shot/step,
+    found by scanning the dailies folder — every sweatbox run becomes its own
+    ordered review item instead of overwriting an unversioned clip."""
+    dd = f"07_dailies/{task['entity']}/{task['step']}"
+    try:
+        names = [str(d.get("name", ""))
+                 for d in sftp.listdir(remote_root.rstrip("/") + "/" + dd)]
+    except Exception:  # noqa: BLE001 — no dailies folder yet
+        names = []
+    pat = re.compile(r"_v(\d+)_sweatbox", re.IGNORECASE)
+    nums = [int(m.group(1))
+            for n in names if (m := pat.search(n))]
+    return f"{base}_v{max(nums, default=0) + 1:03d}"
+
+
 def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                   dry_run: bool = False, preview: bool = False,
                   sweatbox: bool = False, label: str = "",
@@ -171,6 +189,16 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         try:
             with SFTPClient(creds, dry_run=dry_run) as client:
                 task = tasks.get_task(client, cfg.remote_root, task_id)
+                # A sweatbox renders PUBLISHED state, not a versioned work
+                # file, so its label carries no version of its own ("SH0010",
+                # or worse the build file's stem). Number the clips per shot
+                # instead: scan the dailies folder and take the next free
+                # v###, so every run is a distinct, ordered review item.
+                if sweatbox and not preview and task:
+                    version_label = _next_sweatbox_label(
+                        client, cfg.remote_root, task,
+                        label or task.get("entity", "").split("/")[-1]
+                        or "shot")
         except Exception as exc:  # noqa: BLE001 — preview renders offline
             if not preview:
                 raise
@@ -293,9 +321,18 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
             client.upload(flocal, rr + "/" + frel)
         # Every format is its own Dailies review item (16:9 + 9:16 both show);
         # they share one review status — approving the shot approves both.
-        record_turntable(client, cfg.remote_root, task_id, outputs[0][1],
-                         creds.user,
-                         extra_rels=[frel for _n, frel, _l in outputs[1:]])
+        if sweatbox:
+            # A sweatbox is NOT a publish's review clip — it's rendered from
+            # published state by whoever wants to look at it. Attaching it to
+            # publishes[-1] (as record_turntable does) shows THAT publish's
+            # artist in Dailies instead of the person who ran the sweatbox.
+            from .turntable import record_sweatbox
+            record_sweatbox(client, cfg.remote_root, task_id,
+                            [frel for _n, frel, _l in outputs], creds.user)
+        else:
+            record_turntable(client, cfg.remote_root, task_id, outputs[0][1],
+                             creds.user,
+                             extra_rels=[frel for _n, frel, _l in outputs[1:]])
         for _name, frel, flocal in outputs:
             syncsketch.announce_media(client, cfg.remote_root, flocal,
                                       os.path.basename(frel))

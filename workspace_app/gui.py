@@ -2645,10 +2645,11 @@ class MainWindow(QMainWindow):
         import flumen as _flumen
         build_script = os.path.join(os.path.dirname(_flumen.__file__),
                                     "blender_sweatbox.py")
-        # Dailies clip stem: the shot code (playblast_rel appends '_sweatbox' and
-        # nests it under 07_dailies/<entity>/animation/).
-        label = (os.path.splitext(os.path.basename(prebuilt))[0] if prebuilt
-                 else entity.split("/")[-1] or "shot")
+        # Dailies clip stem: ALWAYS the shot code — run_playblast appends the
+        # next free sweatbox v### ('SH0010_v003_sweatbox_16x9.mp4'). Naming a
+        # prebuilt run after its file stem gave the unversioned
+        # 'sweatbox_build_sweatbox_16x9' dailies row.
+        label = entity.split("/")[-1] or "shot"
 
         def work():
             if prebuilt:                       # use the artist's file as-is

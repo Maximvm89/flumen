@@ -318,3 +318,45 @@ def test_version_from_turntable_format_suffix():
     assert R.version_from_turntable("a/SH0010_layout_v016_playblast.mp4") \
         == "SH0010_layout_v016"
     assert R.version_from_turntable("a/x_model_v003_turntable.mp4") == "x_model_v003"
+
+
+# --- sweatbox review items ----------------------------------------------------
+def _sb(entity, version, fmt):
+    return f"07_dailies/{entity}/animation/{version}_sweatbox_{fmt}.mp4"
+
+
+def test_sweatbox_items_credit_the_runner_not_the_last_publisher():
+    """A sweatbox renders PUBLISHED state; whoever runs it is the artist on
+    the Dailies row. The old flow attached it to publishes[-1], so the row
+    showed the last publish's author (francesco) instead of the uploader."""
+    t = tasks.new_task("shot", "SEQ010/SH0010", "animation")
+    t["publishes"] = [{"by": "francesco.catena", "time": 2.0,
+                       "files": ["04_sequences/x_v033.blend"]}]
+    t["sweatboxes"] = [{"files": [_sb("SEQ010/SH0010", "SH0010_v001", "16x9"),
+                                  _sb("SEQ010/SH0010", "SH0010_v001", "9x16")],
+                        "by": "marco.parisi2", "time": 3.0,
+                        "review_status": "to_review"}]
+    items = R.review_items([t])
+    assert len(items) == 2                       # one per format, no publish row
+    assert {i["by"] for i in items} == {"marco.parisi2"}
+    assert {i["version"] for i in items} == {"SH0010_v001 · 16x9",
+                                             "SH0010_v001 · 9x16"}
+    assert {i["clip"] for i in items} == {"SH0010_v001_sweatbox_16x9.mp4",
+                                          "SH0010_v001_sweatbox_9x16.mp4"}
+
+
+def test_sweatbox_formats_share_one_review_status():
+    t = tasks.new_task("shot", "SEQ010/SH0010", "animation")
+    rels = [_sb("SEQ010/SH0010", "SH0010_v002", "16x9"),
+            _sb("SEQ010/SH0010", "SH0010_v002", "9x16")]
+    t["sweatboxes"] = [{"files": rels, "by": "marco.parisi2", "time": 1.0}]
+    assert R.set_status_on_task(t, rels[1], "approved") is True
+    assert t["sweatboxes"][0]["review_status"] == "approved"
+    assert t["status"] == "done"                 # approved completes the task
+    assert R.set_status_on_task(t, "07_dailies/other.mp4", "reviewed") is False
+
+
+def test_version_from_turntable_strips_sweatbox_suffix():
+    assert R.version_from_turntable(
+        "07_dailies/SEQ010/SH0010/animation/SH0010_v003_sweatbox_16x9.mp4"
+    ) == "SH0010_v003 · 16x9"

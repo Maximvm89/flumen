@@ -114,3 +114,33 @@ def test_playblast_rel_per_format():
     # legacy single-format naming unchanged
     assert playblast.playblast_rel(t, "shot_v003") == \
         "07_dailies/SEQ010/SH0010/layout/shot_v003_playblast.mp4"
+
+
+def test_next_sweatbox_label_increments_past_existing_clips():
+    """Sweatbox dailies clips must be versioned — the first upload produced an
+    unversioned 'sweatbox_build_sweatbox_16x9' row that every later run would
+    silently overwrite. The next free v### comes from the server listing."""
+    from flumen.playblast import _next_sweatbox_label
+
+    class _S:
+        def __init__(self, names):
+            self._n = names
+
+        def listdir(self, path):
+            return [{"name": n} for n in self._n]
+
+    task = {"entity": "SEQ010/SH0010", "step": "animation"}
+    # empty dailies folder (or missing entirely) -> v001
+    assert _next_sweatbox_label(_S([]), "/LEG", task, "SH0010") == "SH0010_v001"
+
+    class _Boom:
+        def listdir(self, path):
+            raise FileNotFoundError(path)
+
+    assert _next_sweatbox_label(_Boom(), "/LEG", task, "SH0010") == "SH0010_v001"
+    # existing runs (any base name, both formats) -> max + 1
+    s = _S(["SH0010_v001_sweatbox_16x9.mp4", "SH0010_v001_sweatbox_9x16.mp4",
+            "sweatbox_build_sweatbox_16x9.mp4",     # legacy unversioned: ignored
+            "SH0010_v007_sweatbox_9x16.mp4",
+            "SH0010_v032_playblast_16x9.mp4"])      # playblasts don't count
+    assert _next_sweatbox_label(s, "/LEG", task, "SH0010") == "SH0010_v008"

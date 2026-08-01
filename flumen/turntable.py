@@ -92,6 +92,30 @@ def record_turntable(sftp, remote_root: str, task_id: str, rel: str,
     return rel
 
 
+def record_sweatbox(sftp, remote_root: str, task_id: str, rels: list[str],
+                    username: str) -> str | None:
+    """Attach a sweatbox render to the task as its OWN review item
+    (task['sweatboxes']), never to a publish record: a sweatbox is rendered
+    from published state by whoever wants to judge it, so the Dailies artist
+    must be the person who ran it — attaching to publishes[-1] would show the
+    LAST PUBLISH's artist instead. All formats of one run share the record
+    (and its review status), like a dual-delivery playblast."""
+    from . import tasks, ledger, notify
+    task = tasks.get_task(sftp, remote_root, task_id)
+    if not task:
+        return None
+    rels = [r for r in rels if r]
+    if not rels:
+        return None
+    rec = {"files": rels, "by": username, "time": time.time(),
+           "review_status": "to_review"}
+    task.setdefault("sweatboxes", []).append(rec)
+    tasks.save_task(sftp, remote_root, task, actor=username)
+    ledger.record_uploads(sftp, remote_root, username, rels)
+    notify.announce_dailies(sftp, remote_root, task, rec, rels, username)
+    return rels[0]
+
+
 def record_still(sftp, remote_root: str, task_id: str, rel: str,
                  username: str) -> str | None:
     """Attach a review still to the task as its OWN review item (task['stills']),
