@@ -262,3 +262,27 @@ def test_classify_anim_status_detects_a_rollback():
     # an element with a single publish can never be 'behind'
     assert c("A", [("v001", "A", "x")])[0] == "unchanged"
     assert c("B", [("v001", "A", "x")])[0] == "changed"
+
+
+def test_classify_anim_status_flags_a_stale_base():
+    """New work built on an OLD publish still buries whatever landed since.
+
+    A content hash cannot see this: the animation matches no published version,
+    so it looks like ordinary progress. The holder's flumen_anim stamp — the
+    version the scene was BUILT from — is what gives it away. Real case:
+    Francesco's v021 work file carries orso built from v025 while v029 exists."""
+    c = operators.classify_anim_status
+    hist = [("v029", "M", "marco.parisi2"), ("v025", "K", "francesco.catena")]
+
+    # brand-new content, but the scene was assembled from v025 -> buries v029
+    assert c("NEW", hist, "v025", "v029") == ("stale", "v029", "marco.parisi2")
+    # same content, built from the newest -> ordinary progress
+    assert c("NEW", hist, "v029", "v029")[0] == "changed"
+    # no stamp to judge by -> fall back to 'changed', never a false alarm
+    assert c("NEW", hist, "", "v029")[0] == "changed"
+    # an exact older match is a REVERT, which outranks 'stale'
+    assert c("K", hist, "v025", "v029")[0] == "behind"
+    # matching the newest is unchanged even from a stale-looking stamp
+    assert c("M", hist, "v025", "v029")[0] == "unchanged"
+    assert operators._ver_num("animation v025") == 25
+    assert operators._ver_num("") == 0

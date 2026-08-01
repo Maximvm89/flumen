@@ -1027,33 +1027,46 @@ def _rename_publish_collection(coll, coll_name):
 _SHOT_PUBLISH = {}
 
 
-def classify_anim_status(cur_hash, history):
+def _ver_num(label):
+    """'v025' / 'animation v025' -> 25; 0 when there's no version in it."""
+    import re
+    m = re.search(r"v(\d+)", str(label or ""))
+    return int(m.group(1)) if m else 0
+
+
+def classify_anim_status(cur_hash, history, loaded_ver="", newest_ver=""):
     """How this scene's animation for one element relates to what's published.
 
-    `history` is [(version, hash, by)] NEWEST first. Returns
-    (status, ref_version, ref_author):
+    `history` is [(version, hash, by)] NEWEST first. `loaded_ver` is the version
+    the scene's holder was stamped with (flumen_anim) and `newest_ver` the newest
+    published version containing the element. Returns (status, ref, author):
 
       new       — never published
       unchanged — identical to the newest published version
       behind    — identical to an OLDER published version that has since been
-                  superseded. Publishing would silently roll the newer one back
-                  over a colleague's work, on an element this artist very likely
-                  never touched (confirmed in the wild: SEQ010/SH0010 v027
-                  re-published orso_1's v024 animation over v025). ref names the
-                  newer version that would be lost.
-      changed   — genuinely new content
+                  superseded: publishing is a straight revert of someone's work
+                  (SEQ010/SH0010 v027 re-published orso_1's v024 over v025)
+      stale     — the content IS new, but this scene was BUILT from an older
+                  publish than the newest one. Whatever landed in between is not
+                  in this scene, so publishing buries it. A hash check alone
+                  can't see this — the content matches no published version, so
+                  it looks like ordinary progress.
+      changed   — genuinely new content, built from the newest publish
 
     Pure so it can be unit-tested without Blender.
     """
     if not history:
         return ("new", "", "")
-    newest_ver, newest_hash, newest_by = history[0]
+    newest_hist_ver, newest_hash, newest_by = history[0]
+    ref = newest_ver or newest_hist_ver
     if cur_hash == newest_hash:
-        return ("unchanged", newest_ver, newest_by)
-    for ver, h, by in history[1:]:
+        return ("unchanged", ref, newest_by)
+    for _ver, h, _by in history[1:]:
         if h == cur_hash:
-            return ("behind", newest_ver, newest_by)
-    return ("changed", newest_ver, newest_by)
+            return ("behind", ref, newest_by)
+    if _ver_num(loaded_ver) and _ver_num(ref) and _ver_num(loaded_ver) < _ver_num(ref):
+        return ("stale", ref, newest_by)
+    return ("changed", ref, newest_by)
 
 
 def _prepare_shot_publish_anim(context, task):
@@ -1091,13 +1104,19 @@ def _prepare_shot_publish_anim(context, task):
         it = rows.add()
         it.element_id = eid
         it.label = eid
-        status, ref, by = classify_anim_status(cur[eid], history.get(eid) or [])
+        holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
+        loaded = str((holder.get("flumen_anim") if holder else "") or "")
+        status, ref, by = classify_anim_status(
+            cur[eid], history.get(eid) or [], loaded, anim_vers.get(eid, ""))
         it.status = status
-        # 'behind' keeps ref/author: the NEWER version publishing would destroy.
-        it.ref = ref if status in ("unchanged", "behind") else ""
-        it.newer_by = by if status == "behind" else ""
-        # Never pre-tick a rollback — the artist has to opt in deliberately.
-        it.enabled = status in ("new", "changed")
+        # 'behind'/'stale' keep ref/author: the NEWER version that is at risk.
+        it.ref = ref if status in ("unchanged", "behind", "stale") else ""
+        it.newer_by = by if status in ("behind", "stale") else ""
+        it.loaded_ver = loaded
+        # A straight revert is never pre-ticked — that has to be deliberate.
+        # 'stale' IS real new work, so it stays ticked; the row just says what
+        # it was built from, so burying a newer version is at least a choice.
+        it.enabled = status in ("new", "changed", "stale")
     _SHOT_PUBLISH = {"hashes": cur, "last_label": last_label,
                      "steps": steps, "anim_vers": anim_vers}
 
@@ -1112,6 +1131,7 @@ class FLUMEN_PublishItem(bpy.types.PropertyGroup):
     ref: bpy.props.StringProperty()         # unchanged: the version it matches;
                                             # behind: the NEWER version at risk
     newer_by: bpy.props.StringProperty()    # who published that newer version
+    loaded_ver: bpy.props.StringProperty()  # version this scene was built from
 
 
 class FLUMEN_OT_publish(bpy.types.Operator):
@@ -1174,7 +1194,8 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             if len(rows):
                 box = col.box()
                 box.label(text="Animation to publish (changed are pre-selected):")
-                behind = [it for it in rows if it.status == "behind"]
+                behind = [it for it in rows
+                          if it.status in ("behind", "stale")]
                 if behind:
                     # A rollback is invisible otherwise: the element simply looks
                     # 'changed', because it IS different — just older.
@@ -1189,9 +1210,15 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                     row.prop(it, "enabled", text="")
                     row.label(text=it.label, icon="ARMATURE_DATA")
                     if it.status == "behind":
-                        row.label(text=f"BEHIND {it.ref}"
+                        row.label(text=f"REVERTS to an older publish — buries "
+                                       f"{it.ref}"
+                                       + (f" ({it.newer_by})" if it.newer_by else ""),
+                                  icon="ERROR")
+                    elif it.status == "stale":
+                        row.label(text=f"built from {it.loaded_ver} — {it.ref}"
                                        + (f" ({it.newer_by})" if it.newer_by else "")
-                                       + " — would overwrite it", icon="ERROR")
+                                       + " is newer and would be buried",
+                                  icon="ERROR")
                     elif it.status == "unchanged":
                         row.label(text=f"unchanged (= {it.ref})")
                     else:
