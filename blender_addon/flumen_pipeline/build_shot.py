@@ -832,6 +832,12 @@ def _nla_snapshot(ad):
                 "action_frame_start": float(s.action_frame_start),
                 "action_frame_end": float(s.action_frame_end),
                 "repeat": float(getattr(s, "repeat", 1.0)),
+                # TIME STRETCH. Without it a strip rebuilds at scale 1.0 and
+                # plays its action at the wrong speed: orso_1's 318-frame
+                # action was stretched over 382 frames (scale 1.2), so the
+                # rebuild ran it ~20% fast, ended 63 frames early and put the
+                # character 10 metres from where the animator left it.
+                "scale": float(getattr(s, "scale", 1.0)),
                 "blend_type": str(s.blend_type),
                 "extrapolation": str(s.extrapolation),
                 "influence": float(s.influence),
@@ -839,9 +845,11 @@ def _nla_snapshot(ad):
                     getattr(s, "use_animated_influence", False)),
                 "mute": bool(s.mute),
             })
-        if strips:
-            tracks.append({"name": tr.name, "mute": bool(tr.mute),
-                           "strips": strips})
+        # Keep tracks with NO strips too: their MUTE state is real state. An
+        # animator in tweak mode typically mutes the other layers, and dropping
+        # those tracks silently un-mutes them on rebuild.
+        tracks.append({"name": tr.name, "mute": bool(tr.mute),
+                       "strips": strips})
     return tracks, acts
 
 def _collect_element_animation(only_ids=None):
@@ -878,6 +886,13 @@ def _collect_element_animation(only_ids=None):
                          "slot": _slot_id(ad)}
                 if tracks:
                     entry["nla"] = tracks
+                # NLA TWEAK MODE. While tweaking, the active action REPLACES the
+                # strip being edited. Rebuild without it and the strip AND the
+                # active action both evaluate — the same action applied twice,
+                # which threw orso_1 ten metres off while orso (not in tweak
+                # mode) was perfect.
+                if getattr(ad, "use_tweak_mode", False):
+                    entry["tweak"] = True
                 b[tag] = entry
             if not b:
                 continue
@@ -1057,12 +1072,39 @@ def _rebuild_nla(ad, tracks, loaded):
                 print(f"[Flumen] NLA strip '{s.get('name')}' not recreated: "
                       f"{exc}")
                 continue
+            # ORDER MATTERS. frame_end is DERIVED —
+            #   frame_end = frame_start + action_length * repeat * scale
+            # — so Blender recomputes it whenever repeat or scale changes.
+            # Setting frame_end before them (as this did) meant repeat=1.0 threw
+            # the captured end away and the strip collapsed back to the raw
+            # action length, dropping any time stretch. Set the inputs first and
+            # frame_end LAST, so it also repairs manifests published before
+            # 'scale' was captured (there, frame_end alone carries the stretch).
+            # SCALE is the strip's time stretch and Blender does NOT derive it
+            # from frame_end — set it explicitly. Manifests published before it
+            # was captured carry the stretch only implicitly, as the ratio of
+            # the scene span to the action span, so reconstruct it there:
+            #   scale = (frame_end-frame_start) / (action_span * repeat)
+            # Without this a 1.2x strip rebuilds at 1.0 and the action plays 50
+            # frames out of sync (orso_1 landed 10 m away).
+            vals = dict(s)
+            if vals.get("scale") is None:
+                try:
+                    span = float(vals["frame_end"]) - float(vals["frame_start"])
+                    a_span = (float(vals["action_frame_end"])
+                              - float(vals["action_frame_start"]))
+                    rep = float(vals.get("repeat") or 1.0) or 1.0
+                    if a_span > 0 and span > 0:
+                        vals["scale"] = span / (a_span * rep)
+                except Exception:  # noqa: BLE001
+                    pass
             for attr in ("action_frame_start", "action_frame_end",
-                         "frame_start", "frame_end", "repeat", "influence"):
-                if s.get(attr) is None:
+                         "repeat", "scale", "frame_start", "frame_end",
+                         "influence"):
+                if vals.get(attr) is None:
                     continue
                 try:
-                    setattr(st, attr, float(s[attr]))
+                    setattr(st, attr, float(vals[attr]))
                 except Exception:  # noqa: BLE001
                     pass
             for attr in ("blend_type", "extrapolation"):
@@ -1113,7 +1155,42 @@ def _apply_object_bindings(o, b, loaded):
         ad = getattr(target, "animation_data", None)
         if t.get("nla") and ad is not None:
             did += _rebuild_nla(ad, t["nla"], loaded)
+            _restore_tweak_mode(ad, t)
     return did
+
+
+def _restore_tweak_mode(ad, entry):
+    """Make the captured NLA strip drive playback, not the raw active action.
+
+    An animator in tweak mode is editing a strip: Blender plays the action
+    THROUGH that strip, so the strip's time mapping applies. Francesco's orso_1
+    strip is stretched 1.2x, so scene frame 1301 reads action frame 1251.
+
+    A rebuild that also assigns the action as the ACTIVE action bypasses all of
+    that — Blender evaluates the action directly at scene time, 50 frames out of
+    sync, putting the character 10 metres away. Clearing the active action
+    leaves the strip as the only driver, which is exactly what the animator saw.
+    """
+    if not entry.get("tweak"):
+        return
+    act = getattr(ad, "action", None)
+    if act is None:
+        return
+    # Only safe if that action is genuinely in the stack — otherwise clearing it
+    # would drop the animation entirely.
+    in_stack = any(getattr(s, "action", None) is act
+                   for tr in (getattr(ad, "nla_tracks", []) or [])
+                   for s in (getattr(tr, "strips", []) or []))
+    if not in_stack:
+        return
+    try:
+        ad.action = None
+        print(f"[Flumen] NLA: '{act.name}' now plays through its strip "
+              f"(tweak mode captured) instead of directly, so the strip's time "
+              f"mapping applies.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Flumen] could not hand playback to the NLA strip: {exc}")
+
 
 def _apply_element_animation(holder, anim_blend, action_map, content="",
                              bindings=None):

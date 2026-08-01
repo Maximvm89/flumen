@@ -71,6 +71,23 @@ def stable(o):
 
 targets = [o for o in sc.objects if o.type == "MESH"
            and (not match or match.lower() in o.name.lower())]
+
+# Two meshes in ONE holder can strip to the same stable name (orso_1 carries
+# BODY.002 AND BODY.003 -> both 'BODY'). Keyed on that alone they collide, the
+# dict keeps whichever came last, and the two files can keep DIFFERENT ones —
+# reporting a 10m "difference" between two unrelated meshes. Give each a stable
+# ordinal within its holder, paired by sorted object name in both files.
+_ord = {}
+_groups = {}
+for _o in targets:
+    _groups.setdefault((holder_of(_o), stable(_o)), []).append(_o)
+for _k, _lst in _groups.items():
+    _lst.sort(key=lambda x: x.name)
+    for _i, _o in enumerate(_lst):
+        _ord[_o.name] = "" if len(_lst) == 1 else f"#{_i}"
+
+def key_of(o):
+    return f"{holder_of(o)}/{stable(o)}{_ord.get(o.name, '')}"
 res = {}
 # --- pass 1: effective visibility (must run BEFORE muting hide channels) ---
 for o in targets:
@@ -80,7 +97,7 @@ for o in targets:
         try: vis = bool(o.visible_get(view_layer=vl))
         except Exception: vis = not o.hide_viewport
         rows.append(1 if vis else 0)
-    res[f"{holder_of(o)}/{stable(o)}"] = {"vis": rows}
+    res[key_of(o)] = {"vis": rows}
 
 # --- pass 2: deformed geometry (needs the object IN the depsgraph) ---
 def _unhide(o):
@@ -101,7 +118,7 @@ def _unhide(o):
 for o in targets:
     _unhide(o)
 for o in targets:
-    key = f"{holder_of(o)}/{stable(o)}"
+    key = key_of(o)
     rows = []
     for f in range(start, end + 1, step):
         sc.frame_set(f)
