@@ -1784,9 +1784,6 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         if "--preview" in (d.get("extra_args") or []):
             label = "Rendering preview"
             note = "  Opened in your video player — nothing uploaded."
-        elif "--sweatbox" in (d.get("extra_args") or []):
-            label = "Rendering sweatbox"
-            note = "  Sweatbox (Material Preview) published → dailies."
         full, td = _toolkit_cmd(cmd)
         if not full:
             _publog("review render skipped — toolkit not available to run "
@@ -2119,49 +2116,6 @@ class FLUMEN_OT_preview_playblast(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class FLUMEN_OT_sweatbox(bpy.types.Operator):
-    bl_idname = "flumen.sweatbox"
-    bl_label = "Sweatbox"
-    bl_description = ("Render a Material-Preview 'sweatbox' of THIS scene — a "
-                      "studio HDRI lights every shader (the shot's own lights "
-                      "are ignored) at higher EEVEE quality, so you can judge "
-                      "how shaders read and animate even before the shot is "
-                      "lit — and publish it to dailies for review")
-
-    def execute(self, context):
-        task = active_task()
-        if not task or task.get("type") != "shot":
-            self.report({"ERROR"}, "Open a shot task from the Workspace app.")
-            return {"CANCELLED"}
-        # Snapshot the session AS-IS (like Preview playblast) into an untracked
-        # sibling of work/, so linked libraries keep resolving but it never rides
-        # a sync/publish/version counter. The sweatbox renders this copy.
-        prev_dir = os.path.join(os.path.dirname(task["work_dir"]), ".preview")
-        tmp = os.path.join(prev_dir, "sweatbox.blend")
-        try:
-            os.makedirs(prev_dir, exist_ok=True)
-            bpy.ops.wm.save_as_mainfile(filepath=tmp, copy=True)
-        except Exception as exc:  # noqa: BLE001
-            self.report({"ERROR"}, f"Could not snapshot the scene: {exc}")
-            return {"CANCELLED"}
-        # Name the dailies clip after the current WORK file (not the temp copy),
-        # so reviewers see which version the sweatbox came from.
-        src = bpy.data.filepath
-        label = (os.path.splitext(os.path.basename(src))[0] if src
-                 else (task.get("entity") or "sweatbox"))
-        _publog(f"sweatbox: snapshot -> {tmp} (label {label})", echo=False)
-        _PENDING_UPLOAD.clear()
-        _PENDING_UPLOAD.update({
-            "render_only": True, "render": True,
-            "step": task.get("step"), "ttype": "shot",
-            "task_id": task["id"], "pub_path": tmp,
-            "extra_args": ["--sweatbox", "--label", label],
-            "success": "Sweatbox published → dailies.",
-        })
-        bpy.ops.flumen.publish_upload('INVOKE_DEFAULT')
-        return {"FINISHED"}
-
-
 # --- set-dressing workspace ---------------------------------------------------
 
 
@@ -2184,7 +2138,6 @@ CLASSES = (
     FLUMEN_OT_render_review,
     FLUMEN_OT_cycle_format,
     FLUMEN_OT_preview_playblast,
-    FLUMEN_OT_sweatbox,
     FLUMEN_OT_publish_upload,
     FLUMEN_OT_load_model,
     FLUMEN_OT_apply_look,

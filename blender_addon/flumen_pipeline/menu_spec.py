@@ -57,8 +57,6 @@ ACTIONS = {
                             "icon": "ARROW_LEFTRIGHT"},
     "flumen.preview_playblast": {"text": "Preview playblast",
                                  "icon": "PLAY"},
-    "flumen.sweatbox": {"text": "Sweatbox (shaded review)",
-                        "icon": "SHADING_RENDERED"},
     "flumen.render_turntable": {"text": "Render turntable",
                                 "icon": "RENDER_ANIMATION"},
     "flumen.add_review_camera": {"icon": "VIEW_CAMERA"},
@@ -109,15 +107,14 @@ DEFAULT_MENUS = {
     # Lighting: build imports caches; a dedicated look re-apply for the caches,
     # plus the light-rig tools.
     "shot:lighting": (["flumen.build_shot", "flumen.reapply_cache_looks",
-                       "flumen.preview_playblast", "flumen.sweatbox", SEPARATOR,
+                       "flumen.preview_playblast", SEPARATOR,
                        "flumen.add_lights", "flumen.load_lights",
                        "flumen.publish_lights", SEPARATOR,
                        "flumen.publish_shot", SEPARATOR]
                       + _TASK_CORE + _TAIL),
     # Shots: Build shot resolves per step (rigs now, caches when they land).
     "shot:*": (["flumen.build_shot", "flumen.load_animation",
-                "flumen.cycle_format", "flumen.preview_playblast",
-                "flumen.sweatbox", SEPARATOR]
+                "flumen.cycle_format", "flumen.preview_playblast", SEPARATOR]
                + _TASK_CORE + _TAIL),
 }
 
