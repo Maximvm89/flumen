@@ -1097,12 +1097,16 @@ def cmd_resolve_assembly(args) -> int:
                     # a missing 'default' just means no look published yet.
                     entry["look_error"] = (f"no published look '{lname}' "
                                            f"on {r['asset']}")
-            # Environment element with a named set-dressing: LIGHTING ONLY.
-            # Set dressing is a lighting concern — layout/animation builds skip
-            # it entirely (no resolve, no download). In lighting, resolve the
-            # newest published version of the named dressing, inline its manifest
-            # and fetch each prop's publish so Build shot only has to link + place.
-            if r.get("dressing") and step == "lighting":
+            # Environment element with a named set-dressing: LIGHTING ONLY —
+            # set dressing is a lighting concern, layout/animation builds skip
+            # it entirely (no resolve, no download). --dressing forces it on
+            # any step: the Sweatbox assembles the ANIMATION step but renders
+            # a lighting-like frame, so it needs the dressed environment.
+            # In lighting (or forced), resolve the newest published version of
+            # the named dressing, inline its manifest and fetch each prop's
+            # publish so Build shot only has to link + place.
+            if r.get("dressing") and (step == "lighting"
+                                      or getattr(args, "dressing", False)):
                 d = E.newest_dressing(client, rr, r["asset"], r["dressing"])
                 if not d:
                     entry["dressing_error"] = (f"no published dressing "
@@ -1751,6 +1755,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="resolve/fetch only this element id (repeatable)")
     ra.add_argument("--pick", action="append", default=[],
                     help="override an element's step as id=step (repeatable)")
+    ra.add_argument("--dressing", action="store_true",
+                    help="resolve environment set-dressing even off the "
+                         "lighting step (the Sweatbox renders it)")
     ra.set_defaults(func=cmd_resolve_assembly)
 
     rnd2 = sub.add_parser("render", parents=[common],

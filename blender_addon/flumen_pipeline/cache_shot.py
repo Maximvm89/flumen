@@ -20,12 +20,16 @@ from .looks import _apply_element_look
 from .startup import scaffold_empty_scene
 
 
-def _resolve_assembly(task, list_only=False, only=None, picks=None):
+def _resolve_assembly(task, list_only=False, only=None, picks=None,
+                      dressing=False):
     """Module-level assembly resolve (build_shot has a method version). Returns
-    the parsed JSON or None."""
+    the parsed JSON or None. `dressing` forces set-dressing resolution off the
+    lighting step (the Sweatbox needs the dressed environment)."""
     args = ["resolve-assembly", "--task", task["id"]]
     if list_only:
         args.append("--list")
+    if dressing:
+        args.append("--dressing")
     for eid in only or []:
         args += ["--only", eid]
     for eid, st in (picks or {}).items():
@@ -41,13 +45,15 @@ def _resolve_assembly(task, list_only=False, only=None, picks=None):
         _publog(f"resolve-assembly failed: {exc}")
         return None
 
-def _headless_build_shot(context, task, only=None):
+def _headless_build_shot(context, task, only=None, dressing=False):
     """Build every resolvable element into the scene (no dialog): link/import,
     stamp, apply the element's look and published animation, place the camera,
     set the frame range. Additive — an element already in the scene is left
     alone. `only` (a set of element ids) restricts the build to those elements
-    (the Sweatbox picker); None builds all. Returns the count built."""
-    data = _resolve_assembly(task)
+    (the Sweatbox picker); None builds all. `dressing` resolves + places the
+    environment's set-dressing (a lighting concern the Sweatbox shares; the
+    cache build has no use for prop geometry). Returns the count built."""
+    data = _resolve_assembly(task, dressing=dressing)
     if not data:
         return 0
     elements = data.get("elements") or []
@@ -395,7 +401,7 @@ def headless_build_and_save():
     only = set(x for x in only_env.split(",") if x) if only_env else None
     print(f"[Flumen] sweatbox: only={sorted(only) if only else '(all elements)'}",
           flush=True)
-    n = _headless_build_shot(ctx, task, only=only)
+    n = _headless_build_shot(ctx, task, only=only, dressing=True)
     _publog(f"sweatbox: built {n} element(s); saving -> {out}", echo=True)
     if n == 0:
         print("[Flumen] sweatbox: nothing built — no render to make.")
