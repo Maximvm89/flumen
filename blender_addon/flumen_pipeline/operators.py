@@ -1378,8 +1378,9 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             # Publish only the CHOSEN elements' animation as editable Actions + a
             # manifest (with content hashes for dedup), in publish/anim/ so it's never
             # an openable workfile. Rides texture_files (preserves the subpath).
-            actions, elem_actions = (_collect_element_animation(only_ids=chosen)
-                                     if chosen else (set(), {}))
+            actions, elem_actions, elem_bindings = (
+                _collect_element_animation(only_ids=chosen)
+                if chosen else (set(), {}, {}))
             if actions:
                 anim_dir = os.path.join(publish_dir, "anim")
                 os.makedirs(anim_dir, exist_ok=True)
@@ -1390,12 +1391,13 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 # use it to refuse stale object-placement keys after a model
                 # restructure (renamed pieces would take the wrong keys).
                 contents = {}
-                for eid in elem_actions:
+                for eid in set(elem_actions) | set(elem_bindings):
                     h = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
                     if h is not None:
                         contents[eid] = _element_loaded_file(h)
                 manifest = anim_mod.build_anim_manifest(version, elem_actions,
-                                                        hashes, contents)
+                                                        hashes, contents,
+                                                        elem_bindings)
                 anim_manifest_path = anim_mod.anim_manifest_path(anim_path)
                 with open(anim_manifest_path, "w") as fh:
                     json.dump(manifest, fh, indent=2)

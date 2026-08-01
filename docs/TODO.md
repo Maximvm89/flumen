@@ -36,6 +36,23 @@ Running backlog of things to build/fix. Newest context at the top of each sectio
 
 ## Caching (Alembic) — PAUSED, revisit
 
+- [x] **RESOLVED: "sweatbox/rebuild plays a different v028 than the animator's
+  playblast" — the anim capture missed NLA strips, extra action slots and
+  shape-key/data-level actions.** Proven on SEQ010/SH0010 v028 (Francesco's orso
+  carried 3 NLA strips; a skeleton action held 2 slots). The playblast renders the
+  published scene verbatim, the sweatbox renders a fresh REBUILD — so the delta was
+  exactly what the round trip dropped. Fix: `_collect_element_animation` now records
+  per-object per-level (object/data/shape-keys) bindings — action + slot identifier +
+  NLA stack — in a new manifest `bindings` section (legacy `elements` map unchanged,
+  old consumers unaffected); `_apply_element_animation` rebinds slots, re-assigns
+  data/shape-key actions and recreates NLA tracks/strips; `_element_anim_hashes`
+  folds NLA + non-object curves into the dedup hash (byte-identical for plain
+  elements, so no spurious "changed" flags). Round-trip verified per-frame in
+  Blender 5.1 (active action + ADD-strip + shape-key slot) and against the real
+  v028 file. Still open, related: keyed NLA strip influence isn't carried (static
+  value only); publish dialog can't tell "changed" from "scene is BEHIND the newest
+  publish" (would silently downgrade — skeleton_1/4 were behind v015 in that scene);
+  sweatbox dailies overwrite one unversioned `<shot>_sweatbox.mp4`.
 - [x] **RESOLVED (v0.18.0–v0.18.2): "arms frozen / teeth wrong / lost visibility on
   rebuild" was NEVER an Alembic export bug — it was the animation publish→rebuild
   round trip.** The cache just inherited a broken rebuild. Three real root causes,

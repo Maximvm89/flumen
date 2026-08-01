@@ -750,7 +750,7 @@ def _diagnose_element_anim(coll, phase):
             flag = ""
         elif nstrips:
             uncaptured += 1
-            flag = "  <== NLA only, NOT captured"
+            flag = "  <== NLA only (strips captured via bindings)"
         elif getattr(o, "type", "") in ("EMPTY", "ARMATURE"):
             # a control/target object with no action: only captured if snapshot
             # keys it, and snapshot skips PARENTED objects — the IK-target trap.
@@ -782,14 +782,80 @@ def _stable_obj_name(o):
     ref = getattr(ov, "reference", None) if ov else None
     return ref.name if ref is not None else o.name
 
+def _anim_data_owners(o):
+    """(tag, animation_data) for every animatable container an object carries:
+    the object itself, its data block (armature properties, camera lens…) and
+    its shape keys. On 4.4+ these are often SLOTS of one shared Action, each
+    bound through its own animation_data — capturing only the object level
+    loses the rest (a rig's armature-data slot held 1321 of a skeleton's 1392
+    F-curves). Tags key the manifest bindings, stable across a rebuild."""
+    out = []
+    ad = getattr(o, "animation_data", None)
+    if ad is not None:
+        out.append(("object", ad))
+    data = getattr(o, "data", None)
+    dad = getattr(data, "animation_data", None) if data is not None else None
+    if dad is not None:
+        out.append(("data", dad))
+    sk = getattr(data, "shape_keys", None) if data is not None else None
+    sad = getattr(sk, "animation_data", None) if sk is not None else None
+    if sad is not None:
+        out.append(("shapekeys", sad))
+    return out
+
+def _slot_id(ad):
+    """The bound action slot's stable identifier ('' when unslotted/unbound)."""
+    try:
+        return getattr(getattr(ad, "action_slot", None), "identifier", "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+def _nla_snapshot(ad):
+    """JSON-able capture of an animation_data's NLA stack: ([tracks], {actions}).
+    Enough to recreate layered playback on rebuild — track order/mute, each
+    strip's action + timing + blend settings. Transition/meta strips (no action)
+    are skipped; keyed strip influence isn't carried (static value only)."""
+    tracks, acts = [], set()
+    for tr in getattr(ad, "nla_tracks", []) or []:
+        strips = []
+        for s in getattr(tr, "strips", []) or []:
+            act = getattr(s, "action", None)
+            if act is None:
+                continue
+            acts.add(act)
+            strips.append({
+                "name": s.name, "action": act.name,
+                "slot": (getattr(getattr(s, "action_slot", None),
+                                 "identifier", "") or ""),
+                "frame_start": float(s.frame_start),
+                "frame_end": float(s.frame_end),
+                "action_frame_start": float(s.action_frame_start),
+                "action_frame_end": float(s.action_frame_end),
+                "repeat": float(getattr(s, "repeat", 1.0)),
+                "blend_type": str(s.blend_type),
+                "extrapolation": str(s.extrapolation),
+                "influence": float(s.influence),
+                "use_animated_influence": bool(
+                    getattr(s, "use_animated_influence", False)),
+                "mute": bool(s.mute),
+            })
+        if strips:
+            tracks.append({"name": tr.name, "mute": bool(tr.mute),
+                           "strips": strips})
+    return tracks, acts
+
 def _collect_element_animation(only_ids=None):
-    """Gather each element's animation: the Action on every animated object inside an
-    'element__*' holder. Returns (set_of_actions, {element_id: {stable_name: action_name}})
-    for libraries.write + the manifest. Objects are keyed by their STABLE source
-    name (see _stable_obj_name) so animation survives a rebuild and works for
-    multiple instances of the same asset. `only_ids` limits to those element ids."""
+    """Gather each element's animation inside the 'element__*' holders — active
+    Actions on every level (object, data, shape keys) plus each level's NLA
+    stack. Returns (set_of_actions, {eid: {stable_name: action_name}},
+    {eid: {stable_name: bindings}}): the first two feed libraries.write + the
+    manifest's legacy 'elements' map (unchanged shape, old consumers keep
+    working); the third is the new 'bindings' section — per level: action,
+    bound slot identifier and NLA tracks. Objects are keyed by their STABLE
+    source name (see _stable_obj_name). `only_ids` limits to those elements."""
     actions = set()
     elem_actions = {}
+    elem_bindings = {}
     for coll in bpy.data.collections:
         if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
             continue
@@ -797,20 +863,37 @@ def _collect_element_animation(only_ids=None):
         if only_ids is not None and eid not in only_ids:
             continue
         _diagnose_element_anim(coll, "publish")
-        mapping = {}
+        mapping, binds = {}, {}
         for o in coll.all_objects:
-            ad = getattr(o, "animation_data", None)
-            act = getattr(ad, "action", None) if ad else None
-            if act is not None:
-                actions.add(act)
-                mapping[_stable_obj_name(o)] = act.name
+            b = {}
+            for tag, ad in _anim_data_owners(o):
+                act = getattr(ad, "action", None)
+                tracks, strip_acts = _nla_snapshot(ad)
+                if act is None and not tracks:
+                    continue
+                if act is not None:
+                    actions.add(act)
+                actions.update(strip_acts)
+                entry = {"action": act.name if act else "",
+                         "slot": _slot_id(ad)}
+                if tracks:
+                    entry["nla"] = tracks
+                b[tag] = entry
+            if not b:
+                continue
+            stable = _stable_obj_name(o)
+            if (b.get("object") or {}).get("action"):
+                mapping[stable] = b["object"]["action"]  # legacy map, unchanged
+            binds[stable] = b
         if mapping:
             elem_actions[eid] = mapping
-    return actions, elem_actions
+        if binds:
+            elem_bindings[eid] = binds
+    return actions, elem_actions, elem_bindings
 
-def _action_fcurves(obj):
-    """Every F-curve of an object's active action (legacy + 4.4+ slotted channelbag)."""
-    ad = getattr(obj, "animation_data", None)
+def _ad_fcurves(ad):
+    """Every F-curve an animation_data's active action drives through its BOUND
+    slot (legacy .fcurves + 4.4+ slotted channelbag)."""
     act = getattr(ad, "action", None) if ad else None
     if not act:
         return []
@@ -826,11 +909,44 @@ def _action_fcurves(obj):
                 fcs.extend(cbag.fcurves)
     return fcs
 
+def _action_fcurves(obj):
+    """Every F-curve of an object's active action (legacy + 4.4+ slotted channelbag)."""
+    return _ad_fcurves(getattr(obj, "animation_data", None))
+
+def _strip_fcurves(s):
+    """Every F-curve an NLA strip's action drives through the STRIP's bound slot
+    (falling back to all slots' channelbags when unbound)."""
+    act = getattr(s, "action", None)
+    if not act:
+        return []
+    fcs = list(getattr(act, "fcurves", []) or [])           # legacy
+    slot = getattr(s, "action_slot", None)
+    slots = [slot] if slot else list(getattr(act, "slots", []) or [])
+    for layer in getattr(act, "layers", []) or []:
+        for strip in getattr(layer, "strips", []) or []:
+            for sl in slots:
+                try:
+                    cbag = strip.channelbag(sl)
+                except Exception:  # noqa: BLE001
+                    cbag = None
+                if cbag:
+                    fcs.extend(cbag.fcurves)
+    return fcs
+
 def _element_anim_hashes(only_ids=None):
     """A deterministic content hash per element with animation: a sha1 of every
-    object's F-curves (data_path#index = frame:value;…, rounded + sorted). Identical
-    animation -> identical hash, so a publish can tell what actually changed."""
+    object's F-curves (data_path#index = frame:value;…, rounded + sorted), plus
+    data-level/shape-key curves and the NLA stack (strip curves + timing).
+    Identical animation -> identical hash, so a publish can tell what actually
+    changed. The object-level part strings are unchanged from the original
+    format, so elements with only a plain single-slot object action keep their
+    historical hash — no spurious 'changed' flags after upgrading."""
     import hashlib
+
+    def _kfs(fc):
+        return ";".join(f"{k.co[0]:.4f}:{k.co[1]:.6f}"
+                        for k in fc.keyframe_points)
+
     out = {}
     for coll in bpy.data.collections:
         if not coll.name.startswith(ELEMENT_HOLDER_PREFIX):
@@ -840,10 +956,23 @@ def _element_anim_hashes(only_ids=None):
             continue
         parts = []
         for o in coll.all_objects:
-            for fc in _action_fcurves(o):
-                kfs = ";".join(f"{k.co[0]:.4f}:{k.co[1]:.6f}"
-                               for k in fc.keyframe_points)
-                parts.append(f"{o.name}/{fc.data_path}#{fc.array_index}={kfs}")
+            for tag, ad in _anim_data_owners(o):
+                pre = "" if tag == "object" else f"{tag}:"
+                for fc in _ad_fcurves(ad):
+                    parts.append(f"{o.name}/{pre}{fc.data_path}"
+                                 f"#{fc.array_index}={_kfs(fc)}")
+                for tr in getattr(ad, "nla_tracks", []) or []:
+                    for s in getattr(tr, "strips", []) or []:
+                        if getattr(s, "action", None) is None:
+                            continue
+                        head = (f"{o.name}/{tag}:nla/{tr.name}/{s.name}"
+                                f"@{s.frame_start:.2f}-{s.frame_end:.2f}"
+                                f"/{s.blend_type}/{s.influence:.3f}"
+                                f"/{int(bool(s.mute or tr.mute))}")
+                        parts.append(head)
+                        for fc in _strip_fcurves(s):
+                            parts.append(f"{head}/{fc.data_path}"
+                                         f"#{fc.array_index}={_kfs(fc)}")
         if parts:
             blob = "|".join(sorted(parts)).encode("utf-8")
             out[eid] = hashlib.sha1(blob).hexdigest()
@@ -881,16 +1010,129 @@ def _stale_content_filter(holder, action_map, captured_content):
 # case like "instance 2's visibility keys never land" can be seen exactly.
 _ANIM_DEBUG_LOG = []
 
-def _apply_element_animation(holder, anim_blend, action_map, content=""):
+def _bind_slot(ad, act, identifier=""):
+    """Bind an animation_data to the action slot with the recorded identifier
+    (falling back to the first slot when unrecorded/missing). No-op pre-4.4."""
+    try:
+        slots = list(getattr(act, "slots", []) or [])
+        if not slots:
+            return
+        want = next((s for s in slots
+                     if getattr(s, "identifier", "") == identifier), None)
+        if want is not None:
+            ad.action_slot = want
+        elif getattr(ad, "action_slot", None) is None:
+            ad.action_slot = slots[0]
+    except Exception:  # noqa: BLE001
+        pass
+
+def _rebuild_nla(ad, tracks, loaded):
+    """Recreate a captured NLA stack (see _nla_snapshot) on an animation_data,
+    replacing whatever stack is there — the published state is the truth on a
+    build/load. Returns the number of strips created."""
+    if ad is None or not tracks:
+        return 0
+    try:
+        for tr in list(getattr(ad, "nla_tracks", []) or []):
+            ad.nla_tracks.remove(tr)
+    except Exception:  # noqa: BLE001
+        pass
+    made = 0
+    for t in tracks:                      # captured bottom-first; .new() appends
+        try:
+            tr = ad.nla_tracks.new()
+        except Exception:  # noqa: BLE001
+            continue
+        tr.name = t.get("name") or tr.name
+        tr.mute = bool(t.get("mute"))
+        for s in t.get("strips") or []:
+            act = loaded.get(s.get("action", ""))
+            if act is None:
+                continue
+            try:
+                st = tr.strips.new(s.get("name") or act.name,
+                                   int(round(float(s.get("frame_start", 1)))),
+                                   act)
+            except Exception as exc:  # noqa: BLE001 — overlap/bad range
+                print(f"[Flumen] NLA strip '{s.get('name')}' not recreated: "
+                      f"{exc}")
+                continue
+            for attr in ("action_frame_start", "action_frame_end",
+                         "frame_start", "frame_end", "repeat", "influence"):
+                if s.get(attr) is None:
+                    continue
+                try:
+                    setattr(st, attr, float(s[attr]))
+                except Exception:  # noqa: BLE001
+                    pass
+            for attr in ("blend_type", "extrapolation"):
+                if s.get(attr):
+                    try:
+                        setattr(st, attr, s[attr])
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                st.use_animated_influence = bool(s.get("use_animated_influence"))
+            except Exception:  # noqa: BLE001
+                pass
+            st.mute = bool(s.get("mute"))
+            if s.get("slot"):
+                try:
+                    want = next((sl for sl in getattr(act, "slots", []) or []
+                                 if getattr(sl, "identifier", "") == s["slot"]),
+                                None)
+                    if want is not None:
+                        st.action_slot = want
+                except Exception:  # noqa: BLE001
+                    pass
+            made += 1
+    return made
+
+def _apply_object_bindings(o, b, loaded):
+    """Apply one object's captured non-object-level animation: the data-block
+    and shape-key actions (with their slot bindings) and every level's NLA
+    stack. `b` is this object's bindings entry; `loaded` maps manifest action
+    name -> appended datablock. Returns how many things were applied."""
+    did = 0
+    data = getattr(o, "data", None)
+    sk = getattr(data, "shape_keys", None) if data is not None else None
+    owners = {"object": o, "data": data, "shapekeys": sk}
+    for tag, target in owners.items():
+        t = b.get(tag) or {}
+        if target is None or not t:
+            continue
+        act = loaded.get(t.get("action", "")) if tag != "object" else None
+        if act is not None:
+            try:
+                target.animation_data_create()
+                target.animation_data.action = act
+                _bind_slot(target.animation_data, act, t.get("slot", ""))
+                did += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Flumen] {tag} action on '{o.name}' not applied: {exc}")
+        ad = getattr(target, "animation_data", None)
+        if t.get("nla") and ad is not None:
+            did += _rebuild_nla(ad, t["nla"], loaded)
+    return did
+
+def _apply_element_animation(holder, anim_blend, action_map, content="",
+                             bindings=None):
     """Append the published Actions and assign them onto this element's objects by
     name, so a freshly-built element comes back animated. `content` = the
-    publish the animation was captured against (stale-placement guard)."""
-    dbg = {"holder": holder.name, "in_keys": sorted(action_map or {}),
+    publish the animation was captured against (stale-placement guard).
+    `bindings` (newer manifests) adds per-object slot identifiers, data-block +
+    shape-key actions and NLA stacks; older manifests without it re-apply the
+    object-level actions exactly as before."""
+    action_map = action_map or {}
+    bindings = bindings or {}
+    dbg = {"holder": holder.name, "in_keys": sorted(action_map),
+           "bind_keys": sorted(bindings),
            "content": content, "have_blend": bool(anim_blend and anim_blend
                                                    and os.path.isfile(anim_blend or "")),
            "loaded": [], "matched": [], "applied": 0, "note": ""}
     _ANIM_DEBUG_LOG.append(dbg)
-    if not (anim_blend and action_map and os.path.isfile(anim_blend)):
+    if not (anim_blend and (action_map or bindings)
+            and os.path.isfile(anim_blend)):
         dbg["note"] = "no blend / empty map"
         return 0
     _diagnose_element_anim(holder, "build")
@@ -901,8 +1143,16 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
     # key finds no match and is harmlessly ignored. The blanket filter was both
     # unnecessary and destructive: it was deleting legitimate per-object keys
     # (a 2nd instance's hide_viewport visibility) whenever it mis-fired.
-    dbg["after_filter_keys"] = sorted(action_map or {})
+    dbg["after_filter_keys"] = sorted(action_map)
     want = set(action_map.values())
+    for b in bindings.values():           # data/shape-key/NLA actions too
+        for t in b.values():
+            if t.get("action"):
+                want.add(t["action"])
+            for tr in t.get("nla") or []:
+                for s in tr.get("strips") or []:
+                    if s.get("action"):
+                        want.add(s["action"])
     with bpy.data.libraries.load(anim_blend, link=False) as (src, dst):
         all_src = list(src.actions)       # every action name in the anim blend
         req_names = [a for a in all_src if a in want]
@@ -926,8 +1176,9 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
     # a fresh animation scene's 'PUBLISH.001'. Within one holder the base
     # name is unambiguous; the fallback only fires when it's unique on BOTH
     # sides (the manifest and the scene).
+    keyspace = set(action_map) | set(bindings)
     manifest_by_base = {}
-    for name in action_map:
+    for name in keyspace:
         b = name.split(".")[0]
         manifest_by_base[b] = None if b in manifest_by_base else name
     holder_objs = list(holder.all_objects)
@@ -943,30 +1194,29 @@ def _apply_element_animation(holder, anim_blend, action_map, content=""):
         # global names). Then the exact global name (manifests published before
         # this change were keyed that way), then the unique-base fallback.
         ref = _stable_obj_name(o)
-        key = (ref if ref in action_map
-               else o.name if o.name in action_map
+        key = (ref if ref in keyspace
+               else o.name if o.name in keyspace
                else None)
         if key is None and base_count.get(o.name.split(".")[0]) == 1:
             key = manifest_by_base.get(o.name.split(".")[0])
         act = loaded.get(action_map.get(key, "")) if key else None
+        b = bindings.get(key) or {} if key else {}
         dbg["matched"].append((o.name, ref, key, action_map.get(key),
                                act is not None))
-        if act is None:
-            continue
-        o.animation_data_create()
-        o.animation_data.action = act
-        # Blender 4.4+ slotted actions: a slot must be bound to drive the object. It
-        # auto-binds when the object name matches the action's slot; force the first
-        # slot otherwise. (No-op on older Blender without slots.)
-        try:
-            ad = o.animation_data
-            if getattr(ad, "action_slot", None) is None:
-                slots = getattr(act, "slots", None)
-                if slots and len(slots):
-                    ad.action_slot = slots[0]
-        except Exception:  # noqa: BLE001
-            pass
-        applied += 1
+        did = 0
+        if act is not None:
+            o.animation_data_create()
+            o.animation_data.action = act
+            # Blender 4.4+ slotted actions: a slot must be bound to drive the
+            # object. Prefer the slot recorded at capture; fall back to the
+            # auto-bind / first slot. (No-op on older Blender without slots.)
+            _bind_slot(o.animation_data, act,
+                       (b.get("object") or {}).get("slot", ""))
+            did += 1
+        if b:
+            did += _apply_object_bindings(o, b, loaded)
+        if did:
+            applied += 1
     dbg["applied"] = applied
     return applied
 
@@ -1660,12 +1910,14 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             # Environments are excluded — they are placed as a static unit, never
             # animated, so a stale manifest entry must not move them.
             ael = anim_elements.get(el.get("id"))
-            if (holder and ael and ael.get("blend_local") and ael.get("objects")
+            if (holder and ael and ael.get("blend_local")
+                    and (ael.get("objects") or ael.get("bindings"))
                     and not _is_environment(el)):
                 try:
                     n_anim = _apply_element_animation(
                         holder, ael["blend_local"], ael["objects"],
-                        content=ael.get("content", ""))
+                        content=ael.get("content", ""),
+                        bindings=ael.get("bindings"))
                     animated += n_anim
                     holder["flumen_anim"] = ael.get("version", "")
                     # Animation was published but bound to NOTHING: the objects it
@@ -1894,12 +2146,14 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
             data = _LOAD_ANIM.get(it.version)
             holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + it.element_id)
             amap = (data.get("elements") or {}).get(it.element_id) if data else None
-            if holder and data and data.get("blend_local") and amap:
+            bmap = (data.get("bindings") or {}).get(it.element_id) if data else None
+            if holder and data and data.get("blend_local") and (amap or bmap):
                 try:
                     n = _apply_element_animation(
-                        holder, data["blend_local"], amap,
+                        holder, data["blend_local"], amap or {},
                         content=(data.get("contents") or {}).get(
-                            it.element_id, ""))
+                            it.element_id, ""),
+                        bindings=bmap)
                 except Exception as exc:  # noqa: BLE001
                     print("[Flumen] load animation failed:", exc)
                     n = 0

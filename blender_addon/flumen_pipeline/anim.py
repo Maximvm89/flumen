@@ -34,7 +34,8 @@ def is_anim_blend(name: str) -> bool:
 
 def build_anim_manifest(version: int, element_actions: dict,
                         hashes: dict | None = None,
-                        contents: dict | None = None) -> dict:
+                        contents: dict | None = None,
+                        bindings: dict | None = None) -> dict:
     """The <base>_vNNN_anim.manifest.json payload: which action sits on which object,
     grouped per element, plus a content hash per element for dedup. `element_actions`
     is {element_id: {object_name: action_name}} (empty maps dropped); `hashes` is
@@ -42,11 +43,20 @@ def build_anim_manifest(version: int, element_actions: dict,
     WHICH publish file each element linked when the animation was captured
     ({element_id: 'house_model_v005.blend'}) — object-level placement keys are
     only meaningful against that exact content; a consumer linking a different
-    version must not smear them onto renamed/restructured objects."""
+    version must not smear them onto renamed/restructured objects. `bindings`
+    ({element_id: {object_name: {level: {action, slot, nla}}}}) is the newer,
+    richer capture — slot identifiers, data-block + shape-key actions, NLA
+    stacks; consumers that predate it simply ignore the key. An element may be
+    bindings-only (e.g. all its motion lives in NLA strips)."""
     elements = {eid: dict(objs) for eid, objs in (element_actions or {}).items()
                 if objs}
-    keep = {eid: h for eid, h in (hashes or {}).items() if eid in elements}
+    kept_bindings = {eid: b for eid, b in (bindings or {}).items() if b}
+    known = set(elements) | set(kept_bindings)
+    keep = {eid: h for eid, h in (hashes or {}).items() if eid in known}
     kept_contents = {eid: c for eid, c in (contents or {}).items()
-                     if eid in elements and c}
-    return {"version": int(version), "elements": elements, "hashes": keep,
-            "contents": kept_contents}
+                     if eid in known and c}
+    out = {"version": int(version), "elements": elements, "hashes": keep,
+           "contents": kept_contents}
+    if kept_bindings:
+        out["bindings"] = kept_bindings
+    return out

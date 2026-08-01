@@ -435,9 +435,17 @@ def resolved_animation(sftp, remote_root: str, shot_entity: str, step: str,
     anims = published_animations(sftp, remote_root, shot_entity, step, settings)
     elements = {}
     for a in anims:                                  # precedence order
-        for eid, objs in (a.get("elements") or {}).items():
+        # An element counts as "in" a publish when either section carries it —
+        # newer manifests add 'bindings' (slots, data/shape-key actions, NLA),
+        # and an element can be bindings-only (all its motion in NLA strips).
+        eids = set(a.get("elements") or {}) | set(a.get("bindings") or {})
+        for eid in eids:
             if eid not in elements:
-                elements[eid] = {"blend_rel": a["blend_rel"], "objects": objs,
+                elements[eid] = {"blend_rel": a["blend_rel"],
+                                 "objects": (a.get("elements") or {}).get(eid)
+                                 or {},
+                                 "bindings": (a.get("bindings") or {}).get(eid)
+                                 or {},
                                  "version": a["version"],
                                  "content": (a.get("contents") or {}).get(eid,
                                                                           "")}
@@ -492,7 +500,7 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
                 continue
             blend_rel = p["rel"]
             manifest_rel = blend_rel[: -len(".blend")] + ".manifest.json"
-            elements, hashes, contents = {}, {}, {}
+            elements, hashes, contents, bindings = {}, {}, {}, {}
             txt = sftp.read_text(rr + "/" + manifest_rel)
             if txt:
                 try:
@@ -500,8 +508,9 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
                     elements = m.get("elements") or {}
                     hashes = m.get("hashes") or {}
                     contents = m.get("contents") or {}
+                    bindings = m.get("bindings") or {}
                 except ValueError:
-                    elements, hashes, contents = {}, {}, {}
+                    elements, hashes, contents, bindings = {}, {}, {}, {}
             label = anim_version_label(p["name"])
             if st != step:
                 label = f"{st} {label}"
@@ -510,7 +519,7 @@ def published_animations(sftp, remote_root: str, shot_entity: str, step: str,
                         "description": p.get("description", ""),
                         "time": p.get("time"),
                         "elements": elements, "hashes": hashes,
-                        "contents": contents})
+                        "contents": contents, "bindings": bindings})
     return out
 
 

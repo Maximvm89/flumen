@@ -1128,6 +1128,7 @@ def cmd_resolve_assembly(args) -> int:
             elems, blends = {}, {}
             for eid, info in ra["elements"].items():
                 entry = {"objects": info["objects"],
+                         "bindings": info.get("bindings") or {},
                          "version": info.get("version", ""),
                          "content": info.get("content", ""),
                          "blend_rel": info["blend_rel"]}

@@ -90,13 +90,15 @@ def _headless_build_shot(context, task, only=None):
             except Exception as exc:  # noqa: BLE001
                 _publog(f"headless build: look on {eid} failed: {exc}")
         ael = anim_elements.get(eid)
-        if (ael and ael.get("blend_local") and ael.get("objects")
+        if (ael and ael.get("blend_local")
+                and (ael.get("objects") or ael.get("bindings"))
                 and not _is_environment(el)):
             want = len(ael.get("objects") or {})
             try:
                 got = _apply_element_animation(holder, ael["blend_local"],
                                                ael["objects"],
-                                               content=ael.get("content", ""))
+                                               content=ael.get("content", ""),
+                                               bindings=ael.get("bindings"))
                 holder["flumen_anim"] = ael.get("version", "")
                 # Diagnostic: how many of the manifest's animated objects actually
                 # got their action. A shortfall here is why a character can bake to
