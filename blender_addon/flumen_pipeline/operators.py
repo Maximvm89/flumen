@@ -1027,6 +1027,35 @@ def _rename_publish_collection(coll, coll_name):
 _SHOT_PUBLISH = {}
 
 
+def classify_anim_status(cur_hash, history):
+    """How this scene's animation for one element relates to what's published.
+
+    `history` is [(version, hash, by)] NEWEST first. Returns
+    (status, ref_version, ref_author):
+
+      new       — never published
+      unchanged — identical to the newest published version
+      behind    — identical to an OLDER published version that has since been
+                  superseded. Publishing would silently roll the newer one back
+                  over a colleague's work, on an element this artist very likely
+                  never touched (confirmed in the wild: SEQ010/SH0010 v027
+                  re-published orso_1's v024 animation over v025). ref names the
+                  newer version that would be lost.
+      changed   — genuinely new content
+
+    Pure so it can be unit-tested without Blender.
+    """
+    if not history:
+        return ("new", "", "")
+    newest_ver, newest_hash, newest_by = history[0]
+    if cur_hash == newest_hash:
+        return ("unchanged", newest_ver, newest_by)
+    for ver, h, by in history[1:]:
+        if h == cur_hash:
+            return ("behind", newest_ver, newest_by)
+    return ("changed", newest_ver, newest_by)
+
+
 def _prepare_shot_publish_anim(context, task):
     """Snapshot poses, hash each element's animation, compare to the last publish, and
     populate the publish dialog's per-element checkable list (changed/new pre-checked,
@@ -1039,9 +1068,12 @@ def _prepare_shot_publish_anim(context, task):
     # Last published hashes + the newest anim version per element (for dedup + the HUD).
     anims = _shell_json(["list-animations", "--task", task["id"], "--no-fetch"]) or []
     last, anim_vers = {}, {}
+    history = {}                            # eid -> [(version, hash, by)] newest first
     for a in anims:                         # newest first
         for eid, h in (a.get("hashes") or {}).items():
             last.setdefault(eid, h)
+            history.setdefault(eid, []).append(
+                (a.get("version", ""), h, a.get("by", "")))
         for eid in (a.get("elements") or {}):
             anim_vers.setdefault(eid, a.get("version", ""))
     last_label = anims[0]["version"] if anims else ""
@@ -1059,14 +1091,13 @@ def _prepare_shot_publish_anim(context, task):
         it = rows.add()
         it.element_id = eid
         it.label = eid
-        if eid not in last:
-            it.status = "new"
-        elif last[eid] != cur[eid]:
-            it.status = "changed"
-        else:
-            it.status = "unchanged"
-        it.ref = last_label if it.status == "unchanged" else ""
-        it.enabled = it.status in ("new", "changed")
+        status, ref, by = classify_anim_status(cur[eid], history.get(eid) or [])
+        it.status = status
+        # 'behind' keeps ref/author: the NEWER version publishing would destroy.
+        it.ref = ref if status in ("unchanged", "behind") else ""
+        it.newer_by = by if status == "behind" else ""
+        # Never pre-tick a rollback — the artist has to opt in deliberately.
+        it.enabled = status in ("new", "changed")
     _SHOT_PUBLISH = {"hashes": cur, "last_label": last_label,
                      "steps": steps, "anim_vers": anim_vers}
 
@@ -1077,8 +1108,10 @@ class FLUMEN_PublishItem(bpy.types.PropertyGroup):
     enabled: bpy.props.BoolProperty(name="Publish", default=True)
     element_id: bpy.props.StringProperty()
     label: bpy.props.StringProperty()
-    status: bpy.props.StringProperty()      # changed | unchanged | new
-    ref: bpy.props.StringProperty()         # the version it's unchanged against
+    status: bpy.props.StringProperty()      # changed | unchanged | new | behind
+    ref: bpy.props.StringProperty()         # unchanged: the version it matches;
+                                            # behind: the NEWER version at risk
+    newer_by: bpy.props.StringProperty()    # who published that newer version
 
 
 class FLUMEN_OT_publish(bpy.types.Operator):
@@ -1141,13 +1174,28 @@ class FLUMEN_OT_publish(bpy.types.Operator):
             if len(rows):
                 box = col.box()
                 box.label(text="Animation to publish (changed are pre-selected):")
+                behind = [it for it in rows if it.status == "behind"]
+                if behind:
+                    # A rollback is invisible otherwise: the element simply looks
+                    # 'changed', because it IS different — just older.
+                    warn = box.box()
+                    warn.label(text=f"{len(behind)} element(s): your scene is "
+                                    f"BEHIND the published animation.",
+                               icon="ERROR")
+                    warn.label(text="Publishing them would overwrite newer work. "
+                                    "Left unticked on purpose.")
                 for it in rows:
                     row = box.row(align=True)
                     row.prop(it, "enabled", text="")
                     row.label(text=it.label, icon="ARMATURE_DATA")
-                    tag = (f"unchanged (= {it.ref})" if it.status == "unchanged"
-                           else it.status)
-                    row.label(text=tag)
+                    if it.status == "behind":
+                        row.label(text=f"BEHIND {it.ref}"
+                                       + (f" ({it.newer_by})" if it.newer_by else "")
+                                       + " — would overwrite it", icon="ERROR")
+                    elif it.status == "unchanged":
+                        row.label(text=f"unchanged (= {it.ref})")
+                    else:
+                        row.label(text=it.status)
                 col.prop(context.window_manager, "flumen_force_publish")
             col.prop(context.window_manager, "flumen_render_turntable",
                      text="Render playblast")

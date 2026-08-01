@@ -237,3 +237,28 @@ def test_look_mesh_matching_handles_instance_suffixes():
     assert r["BODY"].name == "BODY.002" and r["BODY.001"].name == "BODY.003"
     assert looks._base_name("X_001") == "X" and looks._base_name("X.001") == "X"
     assert looks._base_name("arm_01") == "arm_01"    # 2-digit: not a suffix
+
+
+def test_classify_anim_status_detects_a_rollback():
+    """Publishing from a scene that is BEHIND silently overwrites newer work.
+
+    Modelled on the real SEQ010/SH0010 case: v027 carried orso_1's v024
+    animation while v025 (a colleague's) was newer — the dialog called it
+    'changed', because it WAS different, just older."""
+    c = operators.classify_anim_status
+    # history is NEWEST first: (version, hash, author)
+    hist = [("v025", "K", "francesco.catena"),
+            ("v024", "J", "elena.zaretti"),
+            ("v023", "I", "francesco.catena")]
+
+    # the scene still holds v024's animation -> publishing would bury v025
+    assert c("J", hist) == ("behind", "v025", "francesco.catena")
+    # matching the newest is simply unchanged
+    assert c("K", hist) == ("unchanged", "v025", "francesco.catena")
+    # genuinely new content is a normal change
+    assert c("Z", hist)[0] == "changed"
+    # never published before
+    assert c("Z", []) == ("new", "", "")
+    # an element with a single publish can never be 'behind'
+    assert c("A", [("v001", "A", "x")])[0] == "unchanged"
+    assert c("B", [("v001", "A", "x")])[0] == "changed"
