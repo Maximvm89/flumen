@@ -2541,6 +2541,22 @@ class MainWindow(QMainWindow):
                     f"{type(exc).__name__}: {exc}\n\n"
                     f"Full traceback in ~/.flumen/workspace.log")
 
+        # Starting the job is itself inside the context-menu slot: a raise here
+        # (a missing widget in _busy_buttons, a bad import) is swallowed by Qt
+        # and looks exactly like "the menu does nothing".
+        try:
+            self._busy_buttons(True)
+            self._spawn(load, show, busy_msg="Resolving shot elements…")
+            print("[sweatbox] job spawned", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            self._busy_buttons(False)
+            QMessageBox.critical(
+                self, "Sweatbox could not start",
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"Full traceback in ~/.flumen/workspace.log")
+
     def _open_blend_in_blender(self, task: dict, blend: str):
         """Open a .blend in Blender with this task's context, so the add-on's
         'Save into task' and publish actions target the right place."""
