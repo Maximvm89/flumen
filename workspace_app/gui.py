@@ -2648,10 +2648,22 @@ class MainWindow(QMainWindow):
                                        sweatbox=True, label=label,
                                        only_formats=only_formats)
             # Phase 1: headless rebuild from published data -> build_out.
+            # Delete any previous build FIRST: build_out has a fixed name, so a
+            # rebuild that fails without writing would leave the last run's file
+            # there — and it would be opened/rendered as if it were this one,
+            # complete with the elements you just unticked.
+            try:
+                os.remove(build_out)
+            except OSError:
+                pass
+            print(f"[sweatbox] rebuilding {len(only_ids or [])} element(s): "
+                  f"{','.join(only_ids or []) or '(all)'}", flush=True)
             rc = launch(cfg, creds, extra_env=extra_env, open_file=None,
                         background=True,
                         extra_args=["--python", build_script], log_path=None)
             if rc != 0 or not os.path.isfile(build_out):
+                print(f"[sweatbox] rebuild FAILED (rc={rc}, "
+                      f"file={os.path.isfile(build_out)})", flush=True)
                 return rc or 1
             if open_after:                     # stop here and hand it over
                 return 0
@@ -3611,8 +3623,12 @@ class SweatboxDialog(QDialog):
             lay.addWidget(cb)
             lay.addStretch(1)
             self.table.setCellWidget(i, 0, w)
+            # Show the element ID, never the label: a shot with eleven ghosts
+            # labels them ALL 'fantasma', so an instance list rendered by label
+            # is eleven identical rows and unticking "all of them" is guesswork.
+            # The id ('fantasma', 'fantasma_1', …) is what the filter matches.
             self.table.setItem(i, 1, QTableWidgetItem(
-                el.get("label") or el.get("id", "")))
+                el.get("id") or el.get("label", "")))
             asset = str(el.get("asset", ""))
             typ = ("environment" if asset.startswith("environments/")
                    else "camera" if el.get("kind") == "camera"

@@ -375,6 +375,8 @@ def headless_build_and_save():
     # Restrict to the elements ticked in the app's Sweatbox picker (all if unset).
     only_env = os.environ.get("FLUMEN_SWEATBOX_ONLY", "")
     only = set(x for x in only_env.split(",") if x) if only_env else None
+    print(f"[Flumen] sweatbox: only={sorted(only) if only else '(all elements)'}",
+          flush=True)
     n = _headless_build_shot(ctx, task, only=only)
     _publog(f"sweatbox: built {n} element(s); saving -> {out}", echo=True)
     if n == 0:
