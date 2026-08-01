@@ -3568,9 +3568,21 @@ class SweatboxDialog(QDialog):
     """Pick which elements to rebuild into the Sweatbox (like Blender's Build
     shot list). All ticked by default — untick to leave an element out."""
 
+    @staticmethod
+    def _sort_key(el):
+        """Group every instance of an asset together, numerically: fantasma,
+        fantasma_1, fantasma_2 … fantasma_10. In assembly order the eleven
+        ghosts are split (one at row 7, ten at rows 14-23), which makes
+        'untick them all' a hunt — and missing one silently builds it."""
+        eid = str(el.get("id", ""))
+        base, _, tail = eid.rpartition("_")
+        if base and tail.isdigit():
+            return (str(el.get("asset", "")), base, int(tail))
+        return (str(el.get("asset", "")), eid, -1)   # bare id sorts first
+
     def __init__(self, shot_entity, elements, formats=None, parent=None):
         super().__init__(parent)
-        self._els = list(elements or [])
+        self._els = sorted(elements or [], key=self._sort_key)
         self._formats = list(formats or [])
         self.setWindowTitle(f"Sweatbox — {shot_entity}")
         self.setMinimumWidth(560)
@@ -3608,6 +3620,17 @@ class SweatboxDialog(QDialog):
             "Tick the elements to rebuild into the sweatbox (latest rig + "
             "animation; the environment brings its set-dressing). Untick to "
             "skip. Keep the camera ticked — the render needs it."))
+
+        # Filter: type 'fantasma' to show only its instances, then Select none
+        # clears all eleven at once — no scanning a 29-row list for stragglers.
+        frow2 = QHBoxLayout()
+        frow2.addWidget(QLabel("Filter:"))
+        self.ed_filter = QLineEdit()
+        self.ed_filter.setPlaceholderText(
+            "type to show only matching elements (e.g. fantasma)…")
+        self.ed_filter.textChanged.connect(self._apply_filter)
+        frow2.addWidget(self.ed_filter, 1)
+        root.addLayout(frow2)
         self.table = QTableWidget(len(self._els), 3)
         self.table.setHorizontalHeaderLabels(["Include", "Element", "Type"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -3639,11 +3662,15 @@ class SweatboxDialog(QDialog):
 
         btns = QHBoxLayout()
         b_all = QPushButton("Select all")
-        b_all.clicked.connect(lambda: [b.setChecked(True) for b in self._boxes])
+        b_all.clicked.connect(lambda: self._set_shown(True))
         b_none = QPushButton("Select none")
-        b_none.clicked.connect(lambda: [b.setChecked(False) for b in self._boxes])
+        b_none.clicked.connect(lambda: self._set_shown(False))
+        for b in (b_all, b_none):
+            b.setToolTip("Applies to the rows currently shown by the filter.")
         btns.addWidget(b_all)
         btns.addWidget(b_none)
+        self.lbl_count = QLabel("")
+        btns.addWidget(self.lbl_count)
         btns.addStretch(1)
         root.addLayout(btns)
 
@@ -3675,6 +3702,21 @@ class SweatboxDialog(QDialog):
         self.ed_blend.textChanged.connect(self._refresh_ok)
         self._refresh_ok()
 
+    def _apply_filter(self, text=""):
+        """Show only rows whose id or asset matches; ticks are never changed."""
+        needle = (text or self.ed_filter.text()).strip().lower()
+        for i, el in enumerate(self._els):
+            hay = f"{el.get('id','')} {el.get('asset','')}".lower()
+            self.table.setRowHidden(i, bool(needle) and needle not in hay)
+        self._refresh_ok()
+
+    def _set_shown(self, state):
+        """Tick/untick only the rows the filter is currently showing."""
+        for i, b in enumerate(self._boxes):
+            if not self.table.isRowHidden(i):
+                b.setChecked(state)
+        self._refresh_ok()
+
     def _pick_blend(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose a .blend to sweatbox", "", "Blender files (*.blend)")
@@ -3701,7 +3743,16 @@ class SweatboxDialog(QDialog):
             cb.setEnabled(rendering)
         self.ed_blend.setEnabled(not rebuilding)
 
-        has_el = any(b.isChecked() for b in self._boxes)
+        n_on = sum(1 for b in self._boxes if b.isChecked())
+        has_el = n_on > 0
+        # Always show what will actually build — the count is the truth, not a
+        # visual scan of a 29-row list.
+        off = [el["id"] for b, el in zip(self._boxes, self._els)
+               if not b.isChecked()]
+        self.lbl_count.setText(
+            f"  {n_on}/{len(self._boxes)} will build"
+            + (f"  ·  skipping {len(off)}" if off else ""))
+        self.lbl_count.setToolTip("Skipping: " + (", ".join(off) or "nothing"))
         has_fmt = (not self._formats) or any(cb.isChecked()
                                              for cb, _n in self._fmt_boxes)
         path_ok = bool(self.blend_path()) and os.path.isfile(self.blend_path())
