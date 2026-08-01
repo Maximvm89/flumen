@@ -35,7 +35,7 @@ from .dressing_ops import (  # dressing_ops feature (moved out)
 from .review_camera import (  # review_camera feature (moved out)
     FLUMEN_OT_add_review_camera, FLUMEN_OT_cycle_format, FLUMEN_OT_render_review, _unlink_review_camera)
 from .cache_shot import (  # cache_shot feature (moved out)
-    FLUMEN_OT_cache_shot, headless_build_and_cache)
+    FLUMEN_OT_cache_shot, headless_build_and_cache, headless_build_and_save)
 
 
 def apply_settings(scene, data: dict, root: str, report: list):

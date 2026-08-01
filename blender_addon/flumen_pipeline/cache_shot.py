@@ -75,7 +75,8 @@ def _headless_build_shot(context, task):
                                  else el.get("source_step", ""))
         holder["flumen_asset"] = el.get("asset", "")
         dressing = el.get("dressing")
-        if isinstance(dressing, dict) and dressing.get("props"):
+        if (isinstance(dressing, dict)
+                and (dressing.get("props") or dressing.get("extras"))):
             _apply_dressing_props(context, holder, el)
         ld = el.get("look_data")
         if isinstance(ld, dict) and ld.get("blend_local"):
@@ -225,6 +226,43 @@ def headless_build_and_cache():
         return 1
     print(f"[Flumen] cache: published {len(pairs)} element(s): "
           + ", ".join(e for e, _ in pairs))
+    return 0
+
+def headless_build_and_save():
+    """Headless entry for the Workspace app's 'Sweatbox' render: build the shot
+    fresh from PUBLISHED data on a clean scene (latest rigs + latest animation +
+    environment with set-dressing) and save it to FLUMEN_SWEATBOX_OUT, which the
+    app then renders with the Material-Preview playblast. Returns an exit code."""
+    ctx = bpy.context
+    task = active_task()
+    if not task or task.get("type") != "shot":
+        print("[Flumen] sweatbox: no active shot task.")
+        return 1
+    out = os.environ.get("FLUMEN_SWEATBOX_OUT", "")
+    if not out:
+        print("[Flumen] sweatbox: FLUMEN_SWEATBOX_OUT not set.")
+        return 1
+    try:
+        scaffold_empty_scene()               # no default cube/camera/light leak
+    except Exception:  # noqa: BLE001
+        pass
+    n = _headless_build_shot(ctx, task)
+    _publog(f"sweatbox: built {n} element(s); saving -> {out}", echo=True)
+    if n == 0:
+        print("[Flumen] sweatbox: nothing built — no render to make.")
+        return 1
+    # Cross-machine links (the app renders this copy in a second Blender).
+    try:
+        bpy.ops.file.make_paths_relative()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=out, copy=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Flumen] sweatbox: could not save build -> {out}: {exc}")
+        return 1
+    print(f"[Flumen] sweatbox: build saved ({n} element(s)) -> {out}")
     return 0
 
 def _cache_candidates():

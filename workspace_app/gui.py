@@ -2390,6 +2390,12 @@ class MainWindow(QMainWindow):
         act_render = (menu.addAction("Render shot…")
                       if (t.get("type") == "shot"
                           and t.get("step") == "lighting") else None)
+        # Sweatbox: rebuild the shot fresh from published data (latest rigs +
+        # animation + environment/dressing) and render a Material-Preview shaded
+        # playblast (studio HDRI, scene lights ignored) headless -> Dailies —
+        # judge shading/animation without opening Blender or lighting the shot.
+        act_sweatbox = (menu.addAction("Sweatbox (shaded review)…")
+                        if t.get("type") == "shot" else None)
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         act_delete.setEnabled(self._can_delete_remote())
@@ -2411,6 +2417,8 @@ class MainWindow(QMainWindow):
             self._cache_shot(t, work_abs)
         elif act_render is not None and chosen == act_render:
             self._render_shot(t)
+        elif act_sweatbox is not None and chosen == act_sweatbox:
+            self._sweatbox_shot(t)
         elif chosen == act_delete:
             self._delete_task(t)
 
@@ -2447,6 +2455,76 @@ class MainWindow(QMainWindow):
         self._busy_buttons(True)
         self._spawn(work, done,
                     busy_msg=f"Rendering {task.get('entity')} (final — slow)…")
+
+    def _sweatbox_shot(self, task: dict):
+        """Right-click 'Sweatbox': REBUILD the shot fresh from published data
+        (latest rigs + latest animation + environment with set-dressing), then
+        render it headless with the Material-Preview look (studio HDRI, the
+        shot's own lights ignored, higher EEVEE quality) and publish it to
+        Dailies as a '<shot>_sweatbox.mp4' review clip — judge shading/animation
+        without opening Blender or lighting the shot. Two headless Blender passes
+        (build+save, then render) on the Job thread. Like Cache shot, it always
+        assembles the ANIMATION step, so it reflects the newest published rigs
+        and animation regardless of which task row was clicked."""
+        if not self.cfg:
+            return
+        from flumen.launcher import launch
+        from flumen import playblast as P
+        local_root = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+        self.cfg.local_root = local_root       # launcher syncs into the GUI folder
+        cfg, creds = self.cfg, self._creds()
+        entity = task.get("entity", "")
+        # The build always resolves the animation step (latest rigs + anim),
+        # exactly like Cache shot — that's what "full rebuild" means here.
+        anim_id = tasksmod.make_id("shot", entity, "animation")
+        work_rel = f"04_sequences/{entity}/animation/work"
+        build_out = os.path.join(local_root, "04_sequences", *entity.split("/"),
+                                 "animation", ".preview", "sweatbox_build.blend")
+        extra_env = {
+            "FLUMEN_TASK_ID": anim_id,
+            "FLUMEN_TASK_TYPE": "shot",
+            "FLUMEN_TASK_ENTITY": entity,
+            "FLUMEN_TASK_STEP": "animation",
+            "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
+            "FLUMEN_SWEATBOX_OUT": build_out,
+            "FLUMEN_NEW_SCENE": "1",           # clean scene — build from published
+        }
+        import flumen as _flumen
+        build_script = os.path.join(os.path.dirname(_flumen.__file__),
+                                    "blender_sweatbox.py")
+        # Dailies clip stem: the shot code (playblast_rel appends '_sweatbox' and
+        # nests it under 07_dailies/<entity>/animation/).
+        label = entity.split("/")[-1] or "shot"
+
+        def work():
+            # Phase 1: headless rebuild from published data -> build_out.
+            rc = launch(cfg, creds, extra_env=extra_env, open_file=None,
+                        background=True,
+                        extra_args=["--python", build_script], log_path=None)
+            if rc != 0 or not os.path.isfile(build_out):
+                return rc or 1
+            # Phase 2: render the rebuilt shot with the sweatbox look + publish.
+            return P.run_playblast(cfg, creds, build_out, anim_id,
+                                   sweatbox=True, label=label)
+
+        def done(rc):
+            self._busy_buttons(False)
+            if rc == 0:
+                self.status.showMessage(
+                    f"Sweatbox rebuilt + rendered for {task.get('entity')} — "
+                    f"shaded review clip in Dailies.")
+            else:
+                QMessageBox.warning(
+                    self, "Sweatbox failed",
+                    "The sweatbox returned an error — a missing published "
+                    "rig/animation/environment, no camera, or nothing built. "
+                    "See ~/.flumen/blender.log.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done,
+                    busy_msg=f"Sweatbox: rebuilding + rendering "
+                             f"{task.get('entity')} (headless)…")
 
     def _cache_shot(self, task: dict, work_abs: str):
         """Right-click 'Cache shot': show a dialog of the shot's rigged
