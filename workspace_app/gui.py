@@ -2463,13 +2463,30 @@ class MainWindow(QMainWindow):
         (latest rigs + animation + environment with set-dressing) and render a
         Material-Preview shaded playblast to Dailies. Resolves the element list
         on the Job thread, then hands the ticked ids to the rebuild job."""
+        # Traced end-to-end (-> ~/.flumen/workspace.log): "nothing happens" is
+        # otherwise indistinguishable between a stale build, a silent early
+        # return and a hung SFTP call. The banner also reports WHICH code is
+        # running — a frozen .exe ignores a git pull entirely.
+        try:
+            from flumen import __version__ as _fver
+        except Exception:  # noqa: BLE001
+            _fver = "?"
+        print(f"[sweatbox] action fired — flumen {_fver}, "
+              f"frozen={bool(getattr(sys, 'frozen', False))}, "
+              f"task={task.get('id')!r}", flush=True)
         if not self.cfg:
+            print("[sweatbox] ABORT: no project config loaded", flush=True)
+            QMessageBox.warning(
+                self, "Not signed in",
+                "No project is loaded yet — sign in and set the project folder "
+                "on the Setup tab, then try again.")
             return
         from flumen import elements as E
         remote = self.cfg.remote_root
         entity = task.get("entity", "")
 
         def load():
+            print("[sweatbox] resolving shot elements…", flush=True)
             settings = self._conn_do(
                 lambda c: __import__("flumen.turntable", fromlist=["x"])
                 ._load_project_settings(self.cfg.resolved_local_root()))
@@ -2478,7 +2495,10 @@ class MainWindow(QMainWindow):
                 lambda c: E.resolved_elements(c, remote, entity, "animation",
                                               settings=settings))
             from flumen import playblast as P
-            return els, P.delivery_formats(settings)
+            fmts = P.delivery_formats(settings)
+            print(f"[sweatbox] resolved {len(els)} element(s), "
+                  f"{len(fmts)} format(s)", flush=True)
+            return els, fmts
 
         def show(loaded):
             # A raised exception inside a Qt slot only reaches stderr — the user
@@ -2486,6 +2506,8 @@ class MainWindow(QMainWindow):
             self._busy_buttons(False)
             try:
                 elems, fmts = loaded
+                print(f"[sweatbox] opening dialog ({len(elems)} elements)…",
+                      flush=True)
                 if not elems:
                     QMessageBox.information(
                         self, "Nothing to sweatbox",
