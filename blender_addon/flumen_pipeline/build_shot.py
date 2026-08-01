@@ -1160,36 +1160,40 @@ def _apply_object_bindings(o, b, loaded):
 
 
 def _restore_tweak_mode(ad, entry):
-    """Make the captured NLA strip drive playback, not the raw active action.
+    """Re-enter NLA tweak mode when the animator was in it.
 
-    An animator in tweak mode is editing a strip: Blender plays the action
-    THROUGH that strip, so the strip's time mapping applies. Francesco's orso_1
-    strip is stretched 1.2x, so scene frame 1301 reads action frame 1251.
+    In tweak mode Blender plays the action THROUGH the strip being edited, so
+    the strip's time mapping applies (Francesco's orso_1 strip is stretched
+    1.2x: scene frame 1301 reads action frame 1251). A rebuild without it
+    evaluates the action directly at scene time — 50 frames out of sync, the
+    character 10 m away.
 
-    A rebuild that also assigns the action as the ACTIVE action bypasses all of
-    that — Blender evaluates the action directly at scene time, 50 frames out of
-    sync, putting the character 10 metres away. Clearing the active action
-    leaves the strip as the only driver, which is exactly what the animator saw.
-    """
+    The action must STAY assigned: tweak mode is 'this action is the one being
+    edited in that strip', not 'the strip replaces the action'. Clearing it
+    instead makes the strip the only source, and with extrapolation=NOTHING the
+    pose collapses to rest the moment the strip ends (the character snapped to
+    the origin after frame 1382). Blender needs the strip flagged as selected
+    to know which one is being tweaked."""
     if not entry.get("tweak"):
         return
     act = getattr(ad, "action", None)
     if act is None:
         return
-    # Only safe if that action is genuinely in the stack — otherwise clearing it
-    # would drop the animation entirely.
-    in_stack = any(getattr(s, "action", None) is act
-                   for tr in (getattr(ad, "nla_tracks", []) or [])
-                   for s in (getattr(tr, "strips", []) or []))
-    if not in_stack:
+    found = False
+    for tr in getattr(ad, "nla_tracks", []) or []:
+        for st in getattr(tr, "strips", []) or []:
+            if getattr(st, "action", None) is act:
+                try:
+                    st.select = True
+                    found = True
+                except Exception:  # noqa: BLE001
+                    pass
+    if not found:
         return
     try:
-        ad.action = None
-        print(f"[Flumen] NLA: '{act.name}' now plays through its strip "
-              f"(tweak mode captured) instead of directly, so the strip's time "
-              f"mapping applies.")
+        ad.use_tweak_mode = True
     except Exception as exc:  # noqa: BLE001
-        print(f"[Flumen] could not hand playback to the NLA strip: {exc}")
+        print(f"[Flumen] could not re-enter NLA tweak mode: {exc}")
 
 
 def _apply_element_animation(holder, anim_blend, action_map, content="",
