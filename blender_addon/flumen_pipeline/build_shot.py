@@ -55,6 +55,20 @@ def _missing_libraries():
             pass
     return out
 
+def _missing_cache_files():
+    """CacheFile datablocks whose .abc no longer exists on disk (e.g. local
+    cache files cleaned away, or never synced to this machine). An imported
+    Alembic element pointing at one opens frozen at rest — Blender only
+    prints per-object 'Could not create cache reader' warnings."""
+    out = set()
+    for cf in bpy.data.cache_files:
+        try:
+            if not os.path.isfile(bpy.path.abspath(cf.filepath)):
+                out.add(cf)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
 def _is_environment(el):
     """Environments are placed as a static unit and are NOT per-object animated
     (publish already skips them in _snapshot_poses). So published animation is
@@ -62,11 +76,20 @@ def _is_environment(el):
     entry in the manifest would move a backdrop that should stay put."""
     return str((el or {}).get("asset", "")).startswith("environments/")
 
-def _element_content_broken(holder, missing_libs=None):
+def _element_content_broken(holder, missing_libs=None, missing_caches=None):
     """True when an element holder's content can't load: its publish file is
-    gone from disk (placeholder data) or the holder is simply empty."""
+    gone from disk (placeholder data), an imported Alembic cache's .abc is
+    missing, or the holder is simply empty."""
     if len(holder.all_objects) == 0 and len(holder.children) == 0:
         return True
+    caches = (_missing_cache_files() if missing_caches is None
+              else missing_caches)
+    if caches:
+        for o in holder.all_objects:
+            for m in getattr(o, "modifiers", []) or []:
+                if (getattr(m, "type", "") == "MESH_SEQUENCE_CACHE"
+                        and getattr(m, "cache_file", None) in caches):
+                    return True
     libs = _missing_libraries() if missing_libs is None else missing_libs
     if not libs:
         return False
@@ -1283,6 +1306,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             return {"FINISHED"} if msg else {"CANCELLED"}
 
         missing_libs = _missing_libraries()
+        missing_caches = _missing_cache_files()
         anim_meta = ((data.get("anim") or {}).get("elements")) or {}
         unloaded = _scene_unloaded_ids(context.scene)
         is_lighting = task.get("step") == "lighting"
@@ -1298,10 +1322,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
             it.present = holder is not None
             it.unload = False
-            # In scene but its publish is gone from disk (e.g. local files
-            # cleaned): offer a rebuild, pre-checked.
+            # In scene but its publish (or imported cache .abc) is gone from
+            # disk (e.g. local files cleaned): offer a rebuild, pre-checked.
             it.broken = (holder is not None
-                         and _element_content_broken(holder, missing_libs))
+                         and _element_content_broken(holder, missing_libs,
+                                                     missing_caches))
             it.detail, it.update = _element_update_notes(el, holder, anim_meta)
             # Updates arrive PRE-TICKED: opening Build shot and clicking Build
             # brings every element to the newest publish + animation. Untick a
@@ -1475,6 +1500,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
 
         # downloads only the chosen, at their chosen steps
         missing_before = _missing_libraries()
+        # Caches missing BEFORE the resolve re-downloads them: unlike a library
+        # (healed in place by lib.reload() below), a CacheFile whose reader
+        # already failed can't be reloaded reliably — those elements get a hard
+        # rebuild (clear + re-import of the freshly fetched cache).
+        missing_caches_before = _missing_cache_files()
         data = self._resolve(task, only=chosen, picks=picks)
         elements = (data or {}).get("elements")
         if not elements:
@@ -1511,7 +1541,9 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if eid in rebuild or eid in update:
                 holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
                 if holder is not None:
-                    if eid in rebuild and not _element_content_broken(holder):
+                    if (eid in rebuild
+                            and not _element_content_broken(
+                                holder, missing_caches=missing_caches_before)):
                         repaired.append(el)   # reload healed it — keep as-is
                         continue
                     # Update / hard rebuild: remember where the artist PLACED
