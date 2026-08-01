@@ -112,6 +112,73 @@ def _ensure_lighting(scene):
         scene.collection.objects.link(ob)
 
 
+def _sweatbox_hdri_path():
+    """A studio-light HDRI shipped with Blender, for the Material-Preview look.
+    Overridable via FLUMEN_PB_SWEATBOX_HDRI (a name in Blender's studiolights or
+    an absolute path). Returns '' when none is found."""
+    want = _env("FLUMEN_PB_SWEATBOX_HDRI", "")
+    if want and os.path.isfile(want):
+        return want
+    try:
+        base = os.path.join(bpy.utils.system_resource("DATAFILES"),
+                            "studiolights", "world")
+        files = sorted(f for f in os.listdir(base)
+                       if f.lower().endswith((".exr", ".hdr")))
+    except Exception:  # noqa: BLE001
+        return ""
+    if not files:
+        return ""
+    # Prefer a bright, neutral studio HDRI; else the first shipped one.
+    for pref in (want, "forest.exr", "city.exr", "interior.exr", "studio.exr"):
+        if pref and pref in files:
+            return os.path.join(base, pref)
+    return os.path.join(base, files[0])
+
+
+def _apply_sweatbox(scene):
+    """Give the render the viewport's MATERIAL-PREVIEW look: light every shader
+    with a studio HDRI world and IGNORE the shot's own lights, so shaders read
+    consistently even in an unlit anim/layout scene. Returns True if applied."""
+    # Material Preview never uses scene lights — hide them from the render.
+    for o in scene.objects:
+        if getattr(o, "type", "") == "LIGHT":
+            try:
+                o.hide_render = True
+            except Exception:  # noqa: BLE001
+                pass
+    hdri = _sweatbox_hdri_path()
+    if not hdri:
+        print("[playblast] sweatbox: no studio HDRI found — falling back to the "
+              "auto key/fill light rig.")
+        _ensure_lighting(scene)
+        return False
+    try:
+        world = bpy.data.worlds.new("SWEATBOX_World")
+        world.use_nodes = True
+        nt = world.node_tree
+        nt.nodes.clear()
+        out = nt.nodes.new("ShaderNodeOutputWorld")
+        bg = nt.nodes.new("ShaderNodeBackground")
+        env = nt.nodes.new("ShaderNodeTexEnvironment")
+        env.image = bpy.data.images.load(hdri, check_existing=True)
+        try:
+            strength = float(_env("FLUMEN_PB_SWEATBOX_STRENGTH", "1.0"))
+        except ValueError:
+            strength = 1.0
+        bg.inputs["Strength"].default_value = strength
+        nt.links.new(env.outputs["Color"], bg.inputs["Color"])
+        nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
+        scene.world = world
+    except Exception as exc:  # noqa: BLE001
+        print(f"[playblast] sweatbox: HDRI world setup failed ({exc}); using the "
+              f"auto light rig.")
+        _ensure_lighting(scene)
+        return False
+    print(f"[playblast] sweatbox: Material-Preview HDRI world "
+          f"({os.path.basename(hdri)}), scene lights ignored.")
+    return True
+
+
 def _sync_render_visibility(scene):
     """WYSIWYG playblast: the render shows exactly what the animator's viewport
     shows. Artists hide duplicate rigs/helpers with the eye icon or the monitor
@@ -319,23 +386,40 @@ def main():
     # playblast matches the artist's shaded viewport. Make sure it's lit and the
     # shadow pool is big enough.
     if engine in _EEVEE:
-        _ensure_lighting(scene)
+        sweatbox = _env("FLUMEN_PB_SWEATBOX", "0") == "1"
+        # Sweatbox: studio-HDRI Material-Preview look (scene lights ignored).
+        # Normal playblast: auto key/fill rig only when the shot has no lights.
+        if sweatbox:
+            _apply_sweatbox(scene)
+        else:
+            _ensure_lighting(scene)
         _boost_shadows(scene)
         # Preview quality: a few samples read fine in motion, and raytraced
-        # GI/reflections are wasted on a playblast — together this is most of
-        # the difference between a "playblast" and a full render.
+        # GI/reflections are wasted on a fast playblast — together this is most
+        # of the difference between a "playblast" and a full render. The sweatbox
+        # opts back INTO more samples + raytracing so HDRI reflections/GI and
+        # contact shadows read (it's a shading review, not a speed pass).
         ee = getattr(scene, "eevee", None)
         if ee is not None:
             try:
                 ee.taa_render_samples = max(1, int(_env("FLUMEN_PB_SAMPLES",
-                                                        "16")))
+                                                        "64" if sweatbox
+                                                        else "16")))
             except Exception:  # noqa: BLE001
                 pass
-            for attr in ("use_raytracing",):
-                try:
-                    setattr(ee, attr, False)
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                ee.use_raytracing = bool(sweatbox)
+            except Exception:  # noqa: BLE001
+                pass
+            if sweatbox:
+                # use_shadows: EEVEE Next; use_fast_gi: EEVEE Next ambient bounce
+                # for soft HDRI GI. Both guarded — names differ across versions
+                # and the old 'use_gtao' is gone in EEVEE Next.
+                for attr in ("use_shadows", "use_fast_gi"):
+                    try:
+                        setattr(ee, attr, True)
+                    except Exception:  # noqa: BLE001
+                        pass
     # Workbench: fast solid shading. TEXTURE colour shows the texture maps but is
     # flat/shadeless; MATERIAL shows flat base colours. Opt in via playblast.engine.
     elif engine == "BLENDER_WORKBENCH":

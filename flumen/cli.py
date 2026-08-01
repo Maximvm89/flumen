@@ -732,7 +732,9 @@ def cmd_playblast(args) -> int:
                 raise
             creds = SFTPCredentials(host="(offline)", port=22, user="(offline)")
     return playblast.run_playblast(cfg, creds, args.shot_file, args.task,
-                                   dry_run=args.dry_run, preview=preview)
+                                   dry_run=args.dry_run, preview=preview,
+                                   sweatbox=getattr(args, "sweatbox", False),
+                                   label=getattr(args, "label", ""))
 
 
 def cmd_build_review(args) -> int:
@@ -1584,6 +1586,13 @@ def build_parser() -> argparse.ArgumentParser:
     pbl.add_argument("--preview", action="store_true",
                      help="render + open locally only: MP4 lands beside the "
                           "shot .blend, nothing uploaded (works offline)")
+    pbl.add_argument("--sweatbox", action="store_true",
+                     help="Material-Preview look (studio HDRI, scene lights "
+                          "ignored) at higher EEVEE quality; uploads as a "
+                          "'_sweatbox.mp4' review clip")
+    pbl.add_argument("--label", default="",
+                     help="dailies filename stem (defaults to the shot .blend "
+                          "name); used by the sweatbox to name the current work")
     pbl.set_defaults(func=cmd_playblast)
 
     br = sub.add_parser("build-review", parents=[common],

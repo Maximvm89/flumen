@@ -1503,6 +1503,8 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
 
         built, skipped, repaired, animated, dressed = [], [], [], 0, 0
         looked = 0
+        anim_warnings = []   # (id, wanted objects, holder objects) for anim that
+                             # matched nothing — its keyed objects aren't in the link
         snapshots, placement_kept = {}, 0
         for el in elements:
             eid = str(el.get("id", ""))
@@ -1577,10 +1579,25 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if (holder and ael and ael.get("blend_local") and ael.get("objects")
                     and not _is_environment(el)):
                 try:
-                    animated += _apply_element_animation(
+                    n_anim = _apply_element_animation(
                         holder, ael["blend_local"], ael["objects"],
                         content=ael.get("content", ""))
+                    animated += n_anim
                     holder["flumen_anim"] = ael.get("version", "")
+                    # Animation was published but bound to NOTHING: the objects it
+                    # keys don't exist in the linked content (e.g. an anim keyed on
+                    # a rig control 'Benda_BBone_RIG' while the model publishes only
+                    # 'PUBLISH'/'bendage', or a missing cache). The element imports
+                    # static at origin — flag it loudly instead of failing silently.
+                    if n_anim == 0:
+                        want = sorted(ael["objects"].keys())
+                        have = sorted({o.name.split(".")[0]
+                                       for o in holder.all_objects})
+                        anim_warnings.append((el.get("id", "?"), want, have))
+                        print(f"[Flumen] ANIM MISMATCH ({el.get('id')}): animation "
+                              f"targets {want} but the linked content has "
+                              f"{have} — element is STATIC at origin. Publish a "
+                              f"cache for it, or bake its animation onto 'PUBLISH'.")
                 except Exception as exc:  # noqa: BLE001
                     print("[Flumen] could not apply animation:", exc)
             else:
@@ -1655,7 +1672,16 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         if skipped:
             parts.append("skipped " + ", ".join(
                 f"{e.get('id', '?')} ({err})" for e, err in skipped))
-        self.report({"INFO"} if built or repaired else {"WARNING"},
+        # Animation that bound to nothing — the element is in the scene but frozen
+        # at origin. Loud, named, and actionable (see the System Console for the
+        # object-name diff): the fix is a published cache or a PUBLISH-baked anim.
+        if anim_warnings:
+            names = ", ".join(i for i, _, _ in anim_warnings)
+            parts.append(f"⚠ animation did NOT bind on {names} — no matching "
+                         f"object in the linked content (static at origin; needs "
+                         f"a cache or PUBLISH-baked anim — see System Console)")
+        self.report({"WARNING"} if anim_warnings else
+                    {"INFO"} if built or repaired else {"WARNING"},
                     "; ".join(parts))
         return {"FINISHED"} if built else {"CANCELLED"}
 

@@ -105,12 +105,15 @@ def _overlay_element_info(frames_dir: str, task: dict, version_label: str) -> No
         img.save(fp)
 
 
-def playblast_rel(task: dict, version_label: str, fmt: str = "") -> str:
+def playblast_rel(task: dict, version_label: str, fmt: str = "",
+                  kind: str = "playblast") -> str:
     """Where the playblast lands (relative to remote_root / local_root):
-    07_dailies/<entity>/<step>/<version_label>_playblast[_<fmt>].mp4"""
+    07_dailies/<entity>/<step>/<version_label>_<kind>[_<fmt>].mp4
+    `kind` is 'playblast' (default) or 'sweatbox' (Material-Preview review) so
+    the two never overwrite each other's dailies clip."""
     suffix = f"_{fmt}" if fmt else ""
     return (f"07_dailies/{task['entity']}/{task['step']}/"
-            f"{version_label}_playblast{suffix}.mp4")
+            f"{version_label}_{kind}{suffix}.mp4")
 
 
 def _open_locally(path: str) -> None:
@@ -128,7 +131,8 @@ def _open_locally(path: str) -> None:
 
 
 def run_playblast(cfg, creds, shot_blend: str, task_id: str,
-                  dry_run: bool = False, preview: bool = False) -> int:
+                  dry_run: bool = False, preview: bool = False,
+                  sweatbox: bool = False, label: str = "") -> int:
     """Open the published shot .blend headless, render its frame range through the
     scene camera into a PNG sequence, encode an MP4, upload it to 07_dailies and
     attach it to the task's latest publish record. Mirrors run_turntable.
@@ -136,7 +140,14 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     `preview` renders the SAME clip but keeps it local: the MP4 lands beside the
     shot .blend and opens in the OS video player — nothing uploaded, no review
     record, works offline (the server is only asked, best-effort, for the HUD's
-    task info)."""
+    task info).
+
+    `sweatbox` renders with the viewport's Material-Preview look — a studio HDRI
+    lights every shader and the shot's own lights are ignored — at higher EEVEE
+    quality, so an animator can judge how shaders read and animate even before
+    the shot is lit. It uploads to dailies as a '<label>_sweatbox.mp4' review
+    clip, kept separate from the normal '_playblast.mp4'. `label` overrides the
+    dailies filename stem (defaults to the shot .blend basename)."""
     from .sftp import SFTPClient
     from . import tasks
     from .launcher import find_blender, _resolve_ocio
@@ -144,8 +155,10 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                             _load_project_settings, _bundled_path, record_turntable)
 
     local_root = cfg.resolved_local_root()
+    kind = "sweatbox" if sweatbox else "playblast"
     version_label = ("preview" if preview
-                     else os.path.splitext(os.path.basename(shot_blend))[0])
+                     else label
+                     or os.path.splitext(os.path.basename(shot_blend))[0])
 
     task = None
     if not dry_run:
@@ -174,8 +187,8 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         if preview:
             suffix = f"_{fmt_name}" if fmt_name else ""
             return os.path.join(os.path.dirname(os.path.abspath(shot_blend)),
-                                f"playblast_preview{suffix}.mp4")
-        frel = playblast_rel(t, version_label, fmt_name)
+                                f"{kind}_preview{suffix}.mp4")
+        frel = playblast_rel(t, version_label, fmt_name, kind)
         return os.path.join(local_root, *frel.split("/"))
 
     out_local = _out_local(formats[0]["name"])
@@ -184,7 +197,7 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         for f in formats:
             dest = (_out_local(f["name"]) if preview
                     else "publish -> " + playblast_rel(t, version_label,
-                                                       f["name"]))
+                                                       f["name"], kind))
             print(f"(dry-run) would playblast {shot_blend} "
                   f"[{f['name'] or 'default'} {f['resolution_x']}x"
                   f"{f['resolution_y']}]\n          {dest}")
@@ -205,11 +218,16 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         "FLUMEN_PB_FRAMES_DIR": frames_dir,
         "FLUMEN_PB_RESX": str(formats[0]["resolution_x"]),
         "FLUMEN_PB_RESY": str(formats[0]["resolution_y"]),
-        "FLUMEN_PB_ENGINE": str(pb["engine"]),
         "FLUMEN_PB_COLOR": str(pb.get("color", "TEXTURE")),
         "FLUMEN_PB_VIEW": str(pb.get("view_transform", "")),
         "FLUMEN_PB_AUTOLIGHT": "0" if pb.get("auto_light") is False else "1",
-        "FLUMEN_PB_SAMPLES": str(pb.get("samples", 16)),
+        # Sweatbox forces EEVEE (never Workbench) + Material-Preview HDRI, and a
+        # higher sample count for cleaner shading than the fast daily playblast.
+        "FLUMEN_PB_ENGINE": ("BLENDER_EEVEE_NEXT" if sweatbox
+                             else str(pb["engine"])),
+        "FLUMEN_PB_SWEATBOX": "1" if sweatbox else "0",
+        "FLUMEN_PB_SAMPLES": str(pb.get("sweatbox_samples", 64) if sweatbox
+                                 else pb.get("samples", 16)),
         "FLUMEN_PB_RESPCT": str(pb.get("resolution_percentage", 100)),
     })
     if len(formats) > 1 or formats[0]["name"]:
@@ -231,7 +249,7 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                   f"'{f['name'] or 'default'}'.")
             continue
         _overlay_element_info(fdir, task, version_label)
-        frel = playblast_rel(t, version_label, f["name"])
+        frel = playblast_rel(t, version_label, f["name"], kind)
         flocal = _out_local(f["name"])
         print(f"Encoding MP4 -> {flocal}")
         if _encode_mp4(fdir, flocal, fps) and os.path.isfile(flocal):

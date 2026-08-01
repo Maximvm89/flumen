@@ -41,6 +41,31 @@ def test_run_playblast_dry_run(tmp_path, capsys):
     assert "SH0010_layout_v001_playblast.mp4" in out
 
 
+def test_playblast_rel_sweatbox_kind():
+    t = {"entity": "SEQ010/SH0010", "step": "animation"}
+    # Sweatbox lands under a distinct '_sweatbox' stem so it never overwrites
+    # the normal daily playblast clip.
+    assert playblast.playblast_rel(t, "SH0010_animation_v011", kind="sweatbox") == \
+        "07_dailies/SEQ010/SH0010/animation/SH0010_animation_v011_sweatbox.mp4"
+    assert playblast.playblast_rel(t, "v1", "9x16", "sweatbox").endswith(
+        "_sweatbox_9x16.mp4")
+
+
+def test_run_playblast_dry_run_sweatbox(tmp_path, capsys):
+    cfg = types.SimpleNamespace(resolved_local_root=lambda: str(tmp_path),
+                                remote_root="/r", blender_path=None)
+    rc = playblast.run_playblast(cfg, creds=None,
+                                 shot_blend="/x/sweatbox.blend",
+                                 task_id="shot-seq010_sh0010-animation",
+                                 dry_run=True, sweatbox=True,
+                                 label="SH0010_animation_v011")
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The label (the work file), not the temp snapshot name, names the clip.
+    assert "SH0010_animation_v011_sweatbox.mp4" in out
+    assert "sweatbox.blend_sweatbox" not in out
+
+
 def test_delivery_formats_parse_and_env():
     settings = {"formats": [
         {"name": "16x9", "resolution_x": 1920, "resolution_y": 1080},
