@@ -1170,8 +1170,11 @@ class FLUMEN_OT_publish(bpy.types.Operator):
         if task.get("type") == "shot":
             _prepare_shot_publish_anim(context, task)
             context.window_manager.flumen_force_publish = False
+        # Wide enough for the per-element animation rows: the status column
+        # carries a whole sentence ("built from v025 — v029 (marco.parisi2) is
+        # newer and would be buried"), and a truncated warning is a useless one.
         return context.window_manager.invoke_props_dialog(
-            self, width=480, title="Publish", confirm_text="Publish")
+            self, width=900, title="Publish", confirm_text="Publish")
 
     def draw(self, context):
         col = self.layout.column()
@@ -1208,16 +1211,19 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 for it in rows:
                     row = box.row(align=True)
                     row.prop(it, "enabled", text="")
-                    row.label(text=it.label, icon="ARMATURE_DATA")
+                    # Fixed-width name column so the status sentence beside it
+                    # gets the rest of the dialog instead of being elided.
+                    sub = row.split(factor=0.28)
+                    sub.label(text=it.label, icon="ARMATURE_DATA")
+                    row = sub.row(align=True)
                     if it.status == "behind":
-                        row.label(text=f"REVERTS to an older publish — buries "
-                                       f"{it.ref}"
+                        row.label(text=f"REVERT — buries {it.ref}"
                                        + (f" ({it.newer_by})" if it.newer_by else ""),
                                   icon="ERROR")
                     elif it.status == "stale":
-                        row.label(text=f"built from {it.loaded_ver} — {it.ref}"
-                                       + (f" ({it.newer_by})" if it.newer_by else "")
-                                       + " is newer and would be buried",
+                        row.label(text=f"built from {it.loaded_ver} · buries "
+                                       f"{it.ref}"
+                                       + (f" ({it.newer_by})" if it.newer_by else ""),
                                   icon="ERROR")
                     elif it.status == "unchanged":
                         row.label(text=f"unchanged (= {it.ref})")
