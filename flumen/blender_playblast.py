@@ -184,6 +184,81 @@ def _apply_sweatbox(scene):
     return True
 
 
+def _cull_offscreen(scene, base_x, base_y):
+    """Drop every object whose bounds NEVER enter the camera frustum across
+    the frame range. A dressed set costs real render time even off-camera:
+    EEVEE uploads its geometry + textures to the GPU, the depsgraph
+    re-evaluates it every frame, and raytracing considers it — for a review
+    render that is pure waste. Culled objects get hide_viewport (OUT of the
+    depsgraph: no per-frame eval, no VRAM), not just hide_render.
+
+    Conservative on purpose: the frustum is widened by FLUMEN_PB_CULL_MARGIN
+    (default 20%), the range is sampled every FLUMEN_PB_CULL_STEP frames
+    (default 10) so animated objects that pass through frame are kept, an
+    object is only out when ALL its bound-box corners fall outside the SAME
+    frustum plane, and anything straddling the camera plane is kept. The cost
+    is off-screen props vanishing from reflections/bounce — acceptable in a
+    review. FLUMEN_PB_CULL=0 disables. Returns how many objects were culled."""
+    cam_ob = scene.camera
+    if cam_ob is None:
+        return 0
+    from mathutils import Vector
+    try:
+        k = 1.0 + float(_env("FLUMEN_PB_CULL_MARGIN", "0.2"))
+    except ValueError:
+        k = 1.2
+    try:
+        step = max(1, int(_env("FLUMEN_PB_CULL_STEP", "10")))
+    except ValueError:
+        step = 10
+    types = {"MESH", "CURVE", "SURFACE", "META", "FONT"}
+    cand = [o for o in scene.objects
+            if o.type in types and not o.hide_render and not o.hide_viewport]
+    frames = list(range(scene.frame_start, scene.frame_end + 1, step))
+    if frames and frames[-1] != scene.frame_end:
+        frames.append(scene.frame_end)
+    seen = set()
+    for f in frames:
+        scene.frame_set(f)
+        dg = bpy.context.evaluated_depsgraph_get()
+        try:  # lens can be animated — rebuild the projection every sample
+            proj = cam_ob.calc_matrix_camera(dg, x=base_x, y=base_y)
+        except Exception:  # noqa: BLE001
+            return 0
+        to_clip = proj @ cam_ob.matrix_world.inverted()
+        for o in cand:
+            if o.name in seen:
+                continue
+            ev = o.evaluated_get(dg)
+            mw = ev.matrix_world
+            box = [mw @ Vector(c) for c in ev.bound_box]
+            pts = [to_clip @ p.to_4d() for p in box]
+            if all(p.w <= 0 for p in pts):
+                continue                      # fully behind the camera: out
+            if any(p.w <= 0 for p in pts):
+                seen.add(o.name)              # straddles the camera: keep
+                continue
+            out = any(all(t(p) for p in pts) for t in (
+                lambda p: p.x < -p.w * k, lambda p: p.x > p.w * k,
+                lambda p: p.y < -p.w * k, lambda p: p.y > p.w * k))
+            if not out:
+                seen.add(o.name)
+        if len(seen) == len(cand):
+            return 0                          # everything visible at some point
+    culled = [o for o in cand if o.name not in seen]
+    for o in culled:
+        try:
+            o.hide_render = True
+            o.hide_viewport = True
+        except Exception:  # noqa: BLE001
+            pass
+    if culled:
+        print(f"[playblast] frustum cull: {len(culled)}/{len(cand)} object(s) "
+              f"never in frame across {frames[0]}-{frames[-1]} — dropped from "
+              f"the depsgraph (FLUMEN_PB_CULL=0 disables).")
+    return len(culled)
+
+
 def _sync_render_visibility(scene):
     """WYSIWYG playblast: the render shows exactly what the animator's viewport
     shows. Artists hide duplicate rigs/helpers with the eye icon or the monitor
@@ -513,6 +588,16 @@ def main():
         nest_h = cam.sensor_width * (base_y / base_x)
     else:
         nest_h = None            # portrait-primary AUTO: leave as-is
+
+    # Off-camera cull, computed against the WIDEST frustum (the nesting base
+    # covers every narrower format). Default on for the sweatbox — the dressed
+    # environment is where render time exploded — opt-in/out via FLUMEN_PB_CULL.
+    sweat = _env("FLUMEN_PB_SWEATBOX", "0") == "1"
+    if _env("FLUMEN_PB_CULL", "1" if sweat else "0") == "1":
+        try:
+            _cull_offscreen(scene, base_x, base_y)
+        except Exception as exc:  # noqa: BLE001 — never lose a render to this
+            print(f"[playblast] frustum cull skipped: {exc}")
 
     _install_render_progress(scene)
     for name, x, y in formats:
