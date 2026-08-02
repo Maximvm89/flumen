@@ -2540,7 +2540,8 @@ class MainWindow(QMainWindow):
                 if not chosen:
                     return
                 self._launch_sweatbox_job(task, chosen, dlg.selected_formats(),
-                                          open_after=open_after)
+                                          open_after=open_after,
+                                          use_caches=dlg.use_caches())
             except Exception as exc:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()          # -> ~/.flumen/workspace.log
@@ -2616,7 +2617,8 @@ class MainWindow(QMainWindow):
     def _launch_sweatbox_job(self, task: dict, only_ids: list | None,
                              only_formats: list | None = None,
                              open_after: bool = False,
-                             prebuilt: str = ""):
+                             prebuilt: str = "",
+                             use_caches: bool = False):
         """Rebuild the picked elements from published data (headless) then render
         the Material-Preview sweatbox and publish it to Dailies. Two headless
         passes on the Job thread. Assembles the ANIMATION step (latest rigs +
@@ -2648,6 +2650,8 @@ class MainWindow(QMainWindow):
             "FLUMEN_TASK_WORK_DIR": os.path.join(local_root, *work_rel.split("/")),
             "FLUMEN_SWEATBOX_OUT": build_out,
             "FLUMEN_SWEATBOX_ONLY": ",".join(only_ids or []),  # ticked elements
+            # cache mode: elements load their published .abc, uncached skipped
+            "FLUMEN_SWEATBOX_CACHES": "1" if use_caches else "",
             "FLUMEN_NEW_SCENE": "1",           # clean scene — build from published
         }
         import flumen as _flumen
@@ -3677,6 +3681,15 @@ class SweatboxDialog(QDialog):
         root.addWidget(self.rb_render)
         root.addWidget(self.rb_open)
 
+        # Cache mode: preview exactly what is CACHED. Elements load their
+        # newest published .abc instead of the live rig; an asset without a
+        # cache is skipped (no rig fallback). Environment + dressing + camera
+        # load normally — they are never cached.
+        self.cb_caches = QCheckBox(
+            "Use published caches instead of rigs (uncached elements are "
+            "skipped; environment, set dressing and camera load normally)")
+        root.addWidget(self.cb_caches)
+
         root.addWidget(QLabel(
             "Tick the elements to rebuild into the sweatbox (latest rig + "
             "animation; the environment brings its set-dressing). Untick to "
@@ -3801,12 +3814,17 @@ class SweatboxDialog(QDialog):
             return self._last_build
         return self.ed_blend.text().strip()
 
+    def use_caches(self) -> bool:
+        return (self.source_mode() == "rebuild"
+                and self.cb_caches.isChecked())
+
     def _refresh_ok(self):
         ok = self.bb.button(QDialogButtonBox.Ok)
         rebuilding = self.source_mode() == "rebuild"
         rendering = self.action_mode() == "render"
         # The element list only applies to a rebuild; formats only to a render.
         self.table.setEnabled(rebuilding)
+        self.cb_caches.setEnabled(rebuilding)   # only a rebuild resolves caches
         for cb, _n in self._fmt_boxes:
             cb.setEnabled(rendering)
         self.ed_blend.setEnabled(self.source_mode() == "file")

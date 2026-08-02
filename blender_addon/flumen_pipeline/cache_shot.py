@@ -21,11 +21,15 @@ from .startup import scaffold_empty_scene
 
 
 def _resolve_assembly(task, list_only=False, only=None, picks=None,
-                      dressing=False):
+                      dressing=False, step=""):
     """Module-level assembly resolve (build_shot has a method version). Returns
     the parsed JSON or None. `dressing` forces set-dressing resolution off the
-    lighting step (the Sweatbox needs the dressed environment)."""
+    lighting step (the Sweatbox needs the dressed environment); `step`
+    overrides the task's step (the Sweatbox's use-caches mode resolves the
+    LIGHTING representation — alembic caches — from the animation task)."""
     args = ["resolve-assembly", "--task", task["id"]]
+    if step:
+        args += ["--step", step]
     if list_only:
         args.append("--list")
     if dressing:
@@ -45,18 +49,38 @@ def _resolve_assembly(task, list_only=False, only=None, picks=None,
         _publog(f"resolve-assembly failed: {exc}")
         return None
 
-def _headless_build_shot(context, task, only=None, dressing=False):
+def _headless_build_shot(context, task, only=None, dressing=False,
+                         caches=False):
     """Build every resolvable element into the scene (no dialog): link/import,
     stamp, apply the element's look and published animation, place the camera,
     set the frame range. Additive — an element already in the scene is left
     alone. `only` (a set of element ids) restricts the build to those elements
     (the Sweatbox picker); None builds all. `dressing` resolves + places the
     environment's set-dressing (a lighting concern the Sweatbox shares; the
-    cache build has no use for prop geometry). Returns the count built."""
-    data = _resolve_assembly(task, dressing=dressing)
+    cache build has no use for prop geometry). `caches` resolves the LIGHTING
+    representation instead — each element loads its newest published Alembic
+    cache, and an asset element WITHOUT a cache is skipped outright (no rig
+    fallback; environment, dressing and camera still load normally). Returns
+    the count built."""
+    data = _resolve_assembly(task, dressing=dressing,
+                             step="lighting" if caches else "")
     if not data:
         return 0
     elements = data.get("elements") or []
+    if caches:
+        # The lighting resolve falls BACK to the rig/model publish when an
+        # element has no cache yet — right for lighting, wrong here: this mode
+        # exists to preview exactly what is cached, so an uncached asset is
+        # dropped, loudly, instead of sneaking in as a live rig.
+        kept = []
+        for el in elements:
+            if (el.get("kind") == "camera" or _is_environment(el)
+                    or el.get("cache_local")):
+                kept.append(el)
+            else:
+                print(f"[Flumen] sweatbox(caches): skipping "
+                      f"'{el.get('id')}' — no published cache", flush=True)
+        elements = kept
     anim_elements = ((data.get("anim") or {}).get("elements")) or {}
     built = 0
     n = len(elements)
@@ -399,9 +423,11 @@ def headless_build_and_save():
     # Restrict to the elements ticked in the app's Sweatbox picker (all if unset).
     only_env = os.environ.get("FLUMEN_SWEATBOX_ONLY", "")
     only = set(x for x in only_env.split(",") if x) if only_env else None
-    print(f"[Flumen] sweatbox: only={sorted(only) if only else '(all elements)'}",
-          flush=True)
-    n = _headless_build_shot(ctx, task, only=only, dressing=True)
+    use_caches = os.environ.get("FLUMEN_SWEATBOX_CACHES", "") == "1"
+    print(f"[Flumen] sweatbox: only={sorted(only) if only else '(all elements)'}"
+          f" caches={use_caches}", flush=True)
+    n = _headless_build_shot(ctx, task, only=only, dressing=True,
+                             caches=use_caches)
     _publog(f"sweatbox: built {n} element(s); saving -> {out}", echo=True)
     if n == 0:
         print("[Flumen] sweatbox: nothing built — no render to make.")
