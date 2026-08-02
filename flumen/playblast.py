@@ -304,7 +304,11 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
             print(f"error: no frames rendered for format "
                   f"'{f['name'] or 'default'}'.")
             continue
-        _overlay_element_info(fdir, task, version_label)
+        # The element-breakdown HUD only fits the wide format: on a portrait
+        # (9:16) frame it covers half the picture. Reviewers read the
+        # breakdown off the 16:9 clip; the vertical delivery stays clean.
+        if int(f["resolution_x"]) >= int(f["resolution_y"]):
+            _overlay_element_info(fdir, task, version_label)
         frel = playblast_rel(t, version_label, f["name"], kind)
         flocal = _out_local(f["name"])
         print(f"Encoding MP4 -> {flocal}")
