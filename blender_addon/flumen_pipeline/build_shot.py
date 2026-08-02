@@ -1189,9 +1189,15 @@ def _restore_tweak_mode(ad, entry):
     instead makes the strip the only source, and with extrapolation=NOTHING the
     pose collapses to rest the moment the strip ends (the character snapped to
     the origin after frame 1382). Blender needs the strip flagged as selected
-    to know which one is being tweaked."""
-    if not entry.get("tweak"):
-        return
+    to know which one is being tweaked.
+
+    OLD MANIFESTS: a publish made with a pre-0.18.12 add-on never recorded the
+    flag (v034 of SEQ010/SH0010, published from a stale machine, re-broke
+    orso_1 this way). But the state itself is self-evident: the ACTIVE action
+    also living in a strip is only ever a tweak-mode capture — outside tweak
+    mode Blender would evaluate the same action twice, at two different time
+    mappings, which no animator means. So when the flag is absent but the
+    active action is found among the strips, enter tweak mode anyway."""
     act = getattr(ad, "action", None)
     if act is None:
         return
@@ -1206,6 +1212,11 @@ def _restore_tweak_mode(ad, entry):
                     pass
     if not found:
         return
+    if not entry.get("tweak"):
+        print(f"[Flumen] active action '{act.name}' also lives in an NLA "
+              f"strip but the manifest has no tweak flag (published by an "
+              f"old add-on) — entering tweak mode to keep the strip's time "
+              f"mapping.")
     try:
         ad.use_tweak_mode = True
     except Exception as exc:  # noqa: BLE001
