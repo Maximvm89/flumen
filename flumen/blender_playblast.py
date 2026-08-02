@@ -169,6 +169,11 @@ def _apply_sweatbox(scene):
         nt.links.new(env.outputs["Color"], bg.inputs["Color"])
         nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
         scene.world = world
+        # The HDRI must LIGHT the shot, not appear in it: a forest photo
+        # behind the set reads as a broken background in review. Transparent
+        # film keeps the world's lighting/reflections but drops it from
+        # camera rays — the empty background encodes black in the MP4.
+        scene.render.film_transparent = True
     except Exception as exc:  # noqa: BLE001
         print(f"[playblast] sweatbox: HDRI world setup failed ({exc}); using the "
               f"auto light rig.")

@@ -284,7 +284,14 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
 
     script = _bundled_path("blender_playblast.py")
     print("Rendering playblast frames…")
-    subprocess.run([blender, "--background", shot_blend, "--python", script],
+    # --factory-startup: the render needs NOTHING from the user's Blender —
+    # the script reads FLUMEN_PB_* env and OCIO comes via BLENDER_OCIO. The
+    # artist's add-on stack otherwise loads into the headless render, where
+    # it's pure risk: HardOps dies on GPU calls in background mode, and a
+    # sweatbox render on Windows crashed outright (0xC0000409) with the full
+    # stack loaded. Third-party addons belong in interactive sessions only.
+    subprocess.run([blender, "--background", "--factory-startup",
+                    shot_blend, "--python", script],
                    env=env, check=True)
 
     # One Blender session rendered every format; encode + upload each.
