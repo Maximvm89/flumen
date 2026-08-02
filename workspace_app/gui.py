@@ -2514,11 +2514,19 @@ class MainWindow(QMainWindow):
                         "This shot has no resolvable elements yet (no published "
                         "rigs/animation).")
                     return
-                dlg = SweatboxDialog(entity, elems, fmts, self)
+                # Where the last headless rebuild was saved — offered as a
+                # source so reopening/re-rendering it skips the slow rebuild.
+                lr = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+                last_build = os.path.join(
+                    lr, "04_sequences", *entity.split("/"),
+                    "animation", ".preview", "sweatbox_build.blend")
+                dlg = SweatboxDialog(entity, elems, fmts, self,
+                                     last_build=last_build)
                 if dlg.exec() != QDialog.Accepted:
                     return
                 open_after = dlg.action_mode() == "open"
-                if dlg.source_mode() == "file":
+                if dlg.source_mode() in ("file", "last"):
                     # Skip the rebuild — use the .blend the artist picked.
                     path = dlg.blend_path()
                     if open_after:
@@ -3617,22 +3625,38 @@ class SweatboxDialog(QDialog):
             return (str(el.get("asset", "")), base, int(tail))
         return (str(el.get("asset", "")), eid, -1)   # bare id sorts first
 
-    def __init__(self, shot_entity, elements, formats=None, parent=None):
+    def __init__(self, shot_entity, elements, formats=None, parent=None,
+                 last_build: str = ""):
         super().__init__(parent)
         self._els = sorted(elements or [], key=self._sort_key)
         self._formats = list(formats or [])
+        self._last_build = last_build if (last_build
+                                          and os.path.isfile(last_build)) else ""
         self.setWindowTitle(f"Sweatbox — {shot_entity}")
         self.setMinimumWidth(560)
         root = QVBoxLayout(self)
 
-        # --- source: rebuild from published data, or an existing .blend -------
+        # --- source: rebuild from published data, the LAST sweatbox build, or
+        # an existing .blend ---------------------------------------------------
         self.rb_rebuild = QRadioButton("Rebuild the shot from published data")
         self.rb_rebuild.setChecked(True)
+        # The last rebuild is saved at a fixed path — reopening or re-rendering
+        # it skips the (slow) headless rebuild entirely.
+        if self._last_build:
+            when = _dt.datetime.fromtimestamp(
+                os.path.getmtime(self._last_build)).strftime("%d %b %H:%M")
+            self.rb_last = QRadioButton(f"Use the last sweatbox build ({when})")
+            self.rb_last.setToolTip(self._last_build)
+        else:
+            self.rb_last = QRadioButton("Use the last sweatbox build (none yet)")
+            self.rb_last.setEnabled(False)
         self.rb_file = QRadioButton("Use an existing .blend:")
         src_grp = QButtonGroup(self)
         src_grp.addButton(self.rb_rebuild)
+        src_grp.addButton(self.rb_last)
         src_grp.addButton(self.rb_file)
         root.addWidget(self.rb_rebuild)
+        root.addWidget(self.rb_last)
         frow = QHBoxLayout()
         frow.addWidget(self.rb_file)
         self.ed_blend = QLineEdit()
@@ -3734,7 +3758,8 @@ class SweatboxDialog(QDialog):
         # Nothing to build or nothing to render -> can't proceed.
         for b in self._boxes:
             b.toggled.connect(self._refresh_ok)
-        for w in (self.rb_rebuild, self.rb_file, self.rb_render, self.rb_open):
+        for w in (self.rb_rebuild, self.rb_last, self.rb_file,
+                  self.rb_render, self.rb_open):
             w.toggled.connect(self._refresh_ok)
         self.ed_blend.textChanged.connect(self._refresh_ok)
         self._refresh_ok()
@@ -3762,12 +3787,18 @@ class SweatboxDialog(QDialog):
             self.rb_file.setChecked(True)
 
     def source_mode(self) -> str:
-        return "file" if self.rb_file.isChecked() else "rebuild"
+        if self.rb_file.isChecked():
+            return "file"
+        if self.rb_last.isChecked():
+            return "last"
+        return "rebuild"
 
     def action_mode(self) -> str:
         return "open" if self.rb_open.isChecked() else "render"
 
     def blend_path(self) -> str:
+        if self.source_mode() == "last":
+            return self._last_build
         return self.ed_blend.text().strip()
 
     def _refresh_ok(self):
@@ -3778,7 +3809,7 @@ class SweatboxDialog(QDialog):
         self.table.setEnabled(rebuilding)
         for cb, _n in self._fmt_boxes:
             cb.setEnabled(rendering)
-        self.ed_blend.setEnabled(not rebuilding)
+        self.ed_blend.setEnabled(self.source_mode() == "file")
 
         n_on = sum(1 for b in self._boxes if b.isChecked())
         has_el = n_on > 0
