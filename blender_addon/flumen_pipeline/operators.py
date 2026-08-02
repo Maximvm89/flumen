@@ -924,49 +924,6 @@ class FLUMEN_OT_auto_fix(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def _bake_viewlayer_hides(context):
-    """Make the publish WYSIWYG: bake the outliner EYE state into the object
-    flags for the saved copy. The eye (hide_get/hide_set) is per-VIEW-LAYER
-    state of THIS file — not an object property — so it never travels across a
-    link: a rigger who eye-hides variant meshes (fantasma's eyes/mouth) sees
-    them hidden, publishes, and every shot build shows them anyway. Objects
-    eye-hidden at publish time get hide_viewport + hide_render in the copy;
-    both are real object properties that survive linking and overrides.
-    Mutates the live session (save_as_mainfile copy=True writes session
-    state); returns a restore fn — call it after the save."""
-    baked = []
-    try:
-        vl = context.view_layer
-        for o in context.scene.objects:
-            try:
-                if not o.hide_get(view_layer=vl):
-                    continue
-            except Exception:  # noqa: BLE001 — object not in this view layer
-                continue
-            prev = (o.hide_viewport, o.hide_render)
-            if prev == (True, True):
-                continue
-            o.hide_viewport = True
-            o.hide_render = True
-            baked.append((o, prev))
-    except Exception:  # noqa: BLE001 — never block a publish over this
-        pass
-    if baked:
-        print(f"[Flumen] publish: baked the outliner eye-hide of "
-              f"{len(baked)} object(s) into hide_viewport/hide_render "
-              f"({', '.join(o.name for o, _ in baked[:8])}"
-              + ("…" if len(baked) > 8 else "") + ") — the eye toggle is "
-              f"view-layer state and would NOT survive linking.")
-
-    def _restore():
-        for o, (hv, hr) in baked:
-            try:
-                o.hide_viewport, o.hide_render = hv, hr
-            except Exception:  # noqa: BLE001
-                pass
-    return _restore
-
-
 def _wrap_publish_in_collection(context, coll_name, loc):
     """Move the PUBLISH subtree into a fresh collection named `coll_name` so the
     saved publish .blend contains ONE linkable collection (downstream shots link the
@@ -1543,7 +1500,6 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 restore_pub = _rename_publish_collection(pub_coll, name)
             else:
                 restore_pub = _wrap_publish_in_collection(context, name, loc)
-            restore_hides = _bake_viewlayer_hides(context)
             try:
                 try:
                     bpy.ops.file.make_paths_relative()
@@ -1552,7 +1508,6 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                 # relative_remap (default True) re-bases '//' paths to pub_path.
                 bpy.ops.wm.save_as_mainfile(filepath=pub_path, copy=True)
             finally:
-                restore_hides()
                 restore_pub()
             files = [pub_path]
             kind = ".blend"
