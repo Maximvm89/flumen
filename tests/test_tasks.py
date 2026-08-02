@@ -487,3 +487,40 @@ def test_set_assignees_replaces_list_atomically():
     # empty list = unassigned; unknown task = None
     assert tasks.set_assignees(s, "/r", t["id"], [])["assignees"] == []
     assert tasks.set_assignees(s, "/r", "nope", ["x"]) is None
+
+
+def test_publish_record_stamps_flumen_version_and_warns_on_stale(capsys):
+    """Every publish records the machine's Flumen version, and a machine older
+    than one that already published on the task is told so at publish time —
+    a stale add-on re-published orso_1 without the NLA capture fields and
+    silently re-broke a fixed shot (v034)."""
+    import flumen
+    s = FakeSrv()
+    t = tasks.save_task(s, "/r", tasks.new_task("asset", "props/benda", "rig"))
+    tasks.publish_task(s, "/r", "marco", ["/tmp/benda_rig_v001.blend"], t["id"])
+    rec = tasks.load_tasks(s, "/r")[0]["publishes"][0]
+    assert rec["flumen"] == flumen.__version__
+
+    # a FUTURE machine published here -> this (now-stale) machine gets warned
+    t2 = tasks.load_tasks(s, "/r")[0]
+    t2["publishes"][0]["flumen"] = "99.0.0"
+    tasks.save_task(s, "/r", t2)
+    capsys.readouterr()
+    tasks.publish_task(s, "/r", "marco", ["/tmp/benda_rig_v002.blend"], t2["id"])
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "99.0.0" in out and flumen.__version__ in out
+
+    # equal stamps only (a fresh task) -> no warning
+    t3 = tasks.save_task(s, "/r", tasks.new_task("asset", "props/corda", "rig"))
+    tasks.publish_task(s, "/r", "marco", ["/tmp/corda_rig_v001.blend"], t3["id"])
+    capsys.readouterr()
+    tasks.publish_task(s, "/r", "marco", ["/tmp/corda_rig_v002.blend"], t3["id"])
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_ver_key_tolerates_tag_and_describe_forms():
+    k = tasks._ver_key
+    assert k("0.19.0") == (0, 19, 0)
+    assert k("v0.19.0-3-gabc123") == (0, 19, 0)
+    assert k("0.18.12") < k("0.19.0")
+    assert k("") == (0, 0, 0)

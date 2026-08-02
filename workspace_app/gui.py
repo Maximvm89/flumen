@@ -2898,7 +2898,10 @@ class MainWindow(QMainWindow):
             when = _dt.datetime.fromtimestamp(p.get("time", 0)).strftime("%Y-%m-%d %H:%M")
             files = ", ".join(os.path.basename(f) for f in (p.get("files") or []))
             desc = p.get("description") or "(no description)"
-            lines.append(f"{when}  ·  {p.get('by','?')}\n  {desc}\n  files: {files}")
+            fv = p.get("flumen")               # publishing machine's version
+            lines.append(f"{when}  ·  {p.get('by','?')}"
+                         + (f"  ·  Flumen {fv}" if fv else "")
+                         + f"\n  {desc}\n  files: {files}")
         QMessageBox.information(
             self, f"Publish history — {task.get('entity')} / {task.get('step')}",
             "\n\n".join(lines))

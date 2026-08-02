@@ -265,6 +265,13 @@ def validate_blend_file(path: str) -> str | None:
     return "not a .blend file (unknown header)"
 
 
+def _ver_key(v: str) -> tuple:
+    """Sortable key for a Flumen version string. Tolerates tag/describe forms
+    ('0.19.0', 'v0.19.0-3-gabc'): the first three integer groups compare."""
+    nums = [int(x) for x in re.findall(r"\d+", v or "")[:3]]
+    return tuple(nums + [0] * (3 - len(nums)))
+
+
 def publish_task(sftp, remote_root: str, username: str, local_files,
                  task_id: str, status: str = "review",
                  description: str = "", texture_files=None,
@@ -369,8 +376,25 @@ def publish_task(sftp, remote_root: str, username: str, local_files,
     ledger.record_uploads(sftp, remote_root, username, rels)
 
     # Append to the task's publish history and advance status in one save.
+    # Stamp the publishing machine's Flumen version: a stale machine silently
+    # degrades published data (a pre-0.18.12 add-on re-published orso_1
+    # without the NLA scale/tweak capture and re-broke a fixed shot). The
+    # stamp makes that machine identifiable after the fact, and the check
+    # below calls it out at publish time.
+    from . import __version__ as _cur_ver
+    newest = ""
+    for rec in task.get("publishes") or []:
+        v = rec.get("flumen") or ""
+        if v and _ver_key(v) > _ver_key(newest):
+            newest = v
+    if newest and _ver_key(newest) > _ver_key(_cur_ver):
+        print(f"WARNING: this machine runs Flumen {_cur_ver}, but this task "
+              f"has publishes made with {newest}. An outdated Flumen can "
+              f"publish incomplete data (older capture format) — update "
+              f"this machine before publishing again.")
     record = {"time": time.time(), "by": username,
-              "description": description, "files": rels, "status": status}
+              "description": description, "files": rels, "status": status,
+              "flumen": _cur_ver}
     task["publishes"] = (task.get("publishes") or []) + [record]
     if status:
         task["status"] = status
