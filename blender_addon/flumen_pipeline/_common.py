@@ -84,7 +84,7 @@ def _preflight_server(timeout=45.0):
                       "Workspace app ('Open in Blender').")
     _publog("preflight: " + " ".join(str(c) for c in cmd), echo=False)
     try:
-        p = subprocess.run(cmd, cwd=td, capture_output=True, text=True,
+        p = subprocess.run(cmd, cwd=td, capture_output=True, encoding="utf-8", errors="replace",
                            timeout=timeout, **_no_window())
     except subprocess.TimeoutExpired:
         msg = (f"Server test timed out after {int(timeout)}s — "
@@ -124,7 +124,7 @@ def _shell_json(args):
     if cmd is None:
         return None
     try:
-        p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+        p = subprocess.run(cmd, cwd=td, encoding="utf-8", errors="replace", capture_output=True,
                            **_no_window())
         if p.returncode != 0:
             _publog(f"{args[0]} failed (rc {p.returncode}): "

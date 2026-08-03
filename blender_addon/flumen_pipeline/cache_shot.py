@@ -42,7 +42,7 @@ def _resolve_assembly(task, list_only=False, only=None, picks=None,
     if cmd is None:
         return None
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True,
+        out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace",
                                       **_no_window()).strip()
         return json.loads(out.splitlines()[-1]) if out else {}
     except Exception as exc:  # noqa: BLE001
@@ -365,7 +365,7 @@ def _cache_shot_elements(context, task, only=None):
     if cmd is None:
         return [], failed + [("*", "toolkit not available to publish")]
     _publog(f"cache-shot: {' '.join(str(c) for c in cmd)}", echo=False)
-    p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+    p = subprocess.run(cmd, cwd=td, encoding="utf-8", errors="replace", capture_output=True,
                        **_no_window())
     for line in ((p.stdout or "") + (p.stderr or "")).splitlines():
         _publog("  " + line, echo=False)

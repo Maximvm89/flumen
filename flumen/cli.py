@@ -1835,6 +1835,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Always emit UTF-8, whatever the console/pipe locale. On a stock Windows
+    # box this process writes cp1252 into the pipe (an em-dash becomes 0x97),
+    # and the Blender add-on's UTF-8 reader thread dies decoding it — the
+    # whole resolve then reads as 'nothing built' (Leonardo's sweatbox+caches:
+    # the 'not on the server — using the local copy' note was the trigger).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 — exotic stream, keep going
+            pass
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

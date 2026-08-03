@@ -460,7 +460,7 @@ def _fetch_publish_path(task_id, step):
     if cmd is None:
         return None
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
+        out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", **_no_window()).strip()
         return out.splitlines()[-1] if out else None
     except Exception:  # noqa: BLE001
         return None
@@ -2166,7 +2166,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         # only captures stdout (the JSON), so the progress stays visible.
         env = dict(os.environ, FLUMEN_VERBOSE="1")
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, env=env,
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", env=env,
                                           **_no_window()).strip()
             return json.loads(out.splitlines()[-1]) if out else []
         except Exception:  # noqa: BLE001
@@ -2306,7 +2306,7 @@ class FLUMEN_OT_load_animation(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", **_no_window()).strip()
             return json.loads(out.splitlines()[-1]) if out else []
         except Exception:  # noqa: BLE001
             return None
@@ -2380,7 +2380,7 @@ class FLUMEN_OT_reapply_cache_looks(bpy.types.Operator):
             return None
         env = dict(os.environ, FLUMEN_VERBOSE="1")
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, env=env,
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", env=env,
                                           **_no_window()).strip()
             return json.loads(out.splitlines()[-1]) if out else None
         except Exception:  # noqa: BLE001

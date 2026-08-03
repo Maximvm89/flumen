@@ -703,7 +703,7 @@ def _server_next_version(task_id: str, base: str) -> int | None:
                 "the Workspace app")
         return None
     try:
-        p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+        p = subprocess.run(cmd, cwd=td, encoding="utf-8", errors="replace", capture_output=True,
                            **_no_window())
         if p.returncode != 0:
             _publog(f"next-version failed (rc {p.returncode}): "
@@ -1701,7 +1701,7 @@ class FLUMEN_OT_publish_upload(bpy.types.Operator):
         _publog(f"{phase}: {' '.join(str(c) for c in cmd)} (cwd {cwd})",
                 echo=False)
         try:
-            # encoding/errors pinned: with bare text=True Windows decodes the
+            # encoding/errors pinned: with bare encoding="utf-8", errors="replace" Windows decodes the
             # pipe as cp1252, and one non-decodable byte in the toolkit's
             # output kills the reader thread — after which the subprocess
             # blocks forever on a full pipe, mid-upload.
@@ -1892,7 +1892,7 @@ def _fetch_existing_looks(task_id):
     if cmd is None:
         return []
     try:
-        out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window())
+        out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", **_no_window())
         return [l["look"] for l in json.loads(out.splitlines()[-1])]
     except Exception:  # noqa: BLE001
         return []
@@ -1970,7 +1970,7 @@ class FLUMEN_OT_load_model(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", **_no_window()).strip()
             return out.splitlines()[-1] if out else None
         except Exception:  # noqa: BLE001
             return None

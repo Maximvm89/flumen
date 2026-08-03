@@ -88,7 +88,7 @@ class FLUMEN_OT_apply_look(bpy.types.Operator):
         if cmd is None:
             return []
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window())
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", **_no_window())
             return json.loads(out.splitlines()[-1])
         except Exception:  # noqa: BLE001
             return []
@@ -99,7 +99,7 @@ class FLUMEN_OT_apply_look(bpy.types.Operator):
         if cmd is None:
             return None
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True, **_no_window()).strip()
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace", **_no_window()).strip()
             return out.splitlines()[-1] if out else None
         except Exception:  # noqa: BLE001
             return None

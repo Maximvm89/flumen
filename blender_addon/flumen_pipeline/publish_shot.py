@@ -101,7 +101,7 @@ class FLUMEN_OT_publish_shot(bpy.types.Operator):
                         f"toolkit wasn't found to publish it.")
             return {"FINISHED"}
         context.window_manager.flumen_publish_desc = ""
-        p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+        p = subprocess.run(cmd, cwd=td, encoding="utf-8", errors="replace", capture_output=True,
                            **_no_window())
         for line in ((p.stdout or "") + (p.stderr or "")).splitlines():
             _publog("  " + line, echo=False)

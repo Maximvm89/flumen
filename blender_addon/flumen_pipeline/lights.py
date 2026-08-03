@@ -102,7 +102,7 @@ class FLUMEN_OT_publish_lights(bpy.types.Operator):
                         f"wasn't found to publish it.")
             return {"FINISHED"}
         context.window_manager.flumen_publish_desc = ""
-        p = subprocess.run(cmd, cwd=td, text=True, capture_output=True,
+        p = subprocess.run(cmd, cwd=td, encoding="utf-8", errors="replace", capture_output=True,
                            **_no_window())
         for line in ((p.stdout or "") + (p.stderr or "")).splitlines():
             _publog("  " + line, echo=False)
@@ -168,7 +168,7 @@ class FLUMEN_OT_load_lights(bpy.types.Operator):
             self.report({"ERROR"}, "Toolkit not available.")
             return {"CANCELLED"}
         try:
-            out = subprocess.check_output(cmd, cwd=td, text=True,
+            out = subprocess.check_output(cmd, cwd=td, encoding="utf-8", errors="replace",
                                           **_no_window()).strip()
             blend = out.splitlines()[-1] if out else ""
         except Exception as exc:  # noqa: BLE001
