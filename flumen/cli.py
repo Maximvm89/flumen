@@ -1017,23 +1017,41 @@ def cmd_resolve_assembly(args) -> int:
                         client.download(rr + "/" + cache["rel"], clocal)
                     except Exception:  # noqa: BLE001
                         if not os.path.isfile(clocal):
-                            raise
-                        print(f"note: cache {cache['rel']} not on the server — "
-                              f"using the local copy at {clocal}",
-                              file=sys.stderr)
-                        csource = "local"
-                    # Per-frame visibility sidecar (same stem as the .abc).
-                    # Best-effort: caches published before this existed have
-                    # none, and the build just gets no visibility animation.
-                    srel = E.cache_vis_rel(cache["rel"])
-                    try:
-                        client.download(rr + "/" + srel,
-                                        os.path.join(local_root,
-                                                     *srel.split("/")))
-                    except Exception:  # noqa: BLE001
-                        pass
-                r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
-                         cache_version=cache["version"], cache_source=csource)
+                            # Recorded but nowhere to be found: publish-cache
+                            # --no-upload records the version on the SERVER
+                            # task immediately, so every OTHER machine resolves
+                            # it before the .abc is uploaded. One missing cache
+                            # must not abort the whole assembly — warn and fall
+                            # back to the geometry publish for this element.
+                            print(f"WARNING: cache {cache['rel']} is recorded "
+                                  f"but not on the server (and not on this "
+                                  f"disk) — probably cached with --no-upload "
+                                  f"and not uploaded yet. Falling back to the "
+                                  f"rig/model publish for '{r['id']}'.",
+                                  file=sys.stderr)
+                            cache = None
+                        else:
+                            print(f"note: cache {cache['rel']} not on the "
+                                  f"server — using the local copy at {clocal}",
+                                  file=sys.stderr)
+                            csource = "local"
+                    if cache:
+                        # Per-frame visibility sidecar (same stem as the .abc).
+                        # Best-effort: caches published before this existed
+                        # have none — the build just gets no visibility anim.
+                        srel = E.cache_vis_rel(cache["rel"])
+                        try:
+                            client.download(rr + "/" + srel,
+                                            os.path.join(local_root,
+                                                         *srel.split("/")))
+                        except Exception:  # noqa: BLE001
+                            pass
+                if cache:
+                    r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
+                             cache_version=cache["version"],
+                             cache_source=csource)
+                else:
+                    r = dict(r, load="link")     # no usable cache — link geo
             elif r.get("load") == "alembic":
                 r = dict(r, load="link")             # no cache — link the geo
             rel = r.get("blend_rel") or ""
