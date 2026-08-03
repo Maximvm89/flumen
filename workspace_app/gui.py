@@ -2498,14 +2498,14 @@ class MainWindow(QMainWindow):
             fmts = P.delivery_formats(settings)
             print(f"[sweatbox] resolved {len(els)} element(s), "
                   f"{len(fmts)} format(s)", flush=True)
-            return els, fmts
+            return els, fmts, settings
 
         def show(loaded):
             # A raised exception inside a Qt slot only reaches stderr — the user
             # just sees NOTHING happen. Surface it instead of dying silently.
             self._busy_buttons(False)
             try:
-                elems, fmts = loaded
+                elems, fmts, settings = loaded
                 print(f"[sweatbox] opening dialog ({len(elems)} elements)…",
                       flush=True)
                 if not elems:
@@ -2522,7 +2522,8 @@ class MainWindow(QMainWindow):
                     lr, "04_sequences", *entity.split("/"),
                     "animation", ".preview", "sweatbox_build.blend")
                 dlg = SweatboxDialog(entity, elems, fmts, self,
-                                     last_build=last_build)
+                                     last_build=last_build,
+                                     settings=settings)
                 if dlg.exec() != QDialog.Accepted:
                     return
                 open_after = dlg.action_mode() == "open"
@@ -3635,10 +3636,11 @@ class SweatboxDialog(QDialog):
         return (str(el.get("asset", "")), eid, -1)   # bare id sorts first
 
     def __init__(self, shot_entity, elements, formats=None, parent=None,
-                 last_build: str = ""):
+                 last_build: str = "", settings: dict | None = None):
         super().__init__(parent)
         self._els = sorted(elements or [], key=self._sort_key)
         self._formats = list(formats or [])
+        self._settings = settings or {}
         self._last_build = last_build if (last_build
                                           and os.path.isfile(last_build)) else ""
         self.setWindowTitle(f"Sweatbox — {shot_entity}")
@@ -3794,11 +3796,13 @@ class SweatboxDialog(QDialog):
         fmt_row.addWidget(QLabel("Formats:"))
         self._fmt_boxes = []
         for f in self._formats:
-            cb = QCheckBox(f"{f['name']}  ({f['resolution_x']}×{f['resolution_y']})")
+            cb = QCheckBox()
             cb.setChecked(True)
             cb.toggled.connect(self._refresh_ok)
             self._fmt_boxes.append((cb, f["name"]))
             fmt_row.addWidget(cb)
+        self.cmb_preset.currentIndexChanged.connect(self._refresh_fmt_labels)
+        self._refresh_fmt_labels()
         fmt_row.addStretch(1)
         if self._formats:
             root.addLayout(fmt_row)
@@ -3856,6 +3860,24 @@ class SweatboxDialog(QDialog):
     def use_caches(self) -> bool:
         return (self.source_mode() == "rebuild"
                 and self.cb_caches.isChecked())
+
+    def _refresh_fmt_labels(self):
+        """Format tick-box labels show the size the preset will actually
+        RENDER (its height rescales every delivery format), so the dialog
+        never says '1080p' next to a 2560×1440 label."""
+        from flumen.playblast import sweatbox_preset
+        h = int(sweatbox_preset(self._settings,
+                                self.cmb_preset.currentData()).get("height")
+                or 0)
+        base_y = self._formats[0]["resolution_y"] if self._formats else 0
+        k = (h / base_y) if (h and base_y) else 1.0
+        for (cb, _n), f in zip(self._fmt_boxes, self._formats):
+            x = max(2, round(f["resolution_x"] * k / 2) * 2)
+            y = max(2, round(f["resolution_y"] * k / 2) * 2)
+            label = f"{f['name']}  ({x}×{y})"
+            if k != 1.0:
+                label += f"  [delivery {f['resolution_x']}×{f['resolution_y']}]"
+            cb.setText(label)
 
     def render_opts(self) -> dict:
         """The render-quality choices for run_playblast: preset key + the
