@@ -270,8 +270,8 @@ def _sync_render_visibility(scene):
         monitor toggle and collection-level hiding all folded in),
       * collections: render toggles neutralized — the per-object flags above
         now carry every decision,
-      * mid-shot show/hide swaps: re-synced on EVERY frame by a handler (see
-        _install_visibility_sync), so a rig that flips variants mid-shot renders
+      * mid-shot show/hide swaps: baked into hide_render KEYS up front (see
+        _bake_render_visibility), so a rig that flips variants mid-shot renders
         the same variant the viewport shows.
     Runs on the loaded publish copy in memory; nothing is saved back."""
     try:
@@ -301,43 +301,109 @@ def _sync_render_visibility(scene):
     if synced:
         print(f"[playblast] viewport-visibility sync: {synced} object(s) "
               f"aligned to what the viewport shows.")
-    _install_visibility_sync(scene)
+    _bake_render_visibility(scene)
 
 
-def _install_visibility_sync(scene):
-    """Keep hide_render == what the viewport shows, re-evaluated EVERY frame.
+def _hide_is_animated(o):
+    """True when this object's viewport visibility CHANGES over time: a driver
+    or F-curve on hide_viewport/hide_render at the object level (drivers walk
+    ad.drivers; keys walk legacy .fcurves plus 4.4+ slotted channelbags)."""
+    ad = getattr(o, "animation_data", None)
+    if ad is None:
+        return False
+    for fc in getattr(ad, "drivers", []) or []:
+        if "hide" in fc.data_path:
+            return True
+    act = getattr(ad, "action", None)
+    if act is None:
+        return False
+    fcs = list(getattr(act, "fcurves", []) or [])            # legacy
+    for lay in getattr(act, "layers", []) or []:             # slotted
+        for st in getattr(lay, "strips", []) or []:
+            try:
+                cb = st.channelbag(ad.action_slot) if ad.action_slot else None
+            except Exception:  # noqa: BLE001
+                cb = None
+            if cb:
+                fcs.extend(cb.fcurves)
+    return any("hide" in fc.data_path for fc in fcs)
+
+
+def _bake_render_visibility(scene):
+    """Bake per-frame viewport visibility into KEYS on hide_render before
+    rendering — the only mechanism a background animation render honours.
 
     A mid-shot visibility swap is rarely a keyframe on the mesh: rigs drive it
-    with a DRIVER reading a rig switch (e.g. the cat's bandage variants, driven
-    from pose.bones[...]['bandages']), and drivers only ever touch hide_viewport
-    — which renders ignore. Reading F-curves can't see drivers at all, and on
-    Blender 4.4+ slotted actions `Action.fcurves` does not even exist (it raises
-    AttributeError), so the old keyframe-mirroring pass silently did nothing and
-    every frame rendered the visibility of the FIRST frame.
-
-    visible_get() is the ground truth — it folds in the eye icon, the monitor
-    toggle, drivers, keyframes and collection hiding — so sample it per frame
-    and mirror it onto hide_render, which is what the render honours."""
-    def _sync(scn, *_a):
+    with a DRIVER reading a rig switch (the cat's bandage variants). Renders
+    only honour hide_render, so the swap must be mirrored. A per-frame handler
+    (frame_change_post/render_pre) is NOT the way: measured in background
+    mode, animation evaluates into the render depsgraph's copies only, the
+    originals' hide_viewport stays stale, and visible_get() inside the
+    handler returns garbage — the keyed cube never disappeared and the driven
+    one rendered wrong from frame one. Plain frame_set OUTSIDE a render
+    evaluates drivers and keys correctly (measured too), so: walk the frame
+    range up front, sample visible_get per frame for the few objects whose
+    hide is animated, and key hide_render (CONSTANT steps) at every change.
+    The render's own animation evaluation then plays those keys back."""
+    try:
+        vl = bpy.context.view_layer
+    except Exception:  # noqa: BLE001
+        vl = scene.view_layers[0] if scene.view_layers else None
+    cands = []
+    for o in scene.objects:
         try:
-            vl = bpy.context.view_layer
+            if _hide_is_animated(o):
+                cands.append(o)
         except Exception:  # noqa: BLE001
-            return
-        for o in scn.objects:
+            continue
+    if not cands:
+        return 0
+    rows = {o.name: [] for o in cands}
+    cur = scene.frame_current
+    for f in range(scene.frame_start, scene.frame_end + 1):
+        scene.frame_set(f)
+        for o in cands:
             try:
-                want = not o.visible_get(view_layer=vl)
-                if o.hide_render != want:
-                    o.hide_render = want
+                rows[o.name].append((f, bool(o.visible_get(view_layer=vl))))
             except Exception:  # noqa: BLE001
-                continue      # pure-linked / non-overridable — leave as authored
-    for handler in (bpy.app.handlers.frame_change_post,
-                    bpy.app.handlers.render_pre):
-        try:
-            handler.append(_sync)
-        except Exception:  # noqa: BLE001
-            pass
-    print("[playblast] per-frame visibility sync installed (drivers + keys + "
-          "eye/monitor toggles follow the viewport).")
+                pass
+    baked = 0
+    for o in cands:
+        prev = None
+        keyed_frames = []
+        for f, vis in rows[o.name]:
+            if vis == prev:
+                continue
+            prev = vis
+            try:
+                o.hide_render = not vis
+                o.keyframe_insert("hide_render", frame=f)
+                keyed_frames.append(f)
+            except Exception:  # noqa: BLE001 — pure-linked: leave as authored
+                break
+        if keyed_frames:
+            baked += 1
+            ad = o.animation_data
+            act = getattr(ad, "action", None) if ad else None
+            fcs = list(getattr(act, "fcurves", []) or []) if act else []
+            for lay in getattr(act, "layers", []) or []:
+                for st in getattr(lay, "strips", []) or []:
+                    try:
+                        cb = st.channelbag(ad.action_slot)
+                    except Exception:  # noqa: BLE001
+                        cb = None
+                    if cb:
+                        fcs.extend(cb.fcurves)
+            for fc in fcs:
+                if fc.data_path == "hide_render":
+                    for k in fc.keyframe_points:
+                        k.interpolation = "CONSTANT"
+    scene.frame_set(cur)
+    if baked:
+        print(f"[playblast] visibility bake: keyed hide_render on {baked} "
+              f"object(s) with animated viewport visibility (drivers/keys "
+              f"sampled {scene.frame_start}-{scene.frame_end}).")
+    return baked
 
 
 def _sync_viewport_colors():
