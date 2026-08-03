@@ -276,6 +276,12 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
     preset = sweatbox_preset(settings, ro.get("preset", "standard")) \
         if sweatbox else None
     if preset:
+        # The dialog's Custom mode sends explicit values — they win over
+        # whatever preset served as the base.
+        for k in ("samples", "height", "resolution_percentage",
+                  "raytracing", "motion_blur"):
+            if ro.get(k) is not None:
+                preset[k] = ro[k]
         h = int(preset.get("height") or 0)
         if h > 0 and base_fmt["resolution_y"] > 0:
             k = h / base_fmt["resolution_y"]

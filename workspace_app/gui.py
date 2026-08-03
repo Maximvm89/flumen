@@ -3763,7 +3763,8 @@ class SweatboxDialog(QDialog):
         self.cmb_preset = QComboBox()
         for label, key in (("Draft — 720p, fast, no raytracing", "draft"),
                            ("Standard — 1080p, raytraced", "standard"),
-                           ("High — 1440p (2K), motion blur", "high")):
+                           ("High — 1440p (2K), motion blur", "high"),
+                           ("Custom…", "custom")):
             self.cmb_preset.addItem(label, key)
         self.cmb_preset.setCurrentIndex(1)
         q_row.addWidget(self.cmb_preset, 1)
@@ -3783,6 +3784,32 @@ class SweatboxDialog(QDialog):
         self.sp_hdri.setToolTip("HDRI light strength")
         q_row.addWidget(self.sp_hdri)
         root.addLayout(q_row)
+        # Custom preset: the individual dials, enabled only when 'Custom…' is
+        # picked (presets keep the everyday path one-click).
+        c_row = QHBoxLayout()
+        c_row.addWidget(QLabel("Custom:"))
+        c_row.addWidget(QLabel("resolution"))
+        self.cmb_height = QComboBox()
+        for label, h in (("delivery (no scaling)", 0), ("720p", 720),
+                         ("1080p", 1080), ("1440p (2K)", 1440),
+                         ("2160p (4K)", 2160)):
+            self.cmb_height.addItem(label, h)
+        self.cmb_height.setCurrentIndex(2)
+        c_row.addWidget(self.cmb_height)
+        c_row.addWidget(QLabel("samples"))
+        self.sp_samples = QSpinBox()
+        self.sp_samples.setRange(1, 1024)
+        self.sp_samples.setValue(64)
+        c_row.addWidget(self.sp_samples)
+        self.cb_rt = QCheckBox("raytracing")
+        self.cb_rt.setChecked(True)
+        c_row.addWidget(self.cb_rt)
+        self.cb_mblur = QCheckBox("motion blur")
+        c_row.addWidget(self.cb_mblur)
+        c_row.addStretch(1)
+        root.addLayout(c_row)
+        self._custom_widgets = (self.cmb_height, self.sp_samples,
+                                self.cb_rt, self.cb_mblur)
         self.cb_cull = QCheckBox(
             "Skip objects that never enter frame (faster; off = render "
             "everything)")
@@ -3802,6 +3829,7 @@ class SweatboxDialog(QDialog):
             self._fmt_boxes.append((cb, f["name"]))
             fmt_row.addWidget(cb)
         self.cmb_preset.currentIndexChanged.connect(self._refresh_fmt_labels)
+        self.cmb_height.currentIndexChanged.connect(self._refresh_fmt_labels)
         self._refresh_fmt_labels()
         fmt_row.addStretch(1)
         if self._formats:
@@ -3866,9 +3894,14 @@ class SweatboxDialog(QDialog):
         RENDER (its height rescales every delivery format), so the dialog
         never says '1080p' next to a 2560×1440 label."""
         from flumen.playblast import sweatbox_preset
-        h = int(sweatbox_preset(self._settings,
-                                self.cmb_preset.currentData()).get("height")
-                or 0)
+        if self.cmb_preset.currentData() == "custom":
+            h = int(self.cmb_height.currentData() or 0)
+        else:
+            h = int(sweatbox_preset(self._settings,
+                                    self.cmb_preset.currentData()).get("height")
+                    or 0)
+        if hasattr(self, "bb"):          # during __init__ the buttons aren't
+            self._refresh_ok()           # built yet; enablement re-runs after
         base_y = self._formats[0]["resolution_y"] if self._formats else 0
         k = (h / base_y) if (h and base_y) else 1.0
         for (cb, _n), f in zip(self._fmt_boxes, self._formats):
@@ -3882,10 +3915,16 @@ class SweatboxDialog(QDialog):
     def render_opts(self) -> dict:
         """The render-quality choices for run_playblast: preset key + the
         per-run advanced overrides (HDRI, strength, cull)."""
-        return {"preset": self.cmb_preset.currentData(),
-                "hdri": self.cmb_hdri.currentData() or "",
-                "hdri_strength": round(self.sp_hdri.value(), 2),
-                "cull": self.cb_cull.isChecked()}
+        out = {"preset": self.cmb_preset.currentData(),
+               "hdri": self.cmb_hdri.currentData() or "",
+               "hdri_strength": round(self.sp_hdri.value(), 2),
+               "cull": self.cb_cull.isChecked()}
+        if out["preset"] == "custom":
+            out.update(height=int(self.cmb_height.currentData() or 0),
+                       samples=self.sp_samples.value(),
+                       raytracing=self.cb_rt.isChecked(),
+                       motion_blur=self.cb_mblur.isChecked())
+        return out
 
     def _refresh_ok(self):
         ok = self.bb.button(QDialogButtonBox.Ok)
@@ -3898,6 +3937,9 @@ class SweatboxDialog(QDialog):
             cb.setEnabled(rendering)
         for w in (self.cmb_preset, self.cmb_hdri, self.sp_hdri, self.cb_cull):
             w.setEnabled(rendering)
+        custom = self.cmb_preset.currentData() == "custom"
+        for w in self._custom_widgets:
+            w.setEnabled(rendering and custom)
         self.ed_blend.setEnabled(self.source_mode() == "file")
 
         n_on = sum(1 for b in self._boxes if b.isChecked())
