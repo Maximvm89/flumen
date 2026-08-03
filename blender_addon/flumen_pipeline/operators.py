@@ -1216,14 +1216,16 @@ class FLUMEN_OT_publish(bpy.types.Operator):
                     sub = row.split(factor=0.28)
                     sub.label(text=it.label, icon="ARMATURE_DATA")
                     row = sub.row(align=True)
+                    # Consequence FIRST — what publishing DOES — then the why.
+                    # ("built from v034 · buries v036" read as a riddle.)
+                    who = f" ({it.newer_by})" if it.newer_by else ""
                     if it.status == "behind":
-                        row.label(text=f"REVERT — buries {it.ref}"
-                                       + (f" ({it.newer_by})" if it.newer_by else ""),
+                        row.label(text=f"rolls BACK to older animation — "
+                                       f"{it.ref}{who} is newer",
                                   icon="ERROR")
                     elif it.status == "stale":
-                        row.label(text=f"built from {it.loaded_ver} · buries "
-                                       f"{it.ref}"
-                                       + (f" ({it.newer_by})" if it.newer_by else ""),
+                        row.label(text=f"replaces {it.ref}{who} — but your "
+                                       f"edits started from {it.loaded_ver}",
                                   icon="ERROR")
                     elif it.status == "unchanged":
                         row.label(text=f"unchanged (= {it.ref})")
