@@ -260,7 +260,25 @@ def _apply_element_look(holder, look_data):
         # object-level overrides instead.
         local = me is not None and getattr(me, "library", None) is None
         ok = False
-        for i, mname in enumerate(slot_mats):
+        # Alembic caches rebuild their material slots from the archive's FACE
+        # SETS, whose order need not match the manifest's slot order — index-
+        # wise assignment then swaps materials (fantamino's body took the eye
+        # material and vice versa). The face sets DO carry the material names
+        # (the cache build applies the look before exporting), so when the
+        # existing slots name look materials, assign by NAME per slot and fall
+        # back to manifest order only for slots that name nothing we know.
+        by_slot = list(slot_mats)
+        if local and me is not None:
+            existing = [_base_name(m.name) if m else ""
+                        for m in me.materials]
+            if any(n in mats for n in existing):
+                spare = [n for n in slot_mats
+                         if n and n not in existing]      # keep unmatched mats
+                by_slot = [n if n in mats else (spare.pop(0) if spare else "")
+                           for n in existing]
+                by_slot += [n for n in slot_mats
+                            if n and n not in by_slot]    # slots abc dropped
+        for i, mname in enumerate(by_slot):
             mat = mats.get(mname) if mname else None
             if local:
                 try:
