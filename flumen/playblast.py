@@ -131,6 +131,37 @@ def _open_locally(path: str) -> None:
         print(f"could not auto-open {path}: {exc}")
 
 
+# Sweatbox quality presets — the dialog's Draft/Standard/High dropdown.
+# 'standard' is exactly the historical behavior. A project can reshape any of
+# them via project_settings.json playblast.sweatbox_presets.<name>.<key>.
+SWEATBOX_PRESETS = {
+    # 'height' = the LANDSCAPE format's pixel height; every delivery format
+    # scales to it with its aspect (and the 16x9/9x16 nesting) intact. 0 keeps
+    # the project's delivery resolution untouched.
+    # animation-timing checks: fastest readable
+    "draft":    {"samples": 16, "height": 720, "resolution_percentage": 100,
+                 "raytracing": False, "motion_blur": False},
+    # the everyday shading review
+    "standard": {"samples": 64, "height": 1080, "resolution_percentage": 100,
+                 "raytracing": True, "motion_blur": False},
+    # shader/lighting judgement (2K)
+    "high":     {"samples": 128, "height": 1440, "resolution_percentage": 100,
+                 "raytracing": True, "motion_blur": True},
+}
+
+
+def sweatbox_preset(settings: dict | None, name: str) -> dict:
+    """The resolved values for a preset: built-in defaults overlaid with the
+    project's playblast.sweatbox_presets.<name> block (partial overrides fine).
+    Unknown names resolve to 'standard'."""
+    name = (name or "standard").lower()
+    base = dict(SWEATBOX_PRESETS.get(name) or SWEATBOX_PRESETS["standard"])
+    pb = playblast_settings(settings or {})
+    over = (pb.get("sweatbox_presets") or {}).get(name) or {}
+    base.update({k: v for k, v in over.items() if k in base})
+    return base
+
+
 def _next_sweatbox_label(sftp, remote_root: str, task: dict,
                          base: str) -> str:
     """'<base>_vNNN' with the next free sweatbox number for this shot/step,
@@ -151,7 +182,8 @@ def _next_sweatbox_label(sftp, remote_root: str, task: dict,
 def run_playblast(cfg, creds, shot_blend: str, task_id: str,
                   dry_run: bool = False, preview: bool = False,
                   sweatbox: bool = False, label: str = "",
-                  only_formats: list | None = None) -> int:
+                  only_formats: list | None = None,
+                  render_opts: dict | None = None) -> int:
     """Open the published shot .blend headless, render its frame range through the
     scene camera into a PNG sequence, encode an MP4, upload it to 07_dailies and
     attach it to the task's latest publish record. Mirrors run_turntable.
@@ -236,6 +268,27 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         frel = playblast_rel(t, version_label, fmt_name, kind)
         return os.path.join(local_root, *frel.split("/"))
 
+    # Sweatbox quality: preset values (Draft/Standard/High, project-tunable)
+    # plus the dialog's per-run advanced overrides. The preset 'height' scales
+    # every delivery format from the LANDSCAPE base — aspect and the 16x9/9x16
+    # nesting survive because everything scales by one factor.
+    ro = dict(render_opts or {})
+    preset = sweatbox_preset(settings, ro.get("preset", "standard")) \
+        if sweatbox else None
+    if preset:
+        h = int(preset.get("height") or 0)
+        if h > 0 and base_fmt["resolution_y"] > 0:
+            k = h / base_fmt["resolution_y"]
+
+            def _scaled(f):
+                return dict(f,
+                            resolution_x=max(2, round(f["resolution_x"] * k
+                                                      / 2) * 2),
+                            resolution_y=max(2, round(f["resolution_y"] * k
+                                                      / 2) * 2))
+            base_fmt = _scaled(base_fmt)
+            formats = [_scaled(f) for f in formats]
+
     out_local = _out_local(formats[0]["name"])
 
     if dry_run:
@@ -279,6 +332,17 @@ def run_playblast(cfg, creds, shot_blend: str, task_id: str,
         "FLUMEN_PB_BASE": (f"{base_fmt['resolution_x']}x"
                            f"{base_fmt['resolution_y']}"),
     })
+    if preset:
+        env["FLUMEN_PB_SAMPLES"] = str(preset["samples"])
+        env["FLUMEN_PB_RESPCT"] = str(preset["resolution_percentage"])
+        env["FLUMEN_PB_RT"] = "1" if preset["raytracing"] else "0"
+        env["FLUMEN_PB_MBLUR"] = "1" if preset["motion_blur"] else "0"
+        if ro.get("hdri"):
+            env["FLUMEN_PB_SWEATBOX_HDRI"] = str(ro["hdri"])
+        if ro.get("hdri_strength"):
+            env["FLUMEN_PB_SWEATBOX_STRENGTH"] = str(ro["hdri_strength"])
+        if ro.get("cull") is not None:
+            env["FLUMEN_PB_CULL"] = "1" if ro["cull"] else "0"
     if len(formats) > 1 or formats[0]["name"]:
         env["FLUMEN_PB_FORMATS"] = formats_env(formats)
 

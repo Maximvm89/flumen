@@ -575,11 +575,13 @@ def main():
                                                         else "16")))
             except Exception:  # noqa: BLE001
                 pass
+            # Preset override: a Draft sweatbox drops raytracing for speed.
+            rt = _env("FLUMEN_PB_RT", "1" if sweatbox else "0") == "1"
             try:
-                ee.use_raytracing = bool(sweatbox)
+                ee.use_raytracing = rt
             except Exception:  # noqa: BLE001
                 pass
-            if sweatbox:
+            if sweatbox and rt:
                 # use_shadows: EEVEE Next; use_fast_gi: EEVEE Next ambient bounce
                 # for soft HDRI GI. Both guarded — names differ across versions
                 # and the old 'use_gtao' is gone in EEVEE Next.
@@ -588,6 +590,10 @@ def main():
                         setattr(ee, attr, True)
                     except Exception:  # noqa: BLE001
                         pass
+            try:  # High preset: motion blur for animation judgement
+                r.use_motion_blur = _env("FLUMEN_PB_MBLUR", "0") == "1"
+            except Exception:  # noqa: BLE001
+                pass
     # Workbench: fast solid shading. TEXTURE colour shows the texture maps but is
     # flat/shadeless; MATERIAL shows flat base colours. Opt in via playblast.engine.
     elif engine == "BLENDER_WORKBENCH":

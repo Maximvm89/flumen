@@ -144,3 +144,21 @@ def test_next_sweatbox_label_increments_past_existing_clips():
             "SH0010_v007_sweatbox_9x16.mp4",
             "SH0010_v032_playblast_16x9.mp4"])      # playblasts don't count
     assert _next_sweatbox_label(s, "/LEG", task, "SH0010") == "SH0010_v008"
+
+
+def test_sweatbox_presets_resolve_with_project_overrides():
+    """Draft/Standard/High carry samples, target height (720/1080/2K),
+    raytracing and motion blur; a project can partially reshape any preset
+    via playblast.sweatbox_presets without touching the rest."""
+    from flumen.playblast import sweatbox_preset
+    std = sweatbox_preset({}, "standard")
+    assert (std["samples"], std["height"], std["raytracing"]) == (64, 1080, True)
+    assert sweatbox_preset({}, "draft")["height"] == 720
+    assert sweatbox_preset({}, "high")["motion_blur"] is True
+    assert sweatbox_preset({}, "nonsense") == std        # unknown -> standard
+    proj = {"playblast": {"sweatbox_presets": {"high": {"height": 2160,
+                                                        "junk": 1}}}}
+    hi = sweatbox_preset(proj, "high")
+    assert hi["height"] == 2160                          # overridden
+    assert hi["samples"] == 128                          # untouched
+    assert "junk" not in hi                              # unknown keys dropped

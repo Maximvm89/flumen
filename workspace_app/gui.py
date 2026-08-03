@@ -2534,14 +2534,16 @@ class MainWindow(QMainWindow):
                     else:
                         self._launch_sweatbox_job(task, None,
                                                   dlg.selected_formats(),
-                                                  prebuilt=path)
+                                                  prebuilt=path,
+                                                  render_opts=dlg.render_opts())
                     return
                 chosen = dlg.selected_ids()
                 if not chosen:
                     return
                 self._launch_sweatbox_job(task, chosen, dlg.selected_formats(),
                                           open_after=open_after,
-                                          use_caches=dlg.use_caches())
+                                          use_caches=dlg.use_caches(),
+                                          render_opts=dlg.render_opts())
             except Exception as exc:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()          # -> ~/.flumen/workspace.log
@@ -2618,7 +2620,8 @@ class MainWindow(QMainWindow):
                              only_formats: list | None = None,
                              open_after: bool = False,
                              prebuilt: str = "",
-                             use_caches: bool = False):
+                             use_caches: bool = False,
+                             render_opts: dict | None = None):
         """Rebuild the picked elements from published data (headless) then render
         the Material-Preview sweatbox and publish it to Dailies. Two headless
         passes on the Job thread. Assembles the ANIMATION step (latest rigs +
@@ -2678,7 +2681,8 @@ class MainWindow(QMainWindow):
                           f"unavailable: {', '.join(failed)}", flush=True)
                 return P.run_playblast(cfg, creds, prebuilt, anim_id,
                                        sweatbox=True, label=label,
-                                       only_formats=only_formats)
+                                       only_formats=only_formats,
+                                       render_opts=render_opts)
             # Phase 1: headless rebuild from published data -> build_out.
             # Delete any previous build FIRST: build_out has a fixed name, so a
             # rebuild that fails without writing would leave the last run's file
@@ -2702,7 +2706,8 @@ class MainWindow(QMainWindow):
             # Phase 2: render the rebuilt shot with the sweatbox look + publish.
             return P.run_playblast(cfg, creds, build_out, anim_id,
                                    sweatbox=True, label=label,
-                                   only_formats=only_formats)
+                                   only_formats=only_formats,
+                                   render_opts=render_opts)
 
         def done(rc):
             self._busy_buttons(False)
@@ -3748,6 +3753,40 @@ class SweatboxDialog(QDialog):
         btns.addStretch(1)
         root.addLayout(btns)
 
+        # Render quality: Draft/Standard/High preset (samples, resolution,
+        # raytracing, motion blur — redefinable per project), plus per-run
+        # advanced knobs: HDRI + strength and the off-camera cull.
+        q_row = QHBoxLayout()
+        q_row.addWidget(QLabel("Quality:"))
+        self.cmb_preset = QComboBox()
+        for label, key in (("Draft — 720p, fast, no raytracing", "draft"),
+                           ("Standard — 1080p, raytraced", "standard"),
+                           ("High — 1440p (2K), motion blur", "high")):
+            self.cmb_preset.addItem(label, key)
+        self.cmb_preset.setCurrentIndex(1)
+        q_row.addWidget(self.cmb_preset, 1)
+        q_row.addWidget(QLabel("HDRI:"))
+        self.cmb_hdri = QComboBox()
+        for label, key in (("Default (forest)", ""),
+                           ("City", "city.exr"), ("Interior", "interior.exr"),
+                           ("Studio", "studio.exr"),
+                           ("Courtyard", "courtyard.exr"),
+                           ("Sunset", "sunset.exr"), ("Night", "night.exr")):
+            self.cmb_hdri.addItem(label, key)
+        q_row.addWidget(self.cmb_hdri)
+        self.sp_hdri = QDoubleSpinBox()
+        self.sp_hdri.setRange(0.1, 5.0)
+        self.sp_hdri.setSingleStep(0.1)
+        self.sp_hdri.setValue(1.0)
+        self.sp_hdri.setToolTip("HDRI light strength")
+        q_row.addWidget(self.sp_hdri)
+        root.addLayout(q_row)
+        self.cb_cull = QCheckBox(
+            "Skip objects that never enter frame (faster; off = render "
+            "everything)")
+        self.cb_cull.setChecked(True)
+        root.addWidget(self.cb_cull)
+
         # Delivery formats: one tick box per project format (16x9 / 9x16), both
         # on by default. Untick one to render only the other; with none ticked
         # there is nothing to render, so the confirm button is disabled.
@@ -3818,6 +3857,14 @@ class SweatboxDialog(QDialog):
         return (self.source_mode() == "rebuild"
                 and self.cb_caches.isChecked())
 
+    def render_opts(self) -> dict:
+        """The render-quality choices for run_playblast: preset key + the
+        per-run advanced overrides (HDRI, strength, cull)."""
+        return {"preset": self.cmb_preset.currentData(),
+                "hdri": self.cmb_hdri.currentData() or "",
+                "hdri_strength": round(self.sp_hdri.value(), 2),
+                "cull": self.cb_cull.isChecked()}
+
     def _refresh_ok(self):
         ok = self.bb.button(QDialogButtonBox.Ok)
         rebuilding = self.source_mode() == "rebuild"
@@ -3827,6 +3874,8 @@ class SweatboxDialog(QDialog):
         self.cb_caches.setEnabled(rebuilding)   # only a rebuild resolves caches
         for cb, _n in self._fmt_boxes:
             cb.setEnabled(rendering)
+        for w in (self.cmb_preset, self.cmb_hdri, self.sp_hdri, self.cb_cull):
+            w.setEnabled(rendering)
         self.ed_blend.setEnabled(self.source_mode() == "file")
 
         n_on = sum(1 for b in self._boxes if b.isChecked())
