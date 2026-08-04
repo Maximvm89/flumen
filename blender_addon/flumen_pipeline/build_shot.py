@@ -1497,6 +1497,21 @@ def _publish_version_label(name):
     m = re.search(r"_v(\d+)\.blend$", os.path.basename(name or ""))
     return f"v{int(m.group(1)):03d}" if m else ""
 
+def _holder_cache_version(holder):
+    """The cache version an element's holder currently plays, parsed from its
+    CacheFile paths ('…/gatto_mummia_v001.abc' -> 1). 0 when the holder has no
+    cache at all (e.g. an earlier build fell back to linking the rig)."""
+    import re
+    best = 0
+    for o in holder.all_objects:
+        for mod in getattr(o, "modifiers", []):
+            cf = getattr(mod, "cache_file", None)
+            fp = getattr(cf, "filepath", "") if cf else ""
+            m = re.search(r"_v(\d+)\.abc$", os.path.basename(fp))
+            if m:
+                best = max(best, int(m.group(1)))
+    return best
+
 def _element_loaded_file(holder):
     """Basename of the publish .blend an element's content links from, or ''
     for appended content (the camera rig) which has no library."""
@@ -1560,15 +1575,45 @@ def _element_update_notes(el, holder, anim_meta):
     (which, on an animation task, is the layout's until the animator publishes).
     `anim_meta` is resolve-assembly's per-element anim info ({id: {version,…}})."""
     eid = str(el.get("id", ""))
-    # Lighting: a cache element imports a baked alembic (geometry + animation +
-    # look are already IN the cache), so the look/anim "will apply" notes don't
-    # apply and just clutter/truncate the row. Show only what it loads + source.
-    if el.get("cache_rel"):
-        return _element_detail(el, holder is not None), False
     avail = (anim_meta.get(eid) or {}).get("version", "")
     ld = el.get("look_data") or {}
     look_avail = (f"{ld.get('name', '')} v{int(ld.get('version', 0)):03d}"
                   if ld else "")
+    # Lighting: a cache element imports a baked alembic (geometry + animation
+    # are IN the cache), so the anim "will apply" notes don't apply. But the
+    # cache VERSION and the look (applied onto the cache at build time) both
+    # move on their own tracks — compare each against what the scene holds, so
+    # a re-cache or a look republish pre-ticks the row. Without this a lighting
+    # scene silently kept its first-ever cache forever (the cat rendered with
+    # v001 face sets under a v006 look).
+    if el.get("cache_rel"):
+        if holder is None:
+            base = _element_detail(el, False)
+            if look_avail:
+                base += f"  ·  look {look_avail} will apply"
+            return base, False
+        notes, update = [], False
+        latest = int(el.get("cache_version") or 0)
+        have = _holder_cache_version(holder)
+        if latest and have and have < latest:
+            notes.append(f"new cache v{latest:03d} (scene has v{have:03d})")
+            update = True
+        elif latest and not have:
+            notes.append(f"cache v{latest:03d} available (scene has no cache)")
+            update = True
+        elif latest:
+            notes.append(f"cache v{latest:03d} ✓")
+        if look_avail:
+            cur_look = str(holder.get("flumen_look", "") or "")
+            if cur_look == look_avail:
+                notes.append(f"look {look_avail} ✓")
+            elif cur_look:
+                notes.append(f"new look {look_avail} (scene has {cur_look})")
+                update = True
+            else:
+                notes.append(f"look {look_avail} available")
+                update = True
+        return ("  ·  ".join(notes) if notes else "already in scene"), update
     # Set dressing versions on its OWN track — the dresser re-publishes without
     # touching the env model, so a geometry-only update check misses it. --list
     # inlines {name, version}; the label matches the holder's flumen_dressing

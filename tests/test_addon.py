@@ -381,3 +381,54 @@ def test_constraint_with_unbuilt_target_element_is_skipped_not_created():
         assert stack[0].target == "the-skeleton-rig"
     finally:
         C.resolve_ref = orig
+
+
+def test_cache_element_flags_newer_cache_and_look_as_update():
+    """A lighting scene must not keep its first-ever cache forever: a cache
+    element whose holder plays v001 while the server has v006 (or whose look
+    was republished) pre-ticks as an update. Guard for the gatto bug — the
+    old code returned update=False for every cache row."""
+    from flumen_pipeline import build_shot as B
+
+    class Holder(dict):
+        def __init__(self, objs):
+            super().__init__()
+            self.all_objects = objs
+
+    def cache_obj(path):
+        mod = types.SimpleNamespace(
+            cache_file=types.SimpleNamespace(filepath=path))
+        return types.SimpleNamespace(modifiers=[mod])
+
+    el = {"id": "gatto_mummia", "kind": "asset",
+          "cache_rel": "c/gatto_mummia_v006.abc", "cache_version": 6,
+          "cache_source": "server",
+          "look_data": {"name": "default", "version": 7}}
+
+    # scene plays v001 -> update, naming both versions
+    stale = Holder([cache_obj("//../cache/gatto_mummia_v001.abc")])
+    detail, update = B._element_update_notes(el, stale, {})
+    assert update is True
+    assert "new cache v006" in detail and "v001" in detail
+
+    # scene current on both tracks -> no update
+    fresh = Holder([cache_obj("//../cache/gatto_mummia_v006.abc")])
+    fresh["flumen_look"] = "default v007"
+    detail, update = B._element_update_notes(el, fresh, {})
+    assert update is False
+    assert "cache v006 ✓" in detail and "look default v007 ✓" in detail
+
+    # cache current but the look moved -> update
+    fresh["flumen_look"] = "default v006"
+    detail, update = B._element_update_notes(el, fresh, {})
+    assert update is True and "new look default v007" in detail
+
+    # holder built as a rig-link fallback (no CacheFile) -> update once a
+    # cache exists
+    riglink = Holder([types.SimpleNamespace(modifiers=[])])
+    detail, update = B._element_update_notes(el, riglink, {})
+    assert update is True and "scene has no cache" in detail
+
+    # not in the scene yet: informative, not an update
+    detail, update = B._element_update_notes(el, None, {})
+    assert update is False and "look default v007 will apply" in detail
