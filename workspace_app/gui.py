@@ -2439,15 +2439,30 @@ class MainWindow(QMainWindow):
         .blend they pick."""
         if not self.cfg:
             return
+        import glob as _glob
         from flumen import render as R
         entity = task.get("entity", "")
+        step = task.get("step", "")
         local_root = (self.ed_local.text().strip()
                       or self.cfg.resolved_local_root())
+        # The offered sources follow the task's step: an animation task preps
+        # review renders (the sweatbox build), a lighting task preps finals
+        # (its publish, or the work file for a pre-publish test render).
         last_sb = os.path.join(local_root, "04_sequences", *entity.split("/"),
                                "animation", ".preview", "sweatbox_build.blend")
-        items = ["Latest lighting publish (finals)"]
-        if os.path.isfile(last_sb):
-            items.append("Last sweatbox build")
+        work_dir = os.path.join(local_root, "04_sequences", *entity.split("/"),
+                                "lighting", "work")
+        works = (sorted(_glob.glob(os.path.join(work_dir, "*.blend")),
+                        reverse=True) if os.path.isdir(work_dir) else [])
+        items = []
+        if step == "lighting":
+            items.append("Latest lighting publish (finals)")
+            if works:
+                items.append(f"Latest lighting work file "
+                             f"({os.path.basename(works[0])})")
+        else:
+            if os.path.isfile(last_sb):
+                items.append("Last sweatbox build")
         items.append("Pick a .blend…")
         choice, ok = QInputDialog.getItem(
             self, f"Prepare for BRQ — {entity}",
@@ -2458,9 +2473,11 @@ class MainWindow(QMainWindow):
         blend = ""
         if choice == "Last sweatbox build":
             blend = last_sb
+        elif choice.startswith("Latest lighting work"):
+            blend = works[0]
         elif choice.startswith("Pick"):
             blend, _ = QFileDialog.getOpenFileName(
-                self, "Choose a .blend to prepare", "",
+                self, "Choose a .blend to prepare", local_root,
                 "Blender files (*.blend)")
             if not blend:
                 return
