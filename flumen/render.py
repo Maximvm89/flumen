@@ -86,9 +86,23 @@ def _ensure_dependencies(client, cfg, deps_rel: str, local_root: str):
     return fetched, missing
 
 
+def queue_dir(local_root: str) -> str:
+    """The central folder of queue-ready .blend files for an external render
+    manager (BRQ): drag its contents into the queue in one go."""
+    return os.path.join(local_root, "06_renders", "_brq_queue")
+
+
 def run_render(cfg, creds, task_id: str, samples: int | None = None,
                respct: int | None = None, start: int | None = None,
-               end: int | None = None, dry_run: bool = False) -> int:
+               end: int | None = None, dry_run: bool = False,
+               prep_queue: bool = False, blend_override: str = "") -> int:
+    """Render the newest PUBLISHED lighting shot — or, with `prep_queue`, STOP
+    short of rendering and save a queue-ready copy (project render settings,
+    output path and frame range baked in, library paths absolute) into
+    queue_dir() for an external render manager (BRQ renders the file as-is
+    with the file's own settings). `blend_override` preps a specific .blend
+    (the last sweatbox build, any file) instead of the lighting publish; its
+    missing linked libraries are fetched first."""
     from .sftp import SFTPClient
     from . import tasks as T
     from .launcher import find_blender, _resolve_ocio
@@ -115,7 +129,20 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
             return 1
         entity = task["entity"]
         blend, missing_deps = None, []
-        if not dry_run:
+        if blend_override:
+            # Prep an explicit file (last sweatbox build, any .blend): not a
+            # publish, so no deps manifest — scan the file itself and fetch
+            # whatever the local mirror lacks (same preflight as opening).
+            blend = os.path.abspath(os.path.expanduser(blend_override))
+            if not os.path.isfile(blend):
+                print(f"error: no such file: {blend}")
+                return 1
+            if not dry_run:
+                from . import blend_deps
+                _, failed = blend_deps.fetch_missing_libraries(
+                    client, cfg.remote_root, local_root, blend, log=print)
+                missing_deps = failed
+        elif not dry_run:
             blend, deps_rel = _published_shot_blend(client, cfg, task, local_root)
             if blend:
                 fetched, missing_deps = _ensure_dependencies(
@@ -145,9 +172,13 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
     video_local = os.path.join(local_root, *video_rel.split("/"))
 
     if dry_run:
-        print(f"(dry-run) would render {entity} newest PUBLISHED lighting shot")
+        what = ("prep for the render queue" if prep_queue else "render")
+        print(f"(dry-run) would {what} {entity} "
+              + (os.path.basename(blend_override) if blend_override
+                 else "newest PUBLISHED lighting shot"))
         print(f"          PNG sequence -> {frames_rel}")
-        print(f"          review video -> {video_rel}")
+        if not prep_queue:
+            print(f"          review video -> {video_rel}")
         return 0
 
     blender = find_blender(cfg.blender_path)
@@ -190,6 +221,24 @@ def run_render(cfg, creds, task_id: str, samples: int | None = None,
 
     script = _bundled_path("blender_render.py")
     os.makedirs(frames_dir, exist_ok=True)
+    if prep_queue:
+        # Stamp everything the render would use INTO a copy and stop — an
+        # external render manager (BRQ) renders that file as-is.
+        stem = os.path.splitext(os.path.basename(blend))[0]
+        pre = entity.replace("/", "_")
+        name = stem if stem.startswith((pre, entity.split("/")[-1])) \
+            else f"{pre}_{stem}"          # don't double an entity-named stem
+        prep_out = os.path.join(queue_dir(local_root), f"{name}_brq.blend")
+        env["FLUMEN_PREP_OUT"] = prep_out
+        print(f"Preparing {entity} for the render queue …")
+        rc = subprocess.call([blender, "--background", "--factory-startup",
+                              blend, "--python", script], env=env)
+        if rc != 0 or not os.path.isfile(prep_out):
+            print(f"error: prep produced no file (Blender exit {rc}).")
+            return 1
+        print(f"queue-ready -> {prep_out}")
+        print(f"frames will land in -> {frames_rel}")
+        return 0
     print(f"Rendering {entity} lighting … (this is a FINAL render — it can be "
           f"slow)")
     rc = subprocess.call([blender, "--background", blend, "--python", script],

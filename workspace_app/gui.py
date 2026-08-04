@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import platform
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -2397,6 +2398,11 @@ class MainWindow(QMainWindow):
         # judge shading/animation without opening Blender or lighting the shot.
         act_sweatbox = (menu.addAction("Sweatbox (shaded review)…")
                         if t.get("type") == "shot" else None)
+        # BRQ prep: save a queue-ready copy (render settings/output/frame
+        # range baked in, paths absolute) into 06_renders/_brq_queue — the
+        # artist drags the folder's files into Blender Render Queue.
+        act_brq = (menu.addAction("Prepare for Render Queue (BRQ)…")
+                   if t.get("type") == "shot" else None)
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         act_delete.setEnabled(self._can_delete_remote())
@@ -2420,8 +2426,79 @@ class MainWindow(QMainWindow):
             self._render_shot(t)
         elif act_sweatbox is not None and chosen == act_sweatbox:
             self._sweatbox_shot(t)
+        elif act_brq is not None and chosen == act_brq:
+            self._prep_render_queue(t)
         elif chosen == act_delete:
             self._delete_task(t)
+
+    def _prep_render_queue(self, task: dict):
+        """'Prepare for Render Queue (BRQ)': stamp the project render settings,
+        output path and frame range into a queue-ready copy of the shot and
+        open the queue folder — the artist drags its files into BRQ. Source:
+        the newest lighting publish (finals), the last sweatbox build, or any
+        .blend they pick."""
+        if not self.cfg:
+            return
+        from flumen import render as R
+        entity = task.get("entity", "")
+        local_root = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+        last_sb = os.path.join(local_root, "04_sequences", *entity.split("/"),
+                               "animation", ".preview", "sweatbox_build.blend")
+        items = ["Latest lighting publish (finals)"]
+        if os.path.isfile(last_sb):
+            items.append("Last sweatbox build")
+        items.append("Pick a .blend…")
+        choice, ok = QInputDialog.getItem(
+            self, f"Prepare for BRQ — {entity}",
+            "Which file should be prepared for the render queue?",
+            items, 0, False)
+        if not ok:
+            return
+        blend = ""
+        if choice == "Last sweatbox build":
+            blend = last_sb
+        elif choice.startswith("Pick"):
+            blend, _ = QFileDialog.getOpenFileName(
+                self, "Choose a .blend to prepare", "",
+                "Blender files (*.blend)")
+            if not blend:
+                return
+        # finals prep needs the LIGHTING task id; the sweatbox/pick sources
+        # keep whatever task row was clicked (output still lands per shot).
+        tid = (tasksmod.make_id("shot", entity, "lighting")
+               if not blend else task.get("id", ""))
+        cfg, creds = self.cfg, self._creds()
+        cfg.local_root = local_root
+
+        def work():
+            return R.run_render(cfg, creds, tid, prep_queue=True,
+                                blend_override=blend)
+
+        def done(rc):
+            self._busy_buttons(False)
+            qdir = R.queue_dir(local_root)
+            if rc == 0:
+                self.status.showMessage(f"Queue-ready file saved — drag it "
+                                        f"from {qdir} into BRQ.")
+                try:                       # open the folder for the drag
+                    if os.name == "nt":
+                        os.startfile(qdir)              # noqa: S606
+                    elif sys.platform == "darwin":
+                        subprocess.Popen(["open", qdir])
+                    else:
+                        subprocess.Popen(["xdg-open", qdir])
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                QMessageBox.warning(
+                    self, "Prep failed",
+                    "Could not prepare the shot — no published lighting shot "
+                    "yet, a missing dependency, or no camera. See the app "
+                    "console / ~/.flumen/workspace.log.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg=f"Preparing {entity} for BRQ…")
 
     def _render_shot(self, task: dict):
         """Right-click 'Render shot': final-render the lighting work file

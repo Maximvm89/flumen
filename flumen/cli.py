@@ -1225,6 +1225,22 @@ def cmd_render(args) -> int:
                         start=args.start, end=args.end, dry_run=args.dry_run)
 
 
+def cmd_prep_render(args) -> int:
+    """Save a queue-ready copy of a shot for an external render manager (BRQ):
+    the newest PUBLISHED lighting shot by default, or --blend for a specific
+    file (e.g. the last sweatbox build). Project render settings, output path
+    and frame range are baked in; library paths go absolute; the copy lands in
+    06_renders/_brq_queue/ — drag its contents into BRQ."""
+    cfg = ProjectConfig.load(args.config)
+    creds = (SFTPCredentials(host="(dry-run)", port=22, user="(dry-run)")
+             if args.dry_run else SFTPCredentials.from_env(args.env))
+    from . import render as R
+    return R.run_render(cfg, creds, args.task,
+                        samples=args.samples, respct=args.respct,
+                        start=args.start, end=args.end, dry_run=args.dry_run,
+                        prep_queue=True, blend_override=args.blend or "")
+
+
 def cmd_publish_lights(args) -> int:
     """Publish a lighting task's light rig (the LIGHTS collection, written to a
     .blend by the add-on) into the lighting publish folder, versioned, recorded
@@ -1788,6 +1804,20 @@ def build_parser() -> argparse.ArgumentParser:
     rnd2.add_argument("--start", type=int, default=None, help="override start frame")
     rnd2.add_argument("--end", type=int, default=None, help="override end frame")
     rnd2.set_defaults(func=cmd_render)
+
+    prq = sub.add_parser("prep-render", parents=[common],
+                         help="save a queue-ready .blend for an external "
+                              "render manager (BRQ) instead of rendering")
+    prq.add_argument("--task", required=True, help="shot task id")
+    prq.add_argument("--blend", help="prep this specific .blend instead of "
+                                     "the newest lighting publish")
+    prq.add_argument("--samples", type=int, default=None,
+                     help="override render samples")
+    prq.add_argument("--respct", type=int, default=None,
+                     help="override resolution percentage")
+    prq.add_argument("--start", type=int, default=None, help="override start frame")
+    prq.add_argument("--end", type=int, default=None, help="override end frame")
+    prq.set_defaults(func=cmd_prep_render)
 
     pl2 = sub.add_parser("publish-lights", parents=[common],
                          help="publish a lighting task's light rig")

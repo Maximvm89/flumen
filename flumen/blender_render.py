@@ -81,8 +81,22 @@ def main():
 
     # Missing linked deps (caches/rigs/env not synced) -> the render would be a
     # void. Warn loudly; the caller treats a non-zero exit as failure.
+    # EXCEPT Blender's own bundled asset libraries (datafiles/assets/…, e.g.
+    # geometry_nodes_essentials.blend): per-install system files whose path
+    # only resolves on the machine that authored the link — the machine that
+    # renders has its own copy, so their absence here is not a broken shot.
+    def _is_blender_asset(lib):
+        p = lib.filepath.replace("\\", "/")
+        return "/datafiles/assets/" in p
+
     missing = [lib.filepath for lib in bpy.data.libraries
-               if not os.path.isfile(bpy.path.abspath(lib.filepath))]
+               if not _is_blender_asset(lib)
+               and not os.path.isfile(bpy.path.abspath(lib.filepath))]
+    for lib in bpy.data.libraries:
+        if _is_blender_asset(lib) and \
+                not os.path.isfile(bpy.path.abspath(lib.filepath)):
+            print(f"[render] note: Blender bundled asset library not at its "
+                  f"authored path (fine on another machine): {lib.filepath}")
     if missing:
         print("[render] ERROR: missing linked libraries — sync the shot's "
               "publishes first:")
@@ -157,6 +171,39 @@ def main():
     r.filepath = os.path.join(frames_dir, "frame_")
     r.use_file_extension = True
     r.use_overwrite = True
+
+    # PREP MODE (FLUMEN_PREP_OUT): everything above configured the scene for
+    # the final render — instead of rendering here, SAVE a queue-ready copy
+    # for an external render manager (BRQ) that renders the file as-is with
+    # the file's own settings. Library paths go absolute first: the copy
+    # lands in a central queue folder, where '//..' relative paths would
+    # resolve against the wrong directory.
+    prep_out = _env("FLUMEN_PREP_OUT")
+    if prep_out:
+        # Blender-bundled asset libs keep their AUTHORED path: absolutizing
+        # them against THIS machine's mount would break them on the render
+        # machine, whose Blender install is where they actually resolve.
+        keep = {lib: lib.filepath for lib in bpy.data.libraries
+                if _is_blender_asset(lib)}
+        try:
+            bpy.ops.file.make_paths_absolute()
+        except Exception as exc:  # noqa: BLE001
+            print("[render] make_paths_absolute failed:", exc)
+        for lib, fp in keep.items():
+            try:
+                lib.filepath = fp
+            except Exception:  # noqa: BLE001
+                pass
+        os.makedirs(os.path.dirname(prep_out), exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=prep_out, copy=True,
+                                    relative_remap=False)
+        nframes = scene.frame_end - scene.frame_start + 1
+        print(f"[render] PREPPED for queue: {r.engine} "
+              f"{r.resolution_x}x{r.resolution_y} · {nframes} frame(s) "
+              f"{scene.frame_start}-{scene.frame_end} · "
+              f"cam={scene.camera.name} · output={r.filepath}")
+        print(f"[render] queue file saved -> {prep_out}")
+        return
 
     _install_progress(scene)
     nframes = scene.frame_end - scene.frame_start + 1
