@@ -446,6 +446,106 @@ def _apply_cache_visibility(cache_path, objects):
               f"{applied}/{len(wanted)} mesh(es) from {os.path.basename(side)}.")
     return applied
 
+def _clear_hide_keys(objects):
+    """Remove hide_viewport/hide_render F-curves from these objects — a cache
+    swap re-applies the NEW version's visibility sidecar, and keys left over
+    from the old one (an object the new sidecar no longer mentions) would
+    keep playing stale visibility."""
+    for o in objects:
+        ad = getattr(o, "animation_data", None)
+        act = getattr(ad, "action", None) if ad else None
+        if not act:
+            continue
+        legacy = getattr(act, "fcurves", None)                  # pre-slotted
+        if legacy is not None:
+            for fc in [f for f in legacy
+                       if f.data_path in ("hide_viewport", "hide_render")]:
+                try:
+                    legacy.remove(fc)
+                except Exception:  # noqa: BLE001
+                    pass
+        for layer in getattr(act, "layers", []) or []:          # 4.4+ slotted
+            for strip in getattr(layer, "strips", []) or []:
+                try:
+                    cbag = strip.channelbag(ad.action_slot) \
+                        if ad.action_slot else None
+                except Exception:  # noqa: BLE001
+                    cbag = None
+                if not cbag:
+                    continue
+                for fc in [f for f in cbag.fcurves
+                           if f.data_path in ("hide_viewport", "hide_render")]:
+                    try:
+                        cbag.fcurves.remove(fc)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+
+def _swap_alembic_cache(holder, element):
+    """Update an imported cache IN PLACE: repoint the element's CacheFile at
+    the new .abc instead of delete + re-import. The objects are never touched,
+    so their names, materials, light-linking memberships, placement and
+    custom keys all survive by construction — the whole class of '.001
+    suffix drift' breakage can't happen.
+
+    Only valid when the new archive contains exactly the object paths the
+    scene's modifiers/constraints are bound to (same rig era). Anything else
+    — mesh added/removed, first-generation cache, reader already broken —
+    returns False and the caller does the full re-import instead."""
+    new_path = element.get("cache_local") or ""
+    if not os.path.isfile(new_path):
+        return False
+    objs = list(holder.all_objects)
+    cfs, bound = set(), set()
+    for o in objs:
+        for m in getattr(o, "modifiers", []):
+            if m.type == "MESH_SEQUENCE_CACHE" and m.cache_file:
+                cfs.add(m.cache_file)
+                bound.add(m.object_path)
+    for o in objs:
+        for c in getattr(o, "constraints", []):
+            if c.type == "TRANSFORM_CACHE" and c.cache_file:
+                cfs.add(c.cache_file)
+                bound.add(c.object_path)
+    if len(cfs) != 1 or not bound:
+        return False                       # not a plain single-cache element
+    cf = cfs.pop()
+    for o in bpy.data.objects:             # paranoia: cf shared outside holder
+        if o.name in holder.all_objects:
+            continue
+        if any(getattr(m, "cache_file", None) == cf
+               for m in getattr(o, "modifiers", [])) or \
+           any(getattr(c, "cache_file", None) == cf
+               for c in getattr(o, "constraints", [])):
+            return False
+    old_path = cf.filepath
+    cf.filepath = new_path
+    try:
+        bpy.context.view_layer.update()
+        bpy.context.evaluated_depsgraph_get()
+    except Exception:  # noqa: BLE001
+        pass
+    archive = {p.path for p in cf.object_paths}
+    if archive != bound:
+        cf.filepath = old_path             # different object set — re-import
+        try:
+            bpy.context.evaluated_depsgraph_get()
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"[Flumen] {element.get('id')}: cache object set changed "
+              f"({len(bound)} bound vs {len(archive)} in the new archive) — "
+              f"falling back to full re-import.")
+        return False
+    try:                                   # cosmetic: show the right version
+        cf.name = os.path.basename(new_path)
+    except Exception:  # noqa: BLE001
+        pass
+    # The new version's visibility sidecar replaces the old one wholesale.
+    _clear_hide_keys(objs)
+    _apply_cache_visibility(new_path, objs)
+    return True
+
+
 def _named_holder(context, name):
     """A scene collection by exact name (created + linked if absent)."""
     holder = bpy.data.collections.get(name)
@@ -2007,6 +2107,7 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         snapshots, placement_kept = {}, 0
         for el in elements:
             eid = str(el.get("id", ""))
+            swapped = False
             if eid in rebuild or eid in update:
                 holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
                 if holder is not None:
@@ -2015,20 +2116,42 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                                 holder, missing_caches=missing_caches_before)):
                         repaired.append(el)   # reload healed it — keep as-is
                         continue
-                    # Update / hard rebuild: remember where the artist PLACED
-                    # everything, clear the old content, relink the latest
-                    # publish, then put it back where it was.
-                    snapshots[eid] = _element_matrix_snapshot(holder)
-                    _clear_element_holder(holder)
-            loader = _ELEMENT_LOADERS.get(el.get("kind"))
-            if loader is None:
-                skipped.append((el, "unsupported kind"))
-                continue
-            try:
-                holder, err = loader(context, el)
-            except Exception as exc:  # noqa: BLE001 — one bad element never kills it
-                holder, err = None, str(exc)
-            (built if holder else skipped).append((el, err))
+                    # Cache update: FIRST try repointing the existing
+                    # CacheFile at the new .abc — objects, names, materials,
+                    # light links and placement survive untouched. Only a
+                    # changed object set (or a broken reader) needs the
+                    # destructive clear + re-import below.
+                    if (eid in update and el.get("cache_local")
+                            and eid not in rebuild):
+                        try:
+                            swapped = _swap_alembic_cache(holder, el)
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[Flumen] {eid}: in-place cache swap "
+                                  f"failed ({exc}) — re-importing.")
+                            swapped = False
+                    if swapped:
+                        print(f"[Flumen] {eid}: cache updated IN PLACE -> "
+                              f"v{int(el.get('cache_version') or 0):03d} "
+                              f"(objects, materials, light links untouched)")
+                    else:
+                        # Update / hard rebuild: remember where the artist
+                        # PLACED everything, clear the old content, relink the
+                        # latest publish, then put it back where it was.
+                        snapshots[eid] = _element_matrix_snapshot(holder)
+                        _clear_element_holder(holder)
+            if swapped:
+                err = None
+                built.append((el, None))
+            else:
+                loader = _ELEMENT_LOADERS.get(el.get("kind"))
+                if loader is None:
+                    skipped.append((el, "unsupported kind"))
+                    continue
+                try:
+                    holder, err = loader(context, el)
+                except Exception as exc:  # noqa: BLE001 — one bad element never kills it
+                    holder, err = None, str(exc)
+                (built if holder else skipped).append((el, err))
             if holder and eid in snapshots:
                 placement_kept += _element_matrix_restore(holder,
                                                           snapshots[eid])
@@ -2059,17 +2182,25 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                       f"{el['dressing_error']}")
             # The element's look, applied at build time: shading comes from the
             # look publish, never from what the geometry publish carried.
+            # Skipped when the holder's materials survived (in-place cache
+            # swap) and already wear this exact look version — re-appending
+            # would duplicate every material + texture as '.001' copies.
             ld = el.get("look_data")
             if holder and isinstance(ld, dict) and ld.get("blend_local"):
-                try:
-                    n_look = _apply_element_look(holder, ld)
-                except Exception as exc:  # noqa: BLE001
-                    print("[Flumen] could not apply look:", exc)
-                    n_look = 0
-                if n_look:
-                    holder["flumen_look"] = (f"{ld.get('name', '')} "
-                                             f"v{int(ld.get('version', 0)):03d}")
-                    looked += 1
+                want_look = (f"{ld.get('name', '')} "
+                             f"v{int(ld.get('version', 0)):03d}")
+                if swapped and str(holder.get("flumen_look", "")) == want_look:
+                    print(f"[Flumen] {eid}: look {want_look} already on the "
+                          f"swapped cache — not re-applied.")
+                else:
+                    try:
+                        n_look = _apply_element_look(holder, ld)
+                    except Exception as exc:  # noqa: BLE001
+                        print("[Flumen] could not apply look:", exc)
+                        n_look = 0
+                    if n_look:
+                        holder["flumen_look"] = want_look
+                        looked += 1
             if el.get("look_error"):
                 print(f"[Flumen] look warning ({el.get('id')}): "
                       f"{el['look_error']}")
@@ -2167,6 +2298,17 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                 try:
                     if not lib.users_id:
                         bpy.data.libraries.remove(lib)
+                except Exception:  # noqa: BLE001
+                    pass
+            # CacheFile datablocks are LOCAL ids, so the linked-only purge
+            # above never touches them: every clear+re-import leaves the old
+            # version's CacheFile behind, and the strays confuse both the
+            # missing-file check and anyone reading the file. Sweep the
+            # unused ones.
+            for cfd in list(bpy.data.cache_files):
+                try:
+                    if not cfd.users:
+                        bpy.data.cache_files.remove(cfd)
                 except Exception:  # noqa: BLE001
                     pass
 

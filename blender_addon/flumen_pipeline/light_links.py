@@ -19,9 +19,24 @@ import bpy
 
 _SUFFIX_RE = re.compile(r"[._]\d{3,}$")
 
+# Element holder collections are named 'element__<id>' (build_shot's
+# ELEMENT_HOLDER_PREFIX — duplicated here to avoid a circular import; guarded
+# by test_addon.py::test_light_links_holder_prefix_matches_build_shot).
+_HOLDER_PREFIX = "element__"
+
 
 def _base(name):
     return _SUFFIX_RE.sub("", name)
+
+
+def _holder_of(ob):
+    """The element holder collection an object lives under, or '' — snapshots
+    record it so restore never re-links a same-named mesh from ANOTHER
+    element (every character has a 'BODY'; only the right character's counts)."""
+    for coll in bpy.data.collections:
+        if coll.name.startswith(_HOLDER_PREFIX) and ob.name in coll.all_objects:
+            return coll.name
+    return ""
 
 
 def sidecar_path():
@@ -35,10 +50,11 @@ def sidecar_path():
 
 
 def _capture_collection(coll):
-    """A light-linking collection's members with their link state."""
+    """A light-linking collection's members with their link state and (for
+    objects) the element holder they belong to — the restore's search scope."""
     return {
         "name": coll.name,
-        "objects": [[ob.name, co.light_linking.link_state]
+        "objects": [[ob.name, co.light_linking.link_state, _holder_of(ob)]
                     for ob, co in zip(coll.objects, coll.collection_objects)],
         "collections": [[ch.name, cc.light_linking.link_state]
                         for ch, cc in zip(coll.children,
@@ -64,15 +80,20 @@ def snapshot():
     return out
 
 
-def _find_object(name, used):
-    """An object by exact name, else by suffix-stripped base name ('BODY_004'
-    finds 'BODY.005' after a re-import renumbered it) — never one already
-    claimed for another member."""
+def _find_object(name, used, holder_name=""):
+    """The member object, searched INSIDE its recorded element holder: exact
+    name first (but only trusted if it's in the right holder — after a
+    re-import another element may own that exact name), else by
+    suffix-stripped base ('BODY_004' finds 'BODY.005'). Snapshots without a
+    holder (pre-scoping sidecars, non-element objects) search the scene.
+    Never returns an object already claimed for another member."""
+    holder = bpy.data.collections.get(holder_name) if holder_name else None
+    pool = holder.all_objects if holder is not None else bpy.data.objects
     ob = bpy.data.objects.get(name)
-    if ob is not None:
+    if ob is not None and (holder is None or ob.name in pool):
         return ob
     base = _base(name)
-    cands = sorted((o for o in bpy.data.objects
+    cands = sorted((o for o in pool
                     if _base(o.name) == base and o.name not in used),
                    key=lambda o: o.name)
     return cands[0] if cands else None
@@ -80,8 +101,10 @@ def _find_object(name, used):
 
 def _restore_collection(coll, saved, counts, warns, where):
     used = {o.name for o in coll.objects}
-    for name, state in saved.get("objects") or []:
-        ob = _find_object(name, used)
+    for entry in saved.get("objects") or []:
+        name, state = entry[0], entry[1]
+        holder_name = entry[2] if len(entry) > 2 else ""
+        ob = _find_object(name, used, holder_name)
         if ob is None:
             warns.append(f"{where}: object '{name}' not in the scene")
             continue

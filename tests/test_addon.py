@@ -447,3 +447,12 @@ def test_cache_element_flags_newer_cache_and_look_as_update():
     pinned_ok["flumen_look"] = "default v007"
     detail, update = B._element_update_notes(el_pin, pinned_ok, {})
     assert update is False and "cache v005 (approved) ✓" in detail
+
+
+def test_light_links_holder_prefix_matches_build_shot():
+    """light_links duplicates ELEMENT_HOLDER_PREFIX (circular-import seam) —
+    the two must never drift, or holder-scoped restore silently degrades to
+    the global search that grabbed the wrong character's 'BODY'."""
+    from flumen_pipeline import build_shot as B
+    from flumen_pipeline import light_links as LL
+    assert LL._HOLDER_PREFIX == B.ELEMENT_HOLDER_PREFIX
