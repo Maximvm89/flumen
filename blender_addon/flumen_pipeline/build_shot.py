@@ -1638,6 +1638,42 @@ def _publish_version_label(name):
     m = re.search(r"_v(\d+)\.blend$", os.path.basename(name or ""))
     return f"v{int(m.group(1)):03d}" if m else ""
 
+def _look_materials_broken(holder):
+    """True when any mesh in the holder wears visibly-broken shading: an abc
+    placeholder (no node output linked), an image node with no image, or an
+    image whose file is gone (stale '.002' duplicate copies with dead UDIM
+    paths — skeleton_2's black-render state). The 'flumen_look' stamp can't
+    be trusted for this: it says what a build once applied, not what the
+    meshes wear NOW (a broken re-import keeps the holder and its stamp)."""
+    for o in holder.all_objects:
+        if getattr(o, "type", "") != "MESH":
+            continue
+        for mat in o.data.materials:
+            if mat is None:
+                continue
+            nt = getattr(mat, "node_tree", None)
+            if not mat.use_nodes or nt is None:
+                return True                        # abc placeholder
+            if not any(n.type == "OUTPUT_MATERIAL" and n.inputs["Surface"].links
+                       for n in nt.nodes):
+                return True                        # nothing reaches the output
+            for n in nt.nodes:
+                if n.type != "TEX_IMAGE":
+                    continue
+                img = n.image
+                if img is None:
+                    if any(l for out in n.outputs for l in out.links):
+                        return True                # wired image node, no image
+                    continue
+                p = bpy.path.abspath(img.filepath, library=img.library)
+                if img.source == "TILED":
+                    tile = (img.tiles[0].number if len(img.tiles) else 1001)
+                    p = p.replace("<UDIM>", str(tile))
+                if img.filepath and not os.path.isfile(p):
+                    return True                    # texture file is gone
+    return False
+
+
 def _holder_cache_version(holder):
     """The cache version an element's holder currently plays, parsed from its
     CacheFile paths ('…/gatto_mummia_v001.abc' -> 1). 0 when the holder has no
@@ -1752,7 +1788,15 @@ def _element_update_notes(el, holder, anim_meta):
                          + (" (approved)" if pinned else "") + " ✓")
         if look_avail:
             cur_look = str(holder.get("flumen_look", "") or "")
-            if cur_look == look_avail:
+            broken_look = _look_materials_broken(holder)
+            if broken_look:
+                # The meshes' ACTUAL shading is broken (placeholder material,
+                # dead texture path) no matter what the stamp claims — the
+                # black-skeleton state. Re-applying the look heals it.
+                notes.append(f"shading broken — look {look_avail} will "
+                             f"re-apply")
+                update = True
+            elif cur_look == look_avail:
                 notes.append(f"look {look_avail} ✓")
             elif cur_look:
                 notes.append(f"new look {look_avail} (scene has {cur_look})")
@@ -1922,6 +1966,13 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             it.label = el.get("label") or el.get("id", "")
             eid = str(el.get("id", ""))
             holder = bpy.data.collections.get(ELEMENT_HOLDER_PREFIX + eid)
+            # A holder the artist emptied by hand (deleted a broken character
+            # in the viewport) must read as NOT PRESENT — otherwise the row
+            # shows 'already in scene' unticked and the element can never be
+            # rebuilt: it silently stays missing forever.
+            if holder is not None and not holder.all_objects \
+                    and not holder.children:
+                holder = None
             it.present = holder is not None
             it.unload = False
             # In scene but its publish (or imported cache .abc) is gone from
@@ -2227,7 +2278,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
             if holder and isinstance(ld, dict) and ld.get("blend_local"):
                 want_look = (f"{ld.get('name', '')} "
                              f"v{int(ld.get('version', 0)):03d}")
-                if swapped and str(holder.get("flumen_look", "")) == want_look:
+                # Skipping requires the stamp to match AND the meshes to
+                # actually wear healthy materials — a stamp left over from
+                # before a broken build lies (the permanently-black state).
+                if (swapped and str(holder.get("flumen_look", "")) == want_look
+                        and not _look_materials_broken(holder)):
                     print(f"[Flumen] {eid}: look {want_look} already on the "
                           f"swapped cache — not re-applied.")
                 else:
