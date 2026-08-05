@@ -136,6 +136,8 @@
       "flumen.add_lights",
       "flumen.load_lights",
       "flumen.publish_lights",
+      "flumen.save_light_links",
+      "flumen.load_light_links",
       "---",
       "flumen.publish_shot",
       "---",

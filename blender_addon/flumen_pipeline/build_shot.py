@@ -25,6 +25,7 @@ from . import look as look_mod
 from . import anim as anim_mod
 from . import dressing as dressing_mod
 from . import constraints as _constraints
+from . import light_links as _light_links
 from ._common import (
     _prefs, _pref_local_root, _toolkit_cmd, PUBLISH_LOG, _publog, _no_window,
     _preflight_server, _shell_toolkit, _shell_json, _apply_one, active_task)
@@ -1960,6 +1961,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
         # already failed can't be reloaded reliably — those elements get a hard
         # rebuild (clear + re-import of the freshly fetched cache).
         missing_caches_before = _missing_cache_files()
+        # Light linking, captured BEFORE any holder is cleared: deleting an
+        # element's objects silently drops them from every receiver/blocker
+        # collection, wiping the lighter's linking. Restored by name after the
+        # rebuilds below.
+        ll_snapshot = _light_links.snapshot() if (rebuild or update) else {}
         data = self._resolve(task, only=chosen, picks=picks)
         elements = (data or {}).get("elements")
         if not elements:
@@ -2119,6 +2125,20 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                       f"{el.get('id')}: {exc}")
         if constrained:
             print(f"[Flumen] restored {constrained} animator constraint(s)")
+
+        # Put the lighter's light linking back: the cleared elements' objects
+        # were silently dropped from every receiver/blocker collection when
+        # they were deleted — re-link the re-imported ones by name.
+        if ll_snapshot:
+            try:
+                n_ll, ll_warns = _light_links.restore(ll_snapshot)
+            except Exception as exc:  # noqa: BLE001
+                n_ll, ll_warns = 0, [f"restore failed: {exc}"]
+            for w in ll_warns:
+                print(f"[Flumen] light links: {w}")
+            if n_ll:
+                print(f"[Flumen] light links: re-linked {n_ll} member(s) "
+                      f"after the update")
 
         # Updating/rebuilding an element CLEARS its old content but leaves the old
         # publish's library orphaned — e.g. an environment updated model v008 ->
