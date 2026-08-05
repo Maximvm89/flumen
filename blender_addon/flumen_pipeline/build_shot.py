@@ -518,6 +518,61 @@ def _swap_alembic_cache(holder, element):
            any(getattr(c, "cache_file", None) == cf
                for c in getattr(o, "constraints", [])):
             return False
+    # The new archive's TRANSFORM truth, via a throwaway import (Alembic
+    # import is lazy — milliseconds even on a 400 MB file). The swap keeps
+    # the scene's objects, but their transforms were set by the OLD import:
+    # a re-cache that moves a character (skeleton_3 exported at the origin
+    # in v005, at its grave in v011) would otherwise play the new vertices
+    # at the old location. Harvested into a plain dict, temp data deleted
+    # immediately; applied after the swap commits below.
+    from .looks import _base_name
+    before_tmp = set(bpy.data.objects)
+    try:
+        bpy.ops.wm.alembic_import(filepath=new_path, as_background_job=False,
+                                  set_frame_range=False)
+    except Exception:  # noqa: BLE001
+        pass
+    tmp = [o for o in bpy.data.objects if o not in before_tmp]
+    if not tmp:
+        return False                       # unreadable archive — re-import errs
+    truth, animated = {}, set()
+    for o in tmp:
+        b = _base_name(o.name)
+        truth.setdefault(b, []).append((o.name, o.matrix_world.copy()))
+        if any(c.type == "TRANSFORM_CACHE"
+               for c in getattr(o, "constraints", [])):
+            animated.add(b)
+    tmp_meshes = {o.data for o in tmp if o.type == "MESH" and o.data}
+    tmp_cfs = {m.cache_file for o in tmp for m in getattr(o, "modifiers", [])
+               if getattr(m, "cache_file", None)}
+    tmp_cfs |= {c.cache_file for o in tmp for c in getattr(o, "constraints", [])
+                if getattr(c, "cache_file", None)}
+    for o in tmp:
+        bpy.data.objects.remove(o, do_unlink=True)
+    for me in tmp_meshes:
+        if me.users == 0:
+            try:
+                bpy.data.meshes.remove(me)
+            except Exception:  # noqa: BLE001
+                pass
+    for tcf in tmp_cfs:
+        if tcf.users == 0:
+            try:
+                bpy.data.cache_files.remove(tcf)
+            except Exception:  # noqa: BLE001
+                pass
+    if animated:
+        # The new archive carries ANIMATED object transforms; the importer
+        # binds those with TRANSFORM_CACHE constraints. If the scene's
+        # objects lack them, a swap would freeze that motion — re-import.
+        held = {_base_name(o.name) for o in objs
+                if any(c.type == "TRANSFORM_CACHE"
+                       for c in getattr(o, "constraints", []))}
+        if animated - held:
+            print(f"[Flumen] {element.get('id')}: new archive animates "
+                  f"object transforms the scene has no constraint for — "
+                  f"falling back to full re-import.")
+            return False
     old_path = cf.filepath
     cf.filepath = new_path
     try:
@@ -534,8 +589,6 @@ def _swap_alembic_cache(holder, element):
         # clean 1:1 pairing means the same objects under new labels — rewrite
         # each binding's object_path and keep the swap (objects untouched).
         # Anything short of 1:1 is a REAL topology change: re-import.
-        from .looks import _base_name
-
         def _by_base(paths):
             out = {}
             for p in paths:
@@ -578,6 +631,21 @@ def _swap_alembic_cache(holder, element):
         cf.name = os.path.basename(new_path)
     except Exception:  # noqa: BLE001
         pass
+    # Adopt the new archive's static transforms (harvested above): same
+    # base-name pairing as the binding remap, sorted on both sides.
+    holder_by_base = {}
+    for o in objs:
+        holder_by_base.setdefault(_base_name(o.name), []).append(o)
+    n_x = 0
+    for b, lst in holder_by_base.items():
+        for o, (_, mw) in zip(sorted(lst, key=lambda o: o.name),
+                              sorted(truth.get(b) or [])):
+            if o.matrix_world != mw:
+                o.matrix_world = mw
+                n_x += 1
+    if n_x:
+        print(f"[Flumen] {element.get('id')}: adopted the new archive's "
+              f"transforms on {n_x} object(s).")
     # The new version's visibility sidecar replaces the old one wholesale.
     _clear_hide_keys(objs)
     _apply_cache_visibility(new_path, objs)
@@ -2226,7 +2294,14 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                         # Update / hard rebuild: remember where the artist
                         # PLACED everything, clear the old content, relink the
                         # latest publish, then put it back where it was.
-                        snapshots[eid] = _element_matrix_snapshot(holder)
+                        # NOT for caches: the archive bakes its own placement
+                        # per frame, and old matrices re-applied by name mix
+                        # eras — a v001-era scale lands on the surviving names
+                        # while a mesh new to the archive (the cat's 2nd
+                        # bandage variant) keeps the archive transform, so the
+                        # variants disagree. The re-import IS the placement.
+                        if not el.get("cache_local"):
+                            snapshots[eid] = _element_matrix_snapshot(holder)
                         _clear_element_holder(holder)
             if swapped:
                 err = None
