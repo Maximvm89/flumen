@@ -283,6 +283,9 @@ class MainWindow(QMainWindow):
         act_users = QAction("Manage users…", self)
         act_users.triggered.connect(self._manage_users)
         m.addAction(act_users)
+        act_enc = QAction("Encode frames to MP4…", self)
+        act_enc.triggered.connect(self._encode_frames_folder)
+        m.addAction(act_enc)
 
         h = self.menuBar().addMenu("Help")
         report = QAction("Report a bug…", self)
@@ -2516,6 +2519,57 @@ class MainWindow(QMainWindow):
 
         self._busy_buttons(True)
         self._spawn(work, done, busy_msg=f"Preparing {entity} for BRQ…")
+
+    def _encode_frames_folder(self):
+        """File > 'Encode frames to MP4': turn a folder of rendered frames —
+        typically what BRQ wrote — into a review MP4 without touching ffmpeg
+        by hand. Sequence pattern and start frame are auto-detected; the video
+        lands inside the folder, which opens on success."""
+        from flumen import encode as ENC
+        start = ""
+        if self.cfg:
+            local_root = (self.ed_local.text().strip()
+                          or self.cfg.resolved_local_root())
+            cand = os.path.join(local_root, "06_renders")
+            start = cand if os.path.isdir(cand) else local_root
+        frames_dir = QFileDialog.getExistingDirectory(
+            self, "Choose the folder of rendered frames", start)
+        if not frames_dir:
+            return
+        if not ENC.find_sequence(frames_dir):
+            QMessageBox.warning(
+                self, "No frames found",
+                "No numbered image sequence (name_0001.png style) in that "
+                "folder. EXR isn't supported — render PNGs for review.")
+            return
+
+        def work():
+            return ENC.encode_frames(frames_dir)
+
+        def done(out):
+            self._busy_buttons(False)
+            if out:
+                self.status.showMessage(f"Video saved — {out}")
+                try:                       # show the result
+                    if os.name == "nt":
+                        subprocess.Popen(["explorer", "/select,",
+                                          os.path.normpath(out)])
+                    elif sys.platform == "darwin":
+                        subprocess.Popen(["open", "-R", out])
+                    else:
+                        subprocess.Popen(["xdg-open",
+                                          os.path.dirname(out)])
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                QMessageBox.warning(
+                    self, "Encode failed",
+                    "ffmpeg could not encode the sequence — see the app "
+                    "console / ~/.flumen/workspace.log.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done,
+                    busy_msg=f"Encoding {os.path.basename(frames_dir)}…")
 
     def _render_shot(self, task: dict):
         """Right-click 'Render shot': final-render the lighting work file

@@ -1241,6 +1241,17 @@ def cmd_prep_render(args) -> int:
                         prep_queue=True, blend_override=args.blend or "")
 
 
+def cmd_encode_frames(args) -> int:
+    """Encode a folder of rendered frames into a review MP4 — the manual
+    counterpart of the dailies encode, for frames an external render manager
+    (BRQ) wrote. The sequence pattern and start frame are auto-detected, so
+    it works on any 'name_1001.png' style folder. Purely local: no server,
+    no config needed."""
+    from . import encode
+    out = encode.encode_frames(args.dir, out_mp4=args.out or "", fps=args.fps)
+    return 0 if out else 1
+
+
 def cmd_publish_lights(args) -> int:
     """Publish a lighting task's light rig (the LIGHTS collection, written to a
     .blend by the add-on) into the lighting publish folder, versioned, recorded
@@ -1818,6 +1829,17 @@ def build_parser() -> argparse.ArgumentParser:
     prq.add_argument("--start", type=int, default=None, help="override start frame")
     prq.add_argument("--end", type=int, default=None, help="override end frame")
     prq.set_defaults(func=cmd_prep_render)
+
+    enf = sub.add_parser("encode-frames",
+                         help="encode a folder of rendered frames (e.g. a BRQ "
+                              "output) into a review MP4 — pattern and start "
+                              "frame auto-detected")
+    enf.add_argument("--dir", required=True, help="folder holding the frames")
+    enf.add_argument("--fps", type=int, default=24,
+                     help="frame rate (default 24, the project rate)")
+    enf.add_argument("--out", default="",
+                     help="output .mp4 (default: <folder>/<foldername>.mp4)")
+    enf.set_defaults(func=cmd_encode_frames)
 
     pl2 = sub.add_parser("publish-lights", parents=[common],
                          help="publish a lighting task's light rig")
