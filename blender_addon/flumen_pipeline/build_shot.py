@@ -526,16 +526,54 @@ def _swap_alembic_cache(holder, element):
     except Exception:  # noqa: BLE001
         pass
     archive = {p.path for p in cf.object_paths}
+    remap = {}
     if archive != bound:
-        cf.filepath = old_path             # different object set — re-import
-        try:
-            bpy.context.evaluated_depsgraph_get()
-        except Exception:  # noqa: BLE001
-            pass
-        print(f"[Flumen] {element.get('id')}: cache object set changed "
-              f"({len(bound)} bound vs {len(archive)} in the new archive) — "
-              f"falling back to full re-import.")
-        return False
+        # A re-cache can RESHUFFLE instance numbering ('…_GEO_003' becomes
+        # '…_GEO_002' in the new archive) without the geometry set actually
+        # changing. Pair old and new paths by suffix-stripped base name; a
+        # clean 1:1 pairing means the same objects under new labels — rewrite
+        # each binding's object_path and keep the swap (objects untouched).
+        # Anything short of 1:1 is a REAL topology change: re-import.
+        from .looks import _base_name
+
+        def _by_base(paths):
+            out = {}
+            for p in paths:
+                leaf = p.split("/")[1] if "/" in p.strip("/") else p
+                out.setdefault(_base_name(leaf), []).append(p)
+            return out
+
+        ob_, ar_ = _by_base(bound), _by_base(archive)
+        if sorted(ob_) == sorted(ar_) and \
+                all(len(ob_[b]) == len(ar_[b]) for b in ob_):
+            for b in ob_:
+                for old_p, new_p in zip(sorted(ob_[b]), sorted(ar_[b])):
+                    remap[old_p] = new_p
+        else:
+            cf.filepath = old_path         # different object set — re-import
+            try:
+                bpy.context.evaluated_depsgraph_get()
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"[Flumen] {element.get('id')}: cache object set changed "
+                  f"({len(bound)} bound vs {len(archive)} in the new "
+                  f"archive) — falling back to full re-import.")
+            return False
+    if remap:
+        n_re = 0
+        for o in objs:
+            for m in getattr(o, "modifiers", []):
+                if m.type == "MESH_SEQUENCE_CACHE" and m.cache_file == cf \
+                        and m.object_path in remap:
+                    m.object_path = remap[m.object_path]
+                    n_re += 1
+            for c in getattr(o, "constraints", []):
+                if c.type == "TRANSFORM_CACHE" and c.cache_file == cf \
+                        and c.object_path in remap:
+                    c.object_path = remap[c.object_path]
+                    n_re += 1
+        print(f"[Flumen] {element.get('id')}: new archive renumbered its "
+              f"instances — remapped {n_re} cache binding(s) by base name.")
     try:                                   # cosmetic: show the right version
         cf.name = os.path.basename(new_path)
     except Exception:  # noqa: BLE001
@@ -2118,11 +2156,11 @@ class FLUMEN_OT_build_shot(bpy.types.Operator):
                         continue
                     # Cache update: FIRST try repointing the existing
                     # CacheFile at the new .abc — objects, names, materials,
-                    # light links and placement survive untouched. Only a
-                    # changed object set (or a broken reader) needs the
-                    # destructive clear + re-import below.
-                    if (eid in update and el.get("cache_local")
-                            and eid not in rebuild):
+                    # light links and placement survive untouched. This also
+                    # HEALS a dead reader (old .abc gone from disk): the new
+                    # filepath recreates it, so even 'broken' cache elements
+                    # try the swap before the destructive clear + re-import.
+                    if el.get("cache_local"):
                         try:
                             swapped = _swap_alembic_cache(holder, el)
                         except Exception as exc:  # noqa: BLE001

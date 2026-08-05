@@ -186,9 +186,17 @@ _SUFFIX_RE = _re.compile(r"[._]\d{3,}$")
 
 
 def _base_name(name):
-    """Strip a trailing collision suffix (dot or underscore form) so a cache
-    instance's suffixed mesh matches the look manifest's clean name."""
-    return _SUFFIX_RE.sub("", name)
+    """Strip trailing collision suffixes (dot or underscore form) so a cache
+    instance's suffixed mesh matches the look manifest's clean name. Strips
+    REPEATEDLY: a re-cache can reshuffle instance numbering between versions,
+    and importing '…_GEO_002' into a scene where that name is taken yields
+    '…_GEO_002.001' — a DOUBLE suffix a single strip leaves unmatched (the
+    black-skeleton bug: look matched 0 of 33 meshes)."""
+    while True:
+        stripped = _SUFFIX_RE.sub("", name)
+        if stripped == name:
+            return name
+        name = stripped
 
 
 def _match_meshes_by_name(manifest_names, meshes):
@@ -251,9 +259,38 @@ def _apply_element_look(holder, look_data):
         _activate_base_image(mat)          # Workbench draws the ACTIVE image
     meshes = [o for o in holder.all_objects if getattr(o, "type", "") == "MESH"]
     mapping = _match_meshes_by_name(list(assignments), meshes)
+    # A cache can carry MORE instances of a mesh than the look manifest names
+    # (orso's second 'BODY_001'): every leftover holder mesh whose base name
+    # matches a manifest entry wears that entry's materials too — otherwise it
+    # keeps the abc's empty placeholder and renders black.
+    matched_objs = {o.name for o in mapping.values()}
+    man_by_base = {}
+    for mn in assignments:
+        man_by_base.setdefault(_base_name(mn), mn)
+    extra = {}
+    for o in meshes:
+        if o.name in matched_objs:
+            continue
+        mn = man_by_base.get(_base_name(o.name))
+        if mn is not None:
+            extra[f"{mn}#{o.name}"] = o
+    if extra:
+        mapping = dict(mapping)
+        for key, o in extra.items():
+            mapping[key] = o
+    if assignments and meshes and not mapping:
+        # Nothing matched: the element renders with the abc's empty
+        # placeholder materials — BLACK. Never fail this silently.
+        print(f"[Flumen] LOOK NOT APPLIED on '{holder.name}': none of the "
+              f"{len(assignments)} manifest mesh names matched the holder's "
+              f"{len(meshes)} meshes. manifest e.g. "
+              f"{sorted(assignments)[:3]} vs scene e.g. "
+              f"{sorted(o.name for o in meshes)[:3]} — the element will "
+              f"render BLACK until the look applies.")
     assigned = 0
     for mesh_name, obj in mapping.items():
-        slot_mats = assignments[mesh_name]
+        # extra-instance keys are 'manifest_name#object' — index by the base
+        slot_mats = assignments[mesh_name.split("#")[0]]
         me = getattr(obj, "data", None)
         # Local (editable) mesh data — imported alembic cache or local model —
         # takes materials directly; a linked mesh's slots are read-only, so use

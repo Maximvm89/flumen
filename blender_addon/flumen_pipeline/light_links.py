@@ -26,7 +26,13 @@ _HOLDER_PREFIX = "element__"
 
 
 def _base(name):
-    return _SUFFIX_RE.sub("", name)
+    # Strip REPEATEDLY: '…_GEO_002.001' (reshuffled instance + import
+    # collision) must reduce to the same base as the recorded '…_GEO_004'.
+    while True:
+        stripped = _SUFFIX_RE.sub("", name)
+        if stripped == name:
+            return name
+        name = stripped
 
 
 def _holder_of(ob):
@@ -106,6 +112,17 @@ def _restore_collection(coll, saved, counts, warns, where):
         holder_name = entry[2] if len(entry) > 2 else ""
         ob = _find_object(name, used, holder_name)
         if ob is None:
+            # Lights SHARE linking collections: the same collection restores
+            # once per emitter, and on later passes every candidate is
+            # already claimed. If a current member from the right holder
+            # covers this entry's base, it's satisfied — not a loss.
+            base = _base(name)
+            if any(_base(m.name) == base
+                   and (not holder_name
+                        or any(c.name == holder_name
+                               for c in m.users_collection))
+                   for m in coll.objects):
+                continue
             warns.append(f"{where}: object '{name}' not in the scene")
             continue
         if ob.name not in used:
