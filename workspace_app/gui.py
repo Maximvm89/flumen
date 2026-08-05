@@ -2406,6 +2406,16 @@ class MainWindow(QMainWindow):
         # artist drags the folder's files into Blender Render Queue.
         act_brq = (menu.addAction("Prepare for Render Queue (BRQ)…")
                    if t.get("type") == "shot" else None)
+        # Lighting disk upkeep: pull the newest cache + look textures into the
+        # local mirror before a session, and sweep the superseded versions
+        # (only the newest of each is ever used by a build; the server keeps
+        # every version, so cleanup is always reversible via sync).
+        is_lighting_shot = (t.get("type") == "shot"
+                            and t.get("step") == "lighting")
+        act_sync = (menu.addAction("Sync latest caches + textures")
+                    if is_lighting_shot else None)
+        act_clean = (menu.addAction("Clean up unused data…")
+                     if is_lighting_shot else None)
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         act_delete.setEnabled(self._can_delete_remote())
@@ -2431,8 +2441,109 @@ class MainWindow(QMainWindow):
             self._sweatbox_shot(t)
         elif act_brq is not None and chosen == act_brq:
             self._prep_render_queue(t)
+        elif act_sync is not None and chosen == act_sync:
+            self._sync_shot_media(t)
+        elif act_clean is not None and chosen == act_clean:
+            self._cleanup_shot_media(t)
         elif chosen == act_delete:
             self._delete_task(t)
+
+    def _sync_shot_media(self, task: dict):
+        """Right-click 'Sync latest caches + textures' (lighting): download the
+        newest published cache per element (+ visibility sidecar) and each
+        asset's chosen look with its texture folder into the local mirror.
+        Unchanged files are skipped, so re-running before every session is
+        cheap insurance against building from stale media."""
+        if not self.cfg:
+            return
+        from flumen import shot_media as SM
+        from flumen.sftp import SFTPClient
+        entity = task.get("entity", "")
+        local_root = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+        cfg, creds = self.cfg, self._creds()
+
+        def work():
+            with SFTPClient(creds) as client:
+                return SM.sync_shot_media(client, cfg.remote_root, local_root,
+                                          entity, log=print)
+
+        def done(res):
+            self._busy_buttons(False)
+            if isinstance(res, dict):
+                self.status.showMessage(
+                    f"{entity}: {res['caches']} cache(s), {res['looks']} "
+                    f"look(s) — {res['downloaded']} file(s) downloaded "
+                    f"({res['bytes'] / 1e9:.2f} GB), {res['skipped']} already "
+                    f"current.")
+            else:
+                QMessageBox.warning(
+                    self, "Sync failed",
+                    "Could not sync the shot's media — check your connection. "
+                    "See the app console / ~/.flumen/workspace.log.")
+
+        self._busy_buttons(True)
+        self._spawn(work, done, busy_msg=f"Syncing {entity} caches + textures…")
+
+    def _cleanup_shot_media(self, task: dict):
+        """Right-click 'Clean up unused data' (lighting): delete LOCAL
+        superseded versions of the shot's caches and of its assets' texture
+        folders. The newest local version of each always survives, and the
+        server keeps everything, so a deleted version re-downloads on demand.
+        Scans first, then asks with the reclaimable size before touching
+        anything."""
+        if not self.cfg:
+            return
+        from flumen import shot_media as SM
+        from flumen import elements as EL
+        from flumen.sftp import SFTPClient
+        entity = task.get("entity", "")
+        local_root = (self.ed_local.text().strip()
+                      or self.cfg.resolved_local_root())
+        cfg, creds = self.cfg, self._creds()
+
+        def scan():
+            with SFTPClient(creds) as client:
+                assembly = EL.load_assembly(client, cfg.remote_root, entity)
+            assets = [el.get("asset", "") for el in
+                      (assembly.get("elements") or [])
+                      if el.get("kind", "asset") == "asset"]
+            return SM.cleanup_plan(local_root, entity, [a for a in assets if a])
+
+        def scanned(plan):
+            self._busy_buttons(False)
+            if not isinstance(plan, dict):
+                QMessageBox.warning(
+                    self, "Clean up failed",
+                    "Could not scan the shot's local media — see the app "
+                    "console / ~/.flumen/workspace.log.")
+                return
+            victims = plan.get("victims") or []
+            if not victims:
+                QMessageBox.information(
+                    self, "Clean up unused data",
+                    "Nothing to clean — only the newest version of every "
+                    "cache and texture set is on this disk.")
+                return
+            names = [os.path.basename(p) for p, _ in victims]
+            shown = "\n".join(f"  •  {n}" for n in names[:12])
+            if len(names) > 12:
+                shown += f"\n  …and {len(names) - 12} more"
+            if QMessageBox.question(
+                    self, "Clean up unused data",
+                    f"Delete {len(victims)} superseded item(s) from this "
+                    f"machine, freeing {plan['total_bytes'] / 1e9:.2f} GB?\n\n"
+                    f"{shown}\n\nThe newest versions stay; everything deleted "
+                    f"remains on the server and re-downloads on demand.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No) != QMessageBox.Yes:
+                return
+            n, freed = SM.cleanup_apply(plan, log=print)
+            self.status.showMessage(f"Cleaned {n} item(s) — freed "
+                                    f"{freed / 1e9:.2f} GB.")
+
+        self._busy_buttons(True)
+        self._spawn(scan, scanned, busy_msg=f"Scanning {entity} local media…")
 
     def _prep_render_queue(self, task: dict):
         """'Prepare for Render Queue (BRQ)': stamp the project render settings,
