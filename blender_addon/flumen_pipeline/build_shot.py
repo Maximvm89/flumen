@@ -1478,6 +1478,8 @@ def _element_detail(el, present):
     if el.get("cache_rel"):
         v = int(el.get("cache_version") or 0)
         label = f"load cache v{v:03d}" if v else "load cache"
+        if el.get("cache_pinned"):
+            label += " · APPROVED"      # pinned via the app, not just newest
         # Flag where it comes from so the reviewer knows whether the shot is
         # building from the server or a not-yet-uploaded local cache.
         label += (" · LOCAL (not on server)" if el.get("cache_source") == "local"
@@ -1595,15 +1597,21 @@ def _element_update_notes(el, holder, anim_meta):
             return base, False
         notes, update = [], False
         latest = int(el.get("cache_version") or 0)
+        pinned = bool(el.get("cache_pinned"))
         have = _holder_cache_version(holder)
-        if latest and have and have < latest:
-            notes.append(f"new cache v{latest:03d} (scene has v{have:03d})")
+        # An APPROVED (pinned) version must win in BOTH directions — a
+        # rollback pin is older than what the scene plays, so 'have != latest'
+        # flags it where the plain newest-only check would stay silent.
+        if latest and have and (have < latest or (pinned and have != latest)):
+            what = "approved cache" if pinned else "new cache"
+            notes.append(f"{what} v{latest:03d} (scene has v{have:03d})")
             update = True
         elif latest and not have:
             notes.append(f"cache v{latest:03d} available (scene has no cache)")
             update = True
         elif latest:
-            notes.append(f"cache v{latest:03d} ✓")
+            notes.append(f"cache v{latest:03d}"
+                         + (" (approved)" if pinned else "") + " ✓")
         if look_avail:
             cur_look = str(holder.get("flumen_look", "") or "")
             if cur_look == look_avail:

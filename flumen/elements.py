@@ -151,6 +151,14 @@ def normalize(assembly: dict, shot_entity: str = "") -> dict:
              "label": raw.get("label", ""), "look": raw.get("look", ""),
              "dressing": "" if kind == "camera" else raw.get("dressing", ""),
              "enabled": bool(raw.get("enabled", True))}
+        # Approved (pinned) cache version for the lighting build; 0/absent =
+        # newest. Set from the app's 'Approve cache version' tool.
+        try:
+            pin = int(raw.get("cache_approved") or 0)
+        except (TypeError, ValueError):
+            pin = 0
+        if kind != "camera" and pin > 0:
+            e["cache_approved"] = pin
         if not e["id"] or e["id"] in seen:
             # Keep the original id (or asset) as the collision base so a dup
             # becomes '<id>_1', not the asset's leaf name.
@@ -392,13 +400,27 @@ def cache_plan(sftp, remote_root: str, shot_entity: str,
 
 def resolved_caches(sftp, remote_root: str, shot_entity: str,
                     step: str = "animation") -> dict:
-    """Newest published alembic cache per element for a shot, from the step that
-    publishes caches (animation): {element_id: {rel, version, by}}. Drives the
-    lighting build — each animated character loads its latest cache."""
+    """The alembic cache per element the lighting build should use:
+    {element_id: {rel, version, by, pinned?}}. Newest published version by
+    default; an APPROVED version (assembly element 'cache_approved', set from
+    the app's Approve-cache tool) overrides it — that's the supported rollback
+    when a newer cache turns out broken. A pin whose version was never
+    recorded falls back to newest rather than breaking the build."""
     from . import tasks
     t = tasks.get_task(sftp, remote_root,
                        tasks.make_id("shot", shot_entity, step))
-    return published_caches(t) if t else {}
+    if not t:
+        return {}
+    best = published_caches(t)
+    pins = cache_pins(load_assembly(sftp, remote_root, shot_entity))
+    if pins:
+        allv = published_cache_versions(t)
+        for eid, want in pins.items():
+            rec = next((v for v in allv.get(eid, [])
+                        if v["version"] == want), None)
+            if rec is not None:
+                best[eid] = dict(rec, pinned=True)
+    return best
 
 
 def newest_dressing(sftp, remote_root: str, asset_entity: str,
@@ -583,6 +605,36 @@ def published_caches(task: dict) -> dict:
                              # anim version this cache was baked from
                              "anim": cache_anim.get(eid, "")}
     return best
+
+
+def published_cache_versions(task: dict) -> dict:
+    """EVERY published cache version per element, newest first:
+    {element_id: [{version, rel, time, by, anim}, ...]}. Feeds the app's
+    Approve-cache tool (pick any version, not just the newest)."""
+    import os as _os
+    out: dict[str, dict[int, dict]] = {}
+    for rec in task.get("publishes") or []:
+        cache_anim = rec.get("cache_anim") or {}
+        for rel in rec.get("files") or []:
+            if not rel.endswith(CACHE_SUFFIX):
+                continue
+            parsed = parse_cache_name(_os.path.basename(rel))
+            if not parsed:
+                continue
+            eid, ver = parsed
+            out.setdefault(eid, {})[ver] = {
+                "version": ver, "rel": rel, "time": rec.get("time"),
+                "by": rec.get("by"), "anim": cache_anim.get(eid, "")}
+    return {eid: [vers[v] for v in sorted(vers, reverse=True)]
+            for eid, vers in out.items()}
+
+
+def cache_pins(assembly: dict) -> dict:
+    """{element_id: approved_version} for every element carrying a
+    'cache_approved' pin (see normalize)."""
+    return {e["id"]: int(e["cache_approved"])
+            for e in assembly.get("elements") or []
+            if e.get("id") and int(e.get("cache_approved") or 0) > 0}
 
 
 def next_cache_version(task: dict, element_id: str) -> int:

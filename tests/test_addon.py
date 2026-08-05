@@ -432,3 +432,18 @@ def test_cache_element_flags_newer_cache_and_look_as_update():
     # not in the scene yet: informative, not an update
     detail, update = B._element_update_notes(el, None, {})
     assert update is False and "look default v007 will apply" in detail
+
+    # APPROVED (pinned) rollback: resolve offers v005 while the scene plays
+    # v006 — must still pre-tick (the plain newest-only check would not)
+    el_pin = dict(el, cache_rel="c/gatto_mummia_v005.abc", cache_version=5,
+                  cache_pinned=True)
+    rolled = Holder([cache_obj("//../cache/gatto_mummia_v006.abc")])
+    rolled["flumen_look"] = "default v007"
+    detail, update = B._element_update_notes(el_pin, rolled, {})
+    assert update is True
+    assert "approved cache v005" in detail and "v006" in detail
+    # scene already on the approved version -> settled
+    pinned_ok = Holder([cache_obj("//../cache/gatto_mummia_v005.abc")])
+    pinned_ok["flumen_look"] = "default v007"
+    detail, update = B._element_update_notes(el_pin, pinned_ok, {})
+    assert update is False and "cache v005 (approved) ✓" in detail

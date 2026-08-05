@@ -545,3 +545,47 @@ def test_all_light_rigs_newest_per_shot():
     rigs = E.all_light_rigs(s, "/r")
     assert [r["shot"] for r in rigs] == ["SEQ010/SH0010", "SEQ010/SH0020"]
     assert all(r["version"] == 1 for r in rigs)
+
+
+def test_cache_approval_pins_resolve_and_survive_normalize():
+    """An APPROVED (pinned) cache version overrides 'newest wins' in
+    resolved_caches — the rollback path when a newer cache is broken. The pin
+    rides the assembly through normalize (a save must not drop it), and a pin
+    pointing at a never-recorded version falls back to newest."""
+    s = FakeSrv()
+    shot = "SEQ010/SH0010"
+    cdir = E.cache_dir_rel(shot)
+    _publish_cache_files(s, shot, "animation", [cdir + "/gatto_v001.abc"])
+    _publish_cache_files(s, shot, "animation", [cdir + "/gatto_v002.abc"])
+    _publish_cache_files(s, shot, "animation", [cdir + "/gatto_v003.abc"])
+
+    t = tasks.get_task(s, "/r", tasks.make_id("shot", shot, "animation"))
+    allv = E.published_cache_versions(t)
+    assert [v["version"] for v in allv["gatto"]] == [3, 2, 1]   # newest first
+
+    asm = E.empty_assembly(shot)
+    E.add_element(asm, E.new_element("characters/gatto"))
+    asm["elements"][0]["cache_approved"] = 2
+    saved = E.save_assembly(s, "/r", shot, asm)                 # -> normalize
+    assert saved["elements"][0]["cache_approved"] == 2          # pin survives
+    assert E.cache_pins(saved) == {"gatto": 2}
+
+    rc = E.resolved_caches(s, "/r", shot)
+    assert rc["gatto"]["version"] == 2                          # pin wins
+    assert rc["gatto"]["pinned"] is True
+    assert rc["gatto"]["rel"].endswith("gatto_v002.abc")
+
+    # pin at a version that was never recorded -> newest, unpinned
+    asm2 = E.load_assembly(s, "/r", shot)
+    asm2["elements"][0]["cache_approved"] = 9
+    E.save_assembly(s, "/r", shot, asm2)
+    rc = E.resolved_caches(s, "/r", shot)
+    assert rc["gatto"]["version"] == 3
+    assert not rc["gatto"].get("pinned")
+
+    # pin removed (0) -> back to newest, and normalize drops the field
+    asm3 = E.load_assembly(s, "/r", shot)
+    asm3["elements"][0]["cache_approved"] = 0
+    saved3 = E.save_assembly(s, "/r", shot, asm3)
+    assert "cache_approved" not in saved3["elements"][0]
+    assert E.resolved_caches(s, "/r", shot)["gatto"]["version"] == 3

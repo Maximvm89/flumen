@@ -2416,6 +2416,10 @@ class MainWindow(QMainWindow):
                     if is_lighting_shot else None)
         act_clean = (menu.addAction("Clean up unused data…")
                      if is_lighting_shot else None)
+        # Cache approval: pin the version the lighting build pulls per element
+        # (rollback for a broken newer cache); Latest = follow new publishes.
+        act_approve = (menu.addAction("Approve cache versions…")
+                       if is_lighting_shot else None)
         menu.addSeparator()
         act_delete = menu.addAction("Delete task")
         act_delete.setEnabled(self._can_delete_remote())
@@ -2445,8 +2449,80 @@ class MainWindow(QMainWindow):
             self._sync_shot_media(t)
         elif act_clean is not None and chosen == act_clean:
             self._cleanup_shot_media(t)
+        elif act_approve is not None and chosen == act_approve:
+            self._approve_cache_versions(t)
         elif chosen == act_delete:
             self._delete_task(t)
+
+    def _approve_cache_versions(self, task: dict):
+        """Right-click 'Approve cache versions' (lighting): per element, pick
+        WHICH published cache version the lighting build pulls — 'Latest'
+        follows new publishes (the default), a specific version PINS it (the
+        supported rollback when a newer cache is broken). Pins live on the
+        shot's assembly, so every machine building this shot honours them."""
+        if not self.cfg:
+            return
+        from flumen import elements as EL
+        from flumen import tasks as TSK
+        from flumen.sftp import SFTPClient
+        entity = task.get("entity", "")
+        cfg, creds = self.cfg, self._creds()
+
+        def load():
+            with SFTPClient(creds) as client:
+                anim = TSK.get_task(client, cfg.remote_root,
+                                    TSK.make_id("shot", entity, "animation"))
+                asm = EL.load_assembly(client, cfg.remote_root, entity)
+            return (EL.published_cache_versions(anim or {}),
+                    EL.cache_pins(asm), asm)
+
+        def loaded(res):
+            self._busy_buttons(False)
+            if not isinstance(res, tuple):
+                QMessageBox.warning(self, "Approve cache versions",
+                                    "Couldn't load the shot's cache history.")
+                return
+            versions, pins, asm = res
+            labels = {e.get("id"): e.get("label") or e.get("id")
+                      for e in asm.get("elements") or []}
+            rows = [(eid, labels.get(eid, eid), vers, pins.get(eid, 0))
+                    for eid, vers in sorted(versions.items())
+                    if eid in labels]        # only elements still in the shot
+            if not rows:
+                QMessageBox.information(self, "Approve cache versions",
+                                        "No caches published for this shot "
+                                        "yet.")
+                return
+            dlg = ApproveCachesDialog(entity, rows, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            new_pins = dlg.pins()
+
+            def save():
+                with SFTPClient(creds) as client:
+                    asm2 = EL.load_assembly(client, cfg.remote_root, entity)
+                    for e in asm2.get("elements") or []:
+                        want = new_pins.get(e.get("id"), 0)
+                        if want > 0:
+                            e["cache_approved"] = want
+                        else:
+                            e.pop("cache_approved", None)
+                    EL.save_assembly(client, cfg.remote_root, entity, asm2,
+                                     actor=creds.user)
+                return sum(1 for v in new_pins.values() if v > 0)
+
+            def saved(n):
+                self._busy_buttons(False)
+                self.status.showMessage(
+                    f"{entity}: {n} cache pin(s) approved — the next Build "
+                    f"shot pulls these versions." if isinstance(n, int)
+                    else "Could not save the approvals.")
+
+            self._busy_buttons(True)
+            self._spawn(save, saved, busy_msg="Saving cache approvals…")
+
+        self._busy_buttons(True)
+        self._spawn(load, loaded, busy_msg=f"Loading {entity} cache history…")
 
     def _sync_shot_media(self, task: dict):
         """Right-click 'Sync latest caches + textures' (lighting): download the
@@ -3876,6 +3952,65 @@ class CacheShotDialog(QDialog):
     def selected_ids(self) -> list:
         return [row["id"] for b, row in zip(self._boxes, self._plan)
                 if b.isChecked()]
+
+
+class ApproveCachesDialog(QDialog):
+    """Per element: which published cache version the lighting build pulls.
+    'Latest' follows new publishes (default); a specific version PINS it —
+    the supported rollback when a newer cache turns out broken. Approvals are
+    saved onto the shot's assembly, so every machine honours them."""
+
+    def __init__(self, shot_entity, rows, parent=None):
+        super().__init__(parent)
+        self._rows = list(rows or [])   # (eid, label, versions desc, pin)
+        self.setWindowTitle(f"Approve cache versions — {shot_entity}")
+        self.setMinimumWidth(560)
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(
+            "Pick the cache version each element builds with. 'Latest' "
+            "follows new publishes; a specific version pins it (rollback "
+            "for a broken cache)."))
+        self.table = QTableWidget(len(self._rows), 3)
+        self.table.setHorizontalHeaderLabels(["Element", "Build with",
+                                              "Newest"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self._combos = []
+        for i, (eid, label, versions, pin) in enumerate(self._rows):
+            self.table.setItem(i, 0, QTableWidgetItem(label))
+            cmb = QComboBox()
+            newest = versions[0]["version"] if versions else 0
+            cmb.addItem(f"Latest (v{newest:03d})", 0)
+            for v in versions:
+                by = v.get("by") or "?"
+                when = ""
+                try:
+                    import time as _t
+                    when = _t.strftime(" · %d %b", _t.localtime(v["time"]))
+                except Exception:  # noqa: BLE001
+                    pass
+                cmb.addItem(f"v{v['version']:03d} — {by}{when}", v["version"])
+            if pin:
+                idx = cmb.findData(pin)
+                if idx >= 0:
+                    cmb.setCurrentIndex(idx)
+            self._combos.append(cmb)
+            self.table.setCellWidget(i, 1, cmb)
+            mark = f"v{newest:03d}" + ("" if not pin or pin == newest
+                                       else f"  (approved v{pin:03d})")
+            self.table.setItem(i, 2, QTableWidgetItem(mark))
+        self.table.resizeColumnsToContents()
+        root.addWidget(self.table, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Approve")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def pins(self) -> dict:
+        """{element_id: version} — 0 means 'Latest' (pin removed)."""
+        return {eid: int(cmb.currentData() or 0)
+                for (eid, _l, _v, _p), cmb in zip(self._rows, self._combos)}
 
 
 class SweatboxDialog(QDialog):

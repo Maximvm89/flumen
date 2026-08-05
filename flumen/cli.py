@@ -1049,7 +1049,8 @@ def cmd_resolve_assembly(args) -> int:
                 if cache:
                     r = dict(r, cache_rel=cache["rel"], cache_local=clocal,
                              cache_version=cache["version"],
-                             cache_source=csource)
+                             cache_source=csource,
+                             cache_pinned=bool(cache.get("pinned")))
                 else:
                     r = dict(r, load="link")     # no usable cache — link geo
             elif r.get("load") == "alembic":
@@ -1078,7 +1079,8 @@ def cmd_resolve_assembly(args) -> int:
                      "cache_rel": r.get("cache_rel", ""),
                      "cache_local": r.get("cache_local", ""),
                      "cache_version": r.get("cache_version", 0),
-                     "cache_source": r.get("cache_source", "")}
+                     "cache_source": r.get("cache_source", ""),
+                     "cache_pinned": bool(r.get("cache_pinned"))}
             # Look resolution at BUILD time: every asset element gets its
             # chosen look (element.look, else 'default') fetched so Build shot
             # can assign the materials — shading always comes from the look
