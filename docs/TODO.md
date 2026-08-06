@@ -2,6 +2,14 @@
 
 Running backlog of things to build/fix. Newest context at the top of each section.
 
+## Tech debt
+
+- [ ] **Split build_shot.py (2.7k lines).** Full measured plan in
+  [REFACTOR_BUILD_SHOT.md](REFACTOR_BUILD_SHOT.md) — 3 phases (safety-net
+  diagnose script → mechanical module split → decompose the 575-line
+  `execute()`). **Parked until a quiet production window**; don't start
+  mid-delivery.
+
 ## UX / app
 
 - [ ] **Empty-task open warning.** When opening a task in Blender that has **no
